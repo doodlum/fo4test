@@ -26,6 +26,7 @@ public:
 	bool lowRefreshRate = false;
 
 	bool fidelityFXMissing = false;
+	bool highFPSPhysicsFixLoaded = false;
 
 	bool d3d12Interop = false;
 	double refreshRate = 0.0f;
@@ -45,12 +46,16 @@ public:
 
 	void LoadSettings();
 
+	void PostPostLoad();
+
 	void CreateFrameGenerationResources();
 	void CopyBuffersToSharedResources();
 
 	static void TimerSleepQPC(int64_t targetQPC);
 
 	void FrameLimiter(bool a_useFrameGeneration);
+
+	void GameFrameLimiter();
 
 	static double GetRefreshRate(HWND a_window);
 

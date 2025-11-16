@@ -12,6 +12,8 @@ decltype(&IDXGIFactory::CreateSwapChain) ptrCreateSwapChain;
 
 HRESULT WINAPI hk_IDXGIFactory_CreateSwapChain(IDXGIFactory2* This, _In_ ID3D11Device* a_device, _In_ DXGI_SWAP_CHAIN_DESC* pDesc, _COM_Outptr_ IDXGISwapChain** ppSwapChain)
 {
+	pDesc->SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+
 	IDXGIDevice* dxgiDevice = nullptr;
 	DX::ThrowIfFailed(a_device->QueryInterface(__uuidof(IDXGIDevice), (void**)&dxgiDevice));
 

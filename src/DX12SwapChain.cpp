@@ -168,6 +168,10 @@ HRESULT DX12SwapChain::Present(UINT SyncInterval, UINT Flags)
 	if (SyncInterval == 0 && upscaling->useFrameGenerationThisFrame)
 		upscaling->FrameLimiter(useFrameGenerationThisFrame);
 
+	// Fix game running too fast
+	if (!upscaling->highFPSPhysicsFixLoaded && upscaling->useFrameGenerationThisFrame)
+		upscaling->GameFrameLimiter();
+
 	upscaling->useFrameGenerationThisFrame = false;
 
 	return S_OK;

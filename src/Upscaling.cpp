@@ -126,6 +126,16 @@ void Upscaling::LoadSettings()
 	logger::info("[Frame Generation] bFrameGenerationForceEnable: {}", settings.frameGenerationForceEnable);
 }
 
+void Upscaling::PostPostLoad()
+{
+	highFPSPhysicsFixLoaded = GetModuleHandleA("Data\\F4SE\\Plugins\\HighFPSPhysicsFix.dll") != nullptr;
+
+	if (highFPSPhysicsFixLoaded)
+		logger::info("[Frame Generation] HighFPSPhysicsFix.dll is loaded");
+	else
+		logger::info("[Frame Generation] HighFPSPhysicsFix.dll is not loaded");
+}
+
 void Upscaling::CreateFrameGenerationResources()
 {
 	logger::info("[Frame Generation] Creating resources");
@@ -306,6 +316,8 @@ void Upscaling::TimerSleepQPC(int64_t targetQPC)
 
 void Upscaling::FrameLimiter(bool a_useFrameGeneration)
 {
+	static LARGE_INTEGER lastFrame = {};
+
 	if (d3d12Interop && settings.frameLimitMode) {
 		double bestRefreshRate = refreshRate - (refreshRate * refreshRate) / 3600.0;
 
@@ -314,15 +326,34 @@ void Upscaling::FrameLimiter(bool a_useFrameGeneration)
 
 		int64_t targetFrameTicks = int64_t(double(qpf.QuadPart) / (bestRefreshRate * (a_useFrameGeneration ? 0.5 : 1.0)));
 
-		static LARGE_INTEGER lastFrame = {};
 		LARGE_INTEGER timeNow;
 		QueryPerformanceCounter(&timeNow);
 		int64_t delta = timeNow.QuadPart - lastFrame.QuadPart;
 		if (delta < targetFrameTicks) {
 			TimerSleepQPC(lastFrame.QuadPart + targetFrameTicks);
 		}
-		QueryPerformanceCounter(&lastFrame);
 	}
+
+	QueryPerformanceCounter(&lastFrame);
+}
+
+void Upscaling::GameFrameLimiter()
+{
+	double bestRefreshRate = 60.0f;
+
+	LARGE_INTEGER qpf;
+	QueryPerformanceFrequency(&qpf);
+
+	int64_t targetFrameTicks = int64_t(double(qpf.QuadPart) / bestRefreshRate);
+
+	static LARGE_INTEGER lastFrame = {};
+	LARGE_INTEGER timeNow;
+	QueryPerformanceCounter(&timeNow);
+	int64_t delta = timeNow.QuadPart - lastFrame.QuadPart;
+	if (delta < targetFrameTicks) {
+		TimerSleepQPC(lastFrame.QuadPart + targetFrameTicks);
+	}
+	QueryPerformanceCounter(&lastFrame);	
 }
 
 /*
