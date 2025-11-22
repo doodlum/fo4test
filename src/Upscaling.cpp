@@ -270,6 +270,17 @@ struct WindowSizeChanged
 	static inline REL::Relocation<decltype(thunk)> func;
 };
 
+struct SetUseDynamicResolutionViewportAsDefaultViewport
+{
+	static void thunk(RE::BSGraphics::RenderTargetManager* This, bool a_true)
+	{
+		if (!a_true)
+			Upscaling::GetSingleton()->PostDisplay();
+		func(This, a_true);
+	}
+	static inline REL::Relocation<decltype(thunk)> func;
+};
+
 thread_local bool fixWeaponModel = false;
 thread_local bool fixAnimation = false;
 
@@ -297,17 +308,6 @@ struct PlayerCharacter_UpdateScenegraph
 		fixWeaponModel = true;
 		func(NiAVObject, NiUpdateData);
 		fixWeaponModel = false;
-	}
-	static inline REL::Relocation<decltype(thunk)> func;
-};
-
-struct SetUseDynamicResolutionViewportAsDefaultViewport
-{
-	static void thunk(RE::BSGraphics::RenderTargetManager* This, bool a_true)
-	{
-		if (!a_true)
-			Upscaling::GetSingleton()->PostDisplay();
-		func(This, a_true);
 	}
 	static inline REL::Relocation<decltype(thunk)> func;
 };
