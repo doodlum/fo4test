@@ -39,6 +39,7 @@ void FidelityFX::Present(bool a_useFrameGeneration)
 	auto swapChain = DX12SwapChain::GetSingleton();
 	auto commandList = swapChain->commandLists[swapChain->frameIndex].get();
 	
+	auto HUDLessColor = upscaling->HUDLessBufferShared12.get();
 	auto depth = upscaling->depthBufferShared12.get();
 	auto motionVectors = upscaling->motionVectorBufferShared12.get();
 
@@ -60,8 +61,9 @@ void FidelityFX::Present(bool a_useFrameGeneration)
 		configParameters.frameGenerationCallback = [](ffxDispatchDescFrameGeneration* params, void* pUserCtx) -> ffxReturnCode_t {
 			return ffxModule.Dispatch(reinterpret_cast<ffxContext*>(pUserCtx), &params->header);
 			};
-
 		configParameters.frameGenerationCallbackUserContext = &frameGenContext;
+
+		configParameters.HUDLessColor = ffxApiGetResourceDX12(HUDLessColor);
 
 	}
 	else {
@@ -69,9 +71,9 @@ void FidelityFX::Present(bool a_useFrameGeneration)
 
 		configParameters.frameGenerationCallbackUserContext = nullptr;
 		configParameters.frameGenerationCallback = nullptr;
-	}
 
-	configParameters.HUDLessColor = FfxApiResource({});
+		configParameters.HUDLessColor = FfxApiResource({});
+	}
 
 	configParameters.presentCallback = nullptr;
 	configParameters.presentCallbackUserContext = nullptr;
@@ -90,14 +92,6 @@ void FidelityFX::Present(bool a_useFrameGeneration)
 
 	if (ffx::Configure(frameGenContext, configParameters) != ffx::ReturnCode::Ok) {
 		logger::critical("[FidelityFX] Failed to configure frame generation!");
-	}
-
-	ffx::ConfigureDescFrameGenerationSwapChainRegisterUiResourceDX12 uiConfig{};
-	uiConfig.uiResource = ffxApiGetResourceDX12(swapChain->uiBufferWrapped->resource.get());
-	uiConfig.flags = FFX_FRAMEGENERATION_UI_COMPOSITION_FLAG_USE_PREMUL_ALPHA | FFX_FRAMEGENERATION_UI_COMPOSITION_FLAG_ENABLE_INTERNAL_UI_DOUBLE_BUFFERING;
-
-	if (ffx::Configure(swapChainContext, uiConfig) != ffx::ReturnCode::Ok) {
-		logger::critical("[FidelityFX] Failed to configure UI composition!");
 	}
 
 	static LARGE_INTEGER frequency = []() {

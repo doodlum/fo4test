@@ -163,6 +163,16 @@ void Upscaling::CreateFrameGenerationResources()
 
 	texDesc.MiscFlags = D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_NTHANDLE;
 
+	texDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+	srvDesc.Format = texDesc.Format;
+	rtvDesc.Format = texDesc.Format;
+	uavDesc.Format = texDesc.Format;
+
+	HUDLessBufferShared = new Texture2D(texDesc);
+	HUDLessBufferShared->CreateSRV(srvDesc);
+	HUDLessBufferShared->CreateRTV(rtvDesc);
+	HUDLessBufferShared->CreateUAV(uavDesc);
+
 	texDesc.Format = DXGI_FORMAT_R32_FLOAT;
 	srvDesc.Format = texDesc.Format;
 	rtvDesc.Format = texDesc.Format;
@@ -188,6 +198,26 @@ void Upscaling::CreateFrameGenerationResources()
 	motionVectorBufferShared->CreateUAV(uavDesc);
 
 	auto dx12SwapChain = DX12SwapChain::GetSingleton();
+
+	{
+		IDXGIResource1* dxgiResource = nullptr;
+		DX::ThrowIfFailed(HUDLessBufferShared->resource->QueryInterface(IID_PPV_ARGS(&dxgiResource)));
+
+		if (dx12SwapChain->swapChain) {
+			HANDLE sharedHandle = nullptr;
+			DX::ThrowIfFailed(dxgiResource->CreateSharedHandle(
+				nullptr,
+				DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE,
+				nullptr,
+				&sharedHandle));
+
+			DX::ThrowIfFailed(dx12SwapChain->d3d12Device->OpenSharedHandle(
+				sharedHandle,
+				IID_PPV_ARGS(&HUDLessBufferShared12)));
+
+			CloseHandle(sharedHandle);
+		}
+	}
 
 	{
 		IDXGIResource1* dxgiResource = nullptr;
@@ -271,6 +301,17 @@ struct BSGeometry_UpdateWorldData
 	static inline REL::Relocation<decltype(thunk)> func;
 };
 
+struct PlayerCharacter_UpdateScenegraphNG
+{
+	static void thunk(float a1, void* a2, __int64 a3, unsigned __int8 a4)
+	{
+		fixWeaponModel = true;
+		func(a1, a2, a3, a4);
+		fixWeaponModel = false;
+	}
+	static inline REL::Relocation<decltype(thunk)> func;
+};
+
 struct PlayerCharacter_UpdateScenegraph
 {
 	static void thunk(RE::NiAVObject* NiAVObject, RE::NiUpdateData* NiUpdateData)
@@ -301,7 +342,7 @@ void Upscaling::InstallHooks()
 	stl::detour_thunk<WindowSizeChanged>(REL::ID(2276824));
 	stl::detour_thunk<SetUseDynamicResolutionViewportAsDefaultViewport>(REL::ID(2277194));
 	stl::detour_thunk<BSGeometry_UpdateWorldData>(REL::ID(2270409));
-	stl::write_thunk_call<PlayerCharacter_UpdateScenegraph>(REL::ID(2233006).address() + 0x286);
+	stl::write_thunk_call<PlayerCharacter_UpdateScenegraphNG>(REL::ID(2233006).address() + 0x286);
 	stl::detour_thunk<TESObjectREFR_SetSequencePosition>(REL::ID(2200766));
 #else
 	// Fix game initialising twice
@@ -489,13 +530,10 @@ void Upscaling::PostDisplay()
 	auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
 
 	auto& swapChain = rendererData->renderTargets[(uint)RenderTarget::kFrameBuffer];
-	auto dx12SwapChain = DX12SwapChain::GetSingleton();
+	ID3D11Resource* swapChainResource;
+	reinterpret_cast<ID3D11RenderTargetView*>(swapChain.rtView)->GetResource(&swapChainResource);
 
-#if defined(FALLOUT_POST_NG)
-	swapChain.rtView = reinterpret_cast<REX::W32::ID3D11RenderTargetView*>(dx12SwapChain->uiBufferWrapped->rtv);
-#else
-	swapChain.rtView = dx12SwapChain->uiBufferWrapped->rtv;
-#endif
+	reinterpret_cast<ID3D11DeviceContext*>(rendererData->context)->CopyResource(HUDLessBufferShared->resource.get(), swapChainResource);
 
 	inGame = true;
 }
