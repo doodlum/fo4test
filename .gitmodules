@@ -4,3 +4,6 @@
 [submodule "extern/CommonLibF4PostNG"]
 	path = extern/CommonLibF4PostNG
 	url = https://github.com/powerof3/CommonLibF4.git
+[submodule "extern/CommonLibF4PostAE"]
+	path = extern/CommonLibF4PostAE
+	url = https://github.com/powerof3/CommonLibF4.git

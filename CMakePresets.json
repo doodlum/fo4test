@@ -49,7 +49,8 @@
 			"name": "PRE-NG",
 			"cacheVariables": {
 				"BUILD_PRE_NG": true,
-				"BUILD_POST_NG": false
+				"BUILD_POST_NG": false,
+				"BUILD_POST_AE": false
 			},
 			"inherits": [
 				"common",
@@ -62,7 +63,22 @@
 			"name": "POST-NG",
 			"cacheVariables": {
 				"BUILD_PRE_NG": false,
-				"BUILD_POST_NG": true
+				"BUILD_POST_NG": true,
+				"BUILD_POST_AE": false
+			},
+			"inherits": [
+				"common",
+				"vcpkg",
+				"win64",
+				"msvc"
+			]
+		},
+				{
+			"name": "POST-AE",
+			"cacheVariables": {
+				"BUILD_PRE_NG": false,
+				"BUILD_POST_NG": false,
+				"BUILD_POST_AE": true
 			},
 			"inherits": [
 				"common",

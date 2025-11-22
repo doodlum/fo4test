@@ -331,7 +331,7 @@ void Upscaling::InstallHooks()
 	stl::detour_thunk<SetUseDynamicResolutionViewportAsDefaultViewport>(REL::ID(2277194));
 	stl::detour_thunk<BSGeometry_UpdateWorldData>(REL::ID(2270409));
 	stl::write_thunk_call<PlayerCharacter_UpdateScenegraph>(REL::ID(2233006).address() + 0x286);
-	stl::detour_thunk<TESObjectREFR__SetSequencePosition>(REL::ID(2200766));
+	stl::detour_thunk<TESObjectREFR_SetSequencePosition>(REL::ID(2200766));
 #else
 	// Fix game initialising twice
 	stl::detour_thunk<WindowSizeChanged>(REL::ID(212827));
