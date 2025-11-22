@@ -7,13 +7,15 @@
 #include "DX12SwapChain.h"
 #include "FidelityFX.h"
 
+#include "ENB/ENBSeriesAPI.h"
+
+bool enbLoaded = false;
+
 decltype(&D3D11CreateDeviceAndSwapChain) ptrD3D11CreateDeviceAndSwapChain;
 decltype(&IDXGIFactory::CreateSwapChain) ptrCreateSwapChain;
 
 HRESULT WINAPI hk_IDXGIFactory_CreateSwapChain(IDXGIFactory2* This, _In_ ID3D11Device* a_device, _In_ DXGI_SWAP_CHAIN_DESC* pDesc, _COM_Outptr_ IDXGISwapChain** ppSwapChain)
 {
-	pDesc->SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
-
 	IDXGIDevice* dxgiDevice = nullptr;
 	DX::ThrowIfFailed(a_device->QueryInterface(__uuidof(IDXGIDevice), (void**)&dxgiDevice));
 
@@ -79,13 +81,56 @@ HRESULT WINAPI hk_D3D11CreateDeviceAndSwapChain(
 		auto fidelityFX = FidelityFX::GetSingleton();
 
 		if (fidelityFX->module) {
+			upscaling->d3d12Interop = true;
 
 			IDXGIFactory4* dxgiFactory;
 			pAdapter->GetParent(IID_PPV_ARGS(&dxgiFactory));
-			
-			*(uintptr_t*)&ptrCreateSwapChain = Detours::X64::DetourClassVTable(*(uintptr_t*)dxgiFactory, &hk_IDXGIFactory_CreateSwapChain, 10);				
 
-			upscaling->d3d12Interop = true;
+			pSwapChainDesc->SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+
+			const D3D_FEATURE_LEVEL featureLevel = D3D_FEATURE_LEVEL_11_1;
+			pFeatureLevels = &featureLevel;
+			FeatureLevels = 1;
+
+			if (enbLoaded) {
+				*(uintptr_t*)&ptrCreateSwapChain = Detours::X64::DetourClassVTable(*(uintptr_t*)dxgiFactory, &hk_IDXGIFactory_CreateSwapChain, 10);
+			}
+			else {
+				DX::ThrowIfFailed(D3D11CreateDevice(
+					pAdapter,
+					DriverType,
+					Software,
+					Flags,
+					&featureLevel,
+					1,
+					SDKVersion,
+					ppDevice,
+					pFeatureLevel,
+					ppImmediateContext));
+
+				IDXGIDevice* dxgiDevice = nullptr;
+				DX::ThrowIfFailed((*ppDevice)->QueryInterface(__uuidof(IDXGIDevice), (void**)&dxgiDevice));
+
+				IDXGIAdapter* adapter = nullptr;
+				DX::ThrowIfFailed(dxgiDevice->GetAdapter(&adapter));
+
+				auto proxy = DX12SwapChain::GetSingleton();
+
+				proxy->SetD3D11Device(*ppDevice);
+
+				ID3D11DeviceContext* context;
+				(*ppDevice)->GetImmediateContext(&context);
+				proxy->SetD3D11DeviceContext(context);
+
+				proxy->CreateD3D12Device(adapter);
+				proxy->CreateSwapChain((IDXGIFactory4*)dxgiFactory, *pSwapChainDesc);
+				proxy->CreateInterop();
+
+				*ppSwapChain = proxy->GetSwapChainProxy();
+				
+				return S_OK;
+			}
+
 		} else {
 			logger::warn("[Frame Generation] amd_fidelityfx_dx12.dll is not loaded, skipping proxy");
 			upscaling->fidelityFXMissing = true;
@@ -111,6 +156,13 @@ HRESULT WINAPI hk_D3D11CreateDeviceAndSwapChain(
 
 void DX11Hooks::Install()
 {
+	if (ENB_API::RequestENBAPI()) {
+		logger::info("ENB detected, using alternative swap chain hook");
+		enbLoaded = true;
+	} else {
+		logger::info("ENB not detected, using standard swap chain hook");
+	}
+
 	auto fidelityFX = FidelityFX::GetSingleton();
 	fidelityFX->LoadFFX();
 
