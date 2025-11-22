@@ -175,9 +175,6 @@ HRESULT DX12SwapChain::Present(UINT SyncInterval, UINT Flags)
 
 	upscaling->inGame = false;
 
-	float clearColor[4]{ 0, 0, 0, 0 };
-	d3d11Context->ClearRenderTargetView(uiBufferWrapped->rtv, clearColor);
-
 	return S_OK;
 }
 
