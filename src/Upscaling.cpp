@@ -491,7 +491,11 @@ void Upscaling::PostDisplay()
 	auto& swapChain = rendererData->renderTargets[(uint)RenderTarget::kFrameBuffer];
 	auto dx12SwapChain = DX12SwapChain::GetSingleton();
 
+#if defined(FALLOUT_POST_NG)
 	swapChain.rtView = reinterpret_cast<REX::W32::ID3D11RenderTargetView*>(dx12SwapChain->uiBufferWrapped->rtv);
+#else
+	swapChain.rtView = dx12SwapChain->uiBufferWrapped->rtv;
+#endif
 
 	inGame = true;
 }
