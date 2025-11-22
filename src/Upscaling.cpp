@@ -270,21 +270,22 @@ struct WindowSizeChanged
 	static inline REL::Relocation<decltype(thunk)> func;
 };
 
-thread_local bool badGeometryUpdate = false;
+thread_local bool fixWeaponModel = false;
 thread_local bool fixAnimation = false;
 
 struct BSGeometry_UpdateWorldData
 {
 	static void thunk(RE::NiAVObject* a_object, RE::NiUpdateData* a_updateData)
 	{
-		if (badGeometryUpdate)
-			return;
+		auto prevWorld = a_object->world;
 
 		func(a_object, a_updateData);
 
-		if (fixAnimation)
-			a_object->previousWorld = a_object->world;		
+		if (fixWeaponModel)
+			a_object->world = prevWorld;
 
+		if (fixAnimation)
+			a_object->previousWorld = a_object->world;
 	}
 	static inline REL::Relocation<decltype(thunk)> func;
 };
@@ -293,9 +294,9 @@ struct PlayerCharacter_UpdateScenegraph
 {
 	static void thunk(RE::NiAVObject* NiAVObject, RE::NiUpdateData* NiUpdateData)
 	{
-		badGeometryUpdate = true;
+		fixWeaponModel = true;
 		func(NiAVObject, NiUpdateData);
-		badGeometryUpdate = false;
+		fixWeaponModel = false;
 	}
 	static inline REL::Relocation<decltype(thunk)> func;
 };
