@@ -22,7 +22,7 @@ void FidelityFX::SetupFrameGeneration()
 	ffx::CreateContextDescFrameGeneration createFg{};
 	createFg.displaySize = { swapChain->swapChainDesc.Width, swapChain->swapChainDesc.Height };
 	createFg.maxRenderSize = createFg.displaySize;
-	createFg.flags = FFX_FRAMEGENERATION_ENABLE_ASYNC_WORKLOAD_SUPPORT;
+	createFg.flags = 0;
 	createFg.backBufferFormat = ffxApiGetSurfaceFormatDX12(swapChain->swapChainDesc.Format);
 
 	ffx::CreateBackendDX12Desc createBackend{};
@@ -82,7 +82,7 @@ void FidelityFX::Present(bool a_useFrameGeneration)
 	configParameters.frameID = frameID;
 	configParameters.swapChain = swapChain->swapChain;
 	configParameters.onlyPresentGenerated = false;
-	configParameters.allowAsyncWorkloads = true;
+	configParameters.allowAsyncWorkloads = false;
 	configParameters.flags = 0;
 
 	configParameters.generationRect.left = (swapChain->swapChainDesc.Width - swapChain->swapChainDesc.Width) / 2;
