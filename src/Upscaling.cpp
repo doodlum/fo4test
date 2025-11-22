@@ -163,16 +163,6 @@ void Upscaling::CreateFrameGenerationResources()
 
 	texDesc.MiscFlags = D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_NTHANDLE;
 
-	texDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-	srvDesc.Format = texDesc.Format;
-	rtvDesc.Format = texDesc.Format;
-	uavDesc.Format = texDesc.Format;
-
-	HUDLessBufferShared = new Texture2D(texDesc);
-	HUDLessBufferShared->CreateSRV(srvDesc);
-	HUDLessBufferShared->CreateRTV(rtvDesc);
-	HUDLessBufferShared->CreateUAV(uavDesc);
-
 	texDesc.Format = DXGI_FORMAT_R32_FLOAT;
 	srvDesc.Format = texDesc.Format;
 	rtvDesc.Format = texDesc.Format;
@@ -198,26 +188,6 @@ void Upscaling::CreateFrameGenerationResources()
 	motionVectorBufferShared->CreateUAV(uavDesc);
 
 	auto dx12SwapChain = DX12SwapChain::GetSingleton();
-
-	{
-		IDXGIResource1* dxgiResource = nullptr;
-		DX::ThrowIfFailed(HUDLessBufferShared->resource->QueryInterface(IID_PPV_ARGS(&dxgiResource)));
-
-		if (dx12SwapChain->swapChain) {
-			HANDLE sharedHandle = nullptr;
-			DX::ThrowIfFailed(dxgiResource->CreateSharedHandle(
-				nullptr,
-				DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE,
-				nullptr,
-				&sharedHandle));
-
-			DX::ThrowIfFailed(dx12SwapChain->d3d12Device->OpenSharedHandle(
-				sharedHandle,
-				IID_PPV_ARGS(&HUDLessBufferShared12)));
-
-			CloseHandle(sharedHandle);
-		}
-	}
 
 	{
 		IDXGIResource1* dxgiResource = nullptr;
@@ -519,10 +489,9 @@ void Upscaling::PostDisplay()
 	auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
 
 	auto& swapChain = rendererData->renderTargets[(uint)RenderTarget::kFrameBuffer];
-	ID3D11Resource* swapChainResource;
-	reinterpret_cast<ID3D11RenderTargetView*>(swapChain.rtView)->GetResource(&swapChainResource);
-	
-	reinterpret_cast<ID3D11DeviceContext*>(rendererData->context)->CopyResource(HUDLessBufferShared->resource.get(), swapChainResource);
+	auto dx12SwapChain = DX12SwapChain::GetSingleton();
+
+	swapChain.rtView = dx12SwapChain->uiBufferWrapped->rtv;
 
 	inGame = true;
 }

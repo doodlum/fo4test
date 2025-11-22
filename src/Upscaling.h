@@ -31,7 +31,6 @@ public:
 	bool d3d12Interop = false;
 	double refreshRate = 0.0f;
 
-	Texture2D* HUDLessBufferShared;
 	Texture2D* depthBufferShared;
 	Texture2D* motionVectorBufferShared;
 	
