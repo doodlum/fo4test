@@ -48,7 +48,6 @@ enum FfxApiDispatchFramegenerationFlags
     FFX_FRAMEGENERATION_FLAG_DRAW_DEBUG_VIEW = (1 << 2),              ///< A bit indicating that the generated output resource will contain debug views with relevant information.
     FFX_FRAMEGENERATION_FLAG_NO_SWAPCHAIN_CONTEXT_NOTIFY = (1 << 3),  ///< A bit indicating that the context should only run frame interpolation and not modify the swapchain.
     FFX_FRAMEGENERATION_FLAG_DRAW_DEBUG_PACING_LINES = (1 << 4),      ///< A bit indicating that the debug pacing lines will be drawn to the generated output.
-
 };
 
 enum FfxApiUiCompositionFlags

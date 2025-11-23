@@ -40,6 +40,7 @@ public:
 	winrt::com_ptr<ID3D12Resource> motionVectorBufferShared12;
 
 	ID3D11ComputeShader* copyDepthToSharedBufferCS;
+	ID3D11ComputeShader* generateSharedBuffersCS;
 
 	bool setupBuffers = false;
 	bool inGame = false;
@@ -49,6 +50,8 @@ public:
 	void PostPostLoad();
 
 	void CreateFrameGenerationResources();
+	void PreAlpha();
+	void PostAlpha();
 	void CopyBuffersToSharedResources();
 
 	static void TimerSleepQPC(int64_t targetQPC);
