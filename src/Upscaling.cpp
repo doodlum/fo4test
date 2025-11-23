@@ -588,6 +588,18 @@ struct DrawWorld_Forward
 		auto upscaling = Upscaling::GetSingleton();
 		upscaling->inGame = true;
 
+		// Fix vanilla motion vectors not updating in menus
+		if (auto main = RE::Main::GetSingleton()){
+			if (main->inMenuMode) {
+				auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
+				auto context = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
+
+				auto& motionVector = rendererData->renderTargets[(uint)RenderTarget::kMotionVectors];
+				FLOAT clearColor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+				context->ClearRenderTargetView(reinterpret_cast<ID3D11RenderTargetView*>(motionVector.rtView), clearColor);
+			}
+		}
+
 		func(a1);
 
 		if (!reticleFix)
