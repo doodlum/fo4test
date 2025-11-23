@@ -10,7 +10,8 @@ enum class RenderTarget
 	kFrameBuffer = 0,
 
 	kRefractionNormal = 1,
-
+	
+	kMainPreAlpha = 2,
 	kMain = 3,
 	kMainTemp = 4,
 
@@ -260,104 +261,72 @@ void Upscaling::CreateFrameGenerationResources()
 	}
 
 	copyDepthToSharedBufferCS = (ID3D11ComputeShader*)CompileShader(L"Data\\F4SE\\Plugins\\FrameGeneration\\CopyDepthToSharedBufferCS.hlsl", "cs_5_0");	
+	generateSharedBuffersCS = (ID3D11ComputeShader*)CompileShader(L"Data\\F4SE\\Plugins\\FrameGeneration\\GenerateSharedBuffersCS.hlsl", "cs_5_0");
 }
 
-struct WindowSizeChanged
+void Upscaling::PreAlpha()
 {
-	static void thunk(RE::BSGraphics::Renderer*, unsigned int)
-	{
-	}
-	static inline REL::Relocation<decltype(thunk)> func;
-};
-
-struct SetUseDynamicResolutionViewportAsDefaultViewport
-{
-	static void thunk(RE::BSGraphics::RenderTargetManager* This, bool a_true)
-	{
-		if (!a_true)
-			Upscaling::GetSingleton()->PostDisplay();
-		func(This, a_true);
-	}
-	static inline REL::Relocation<decltype(thunk)> func;
-};
-
-thread_local bool fixWeaponModel = false;
-thread_local bool fixAnimation = false;
-
-struct BSGeometry_UpdateWorldData
-{
-	static void thunk(RE::NiAVObject* a_object, RE::NiUpdateData* a_updateData)
-	{
-		auto prevWorld = a_object->world;
-
-		func(a_object, a_updateData);
-
-		if (fixWeaponModel)
-			a_object->world = prevWorld;
-
-		if (fixAnimation)
-			a_object->previousWorld = a_object->world;
-	}
-	static inline REL::Relocation<decltype(thunk)> func;
-};
-
-struct PlayerCharacter_UpdateScenegraphNG
-{
-	static void thunk(float a1, void* a2, __int64 a3, unsigned __int8 a4)
-	{
-		fixWeaponModel = true;
-		func(a1, a2, a3, a4);
-		fixWeaponModel = false;
-	}
-	static inline REL::Relocation<decltype(thunk)> func;
-};
-
-struct PlayerCharacter_UpdateScenegraph
-{
-	static void thunk(RE::NiAVObject* NiAVObject, RE::NiUpdateData* NiUpdateData)
-	{
-		fixWeaponModel = true;
-		func(NiAVObject, NiUpdateData);
-		fixWeaponModel = false;
-	}
-	static inline REL::Relocation<decltype(thunk)> func;
-};
-
-struct TESObjectREFR_SetSequencePosition
-{
-	static void thunk(void* This, RE::NiControllerManager* a2,
-		const char* a3,
-		float a4)
-	{
-		fixAnimation = true;
-		func(This, a2, a3, a4);
-		fixAnimation = false;
-	}
-	static inline REL::Relocation<decltype(thunk)> func;
-};
-
-void Upscaling::InstallHooks()
-{
-#if defined(FALLOUT_POST_NG)
-	stl::detour_thunk<WindowSizeChanged>(REL::ID(2276824));
-	stl::detour_thunk<SetUseDynamicResolutionViewportAsDefaultViewport>(REL::ID(2277194));
-	stl::detour_thunk<BSGeometry_UpdateWorldData>(REL::ID(2270409));
-	stl::write_thunk_call<PlayerCharacter_UpdateScenegraphNG>(REL::ID(2233006).address() + 0x286);
-	stl::detour_thunk<TESObjectREFR_SetSequencePosition>(REL::ID(2200766));
-#else
-	// Fix game initialising twice
-	stl::detour_thunk<WindowSizeChanged>(REL::ID(212827));
-
-	// Watch frame presentation
-	stl::detour_thunk<SetUseDynamicResolutionViewportAsDefaultViewport>(REL::ID(676851));
+	auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
+	auto context = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
 	
-	// Fix broken motion vectors from bad geometry updates
-	stl::detour_thunk<BSGeometry_UpdateWorldData>(REL::ID(551661));
-	stl::write_thunk_call<PlayerCharacter_UpdateScenegraph>(REL::ID(978934).address() + 0x2ED);
-	stl::detour_thunk<TESObjectREFR_SetSequencePosition>(REL::ID(854236));
-#endif
+	auto& colorMain = rendererData->renderTargets[(uint)RenderTarget::kMain];
+	auto& colorPostAlpha = rendererData->renderTargets[(uint)RenderTarget::kMainTemp];
 
-	logger::info("[Upscaling] Installed hooks");
+	context->CopyResource(reinterpret_cast<ID3D11Texture2D*>(colorMain.texture), reinterpret_cast<ID3D11Texture2D*>(colorPostAlpha.texture));
+}
+
+void Upscaling::PostAlpha()
+{
+	if (!d3d12Interop)
+		return;
+
+	if (!setupBuffers)
+		CreateFrameGenerationResources();
+
+	auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
+
+	auto context = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
+	auto dx12SwapChain = DX12SwapChain::GetSingleton();
+
+	context->OMSetRenderTargets(0, nullptr, nullptr);
+
+	{
+		auto& colorPreAlpha = rendererData->renderTargets[(uint)RenderTarget::kMain];
+		auto& colorPostAlpha = rendererData->renderTargets[(uint)RenderTarget::kMainTemp];
+
+		auto& motionVector = rendererData->renderTargets[(uint)RenderTarget::kMotionVectors];
+		auto& depth = rendererData->depthStencilTargets[(uint)DepthStencilTarget::kMain];
+
+		{
+			uint32_t dispatchX = (uint32_t)std::ceil(float(dx12SwapChain->swapChainDesc.Width) / 8.0f);
+			uint32_t dispatchY = (uint32_t)std::ceil(float(dx12SwapChain->swapChainDesc.Height) / 8.0f);
+
+			ID3D11ShaderResourceView* views[4] = { 
+				reinterpret_cast<ID3D11ShaderResourceView*>(colorPreAlpha.srView),
+				reinterpret_cast<ID3D11ShaderResourceView*>(colorPostAlpha.srView),
+				reinterpret_cast<ID3D11ShaderResourceView*>(motionVector.srView),
+				reinterpret_cast<ID3D11ShaderResourceView*>(depth.srViewDepth)
+			};
+
+			context->CSSetShaderResources(0, ARRAYSIZE(views), views);
+
+			ID3D11UnorderedAccessView* uavs[2] = { motionVectorBufferShared->uav.get(), depthBufferShared->uav.get()};
+			context->CSSetUnorderedAccessViews(0, ARRAYSIZE(uavs), uavs, nullptr);
+
+			context->CSSetShader(generateSharedBuffersCS, nullptr, 0);
+
+			context->Dispatch(dispatchX, dispatchY, 1);
+		}
+
+		ID3D11ShaderResourceView* views[3] = { nullptr, nullptr, nullptr };
+		context->CSSetShaderResources(0, ARRAYSIZE(views), views);
+
+		ID3D11UnorderedAccessView* uavs[2] = { nullptr, nullptr };
+		context->CSSetUnorderedAccessViews(0, ARRAYSIZE(uavs), uavs, nullptr);
+
+		ID3D11ComputeShader* shader = nullptr;
+		context->CSSetShader(shader, nullptr, 0);
+	}
 }
 
 void Upscaling::CopyBuffersToSharedResources()
@@ -365,13 +334,15 @@ void Upscaling::CopyBuffersToSharedResources()
 	if (!d3d12Interop)
 		return;
 
-	auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
-
 	if (!setupBuffers)
 		CreateFrameGenerationResources();
 
+	auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
+
 	auto context = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
 	auto dx12SwapChain = DX12SwapChain::GetSingleton();
+	
+	context->OMSetRenderTargets(0, nullptr, nullptr);
 
 	auto& motionVector = rendererData->renderTargets[(uint)RenderTarget::kMotionVectors];
 	context->CopyResource(motionVectorBufferShared->resource.get(), reinterpret_cast<ID3D11Texture2D*>(motionVector.texture));
@@ -525,8 +496,6 @@ void Upscaling::PostDisplay()
 	if (!setupBuffers)
 		CreateFrameGenerationResources();
 	
-	CopyBuffersToSharedResources();
-
 	auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
 
 	auto& swapChain = rendererData->renderTargets[(uint)RenderTarget::kFrameBuffer];
@@ -534,6 +503,140 @@ void Upscaling::PostDisplay()
 	reinterpret_cast<ID3D11RenderTargetView*>(swapChain.rtView)->GetResource(&swapChainResource);
 
 	reinterpret_cast<ID3D11DeviceContext*>(rendererData->context)->CopyResource(HUDLessBufferShared->resource.get(), swapChainResource);
+}
 
-	inGame = true;
+struct WindowSizeChanged
+{
+	static void thunk(RE::BSGraphics::Renderer*, unsigned int)
+	{
+	}
+	static inline REL::Relocation<decltype(thunk)> func;
+};
+
+struct SetUseDynamicResolutionViewportAsDefaultViewport
+{
+	static void thunk(RE::BSGraphics::RenderTargetManager* This, bool a_true)
+	{
+		if (!a_true)
+			Upscaling::GetSingleton()->PostDisplay();
+		func(This, a_true);
+	}
+	static inline REL::Relocation<decltype(thunk)> func;
+};
+
+thread_local bool fixWeaponModel = false;
+thread_local bool fixAnimation = false;
+
+struct BSGeometry_UpdateWorldData
+{
+	static void thunk(RE::NiAVObject* a_object, RE::NiUpdateData* a_updateData)
+	{
+		auto prevWorld = a_object->world;
+
+		func(a_object, a_updateData);
+
+		if (fixWeaponModel)
+			a_object->world = prevWorld;
+
+		if (fixAnimation)
+			a_object->previousWorld = a_object->world;
+	}
+	static inline REL::Relocation<decltype(thunk)> func;
+};
+
+struct PlayerCharacter_UpdateScenegraphNG
+{
+	static void thunk(float a1, void* a2, __int64 a3, unsigned __int8 a4)
+	{
+		fixWeaponModel = true;
+		func(a1, a2, a3, a4);
+		fixWeaponModel = false;
+	}
+	static inline REL::Relocation<decltype(thunk)> func;
+};
+
+struct PlayerCharacter_UpdateScenegraph
+{
+	static void thunk(RE::NiAVObject* NiAVObject, RE::NiUpdateData* NiUpdateData)
+	{
+		fixWeaponModel = true;
+		func(NiAVObject, NiUpdateData);
+		fixWeaponModel = false;
+	}
+	static inline REL::Relocation<decltype(thunk)> func;
+};
+
+struct TESObjectREFR_SetSequencePosition
+{
+	static void thunk(void* This, RE::NiControllerManager* a2,
+		const char* a3,
+		float a4)
+	{
+		fixAnimation = true;
+		func(This, a2, a3, a4);
+		fixAnimation = false;
+	}
+	static inline REL::Relocation<decltype(thunk)> func;
+};
+
+bool reticleFix = false;
+
+struct DrawWorld_Forward
+{
+	static void thunk(void* a1)
+	{
+		auto upscaling = Upscaling::GetSingleton();
+		upscaling->inGame = true;
+
+		func(a1);
+
+		if (!reticleFix)
+			upscaling->CopyBuffersToSharedResources();
+
+		reticleFix = false;
+	}
+	static inline REL::Relocation<decltype(thunk)> func;
+};
+
+struct DrawWorld_Reticle
+{
+	static void thunk(void* a1)
+	{
+		auto upscaling = Upscaling::GetSingleton();
+		upscaling->PreAlpha();
+		func(a1);
+		reticleFix = true;
+		upscaling->PostAlpha();
+	}
+	static inline REL::Relocation<decltype(thunk)> func;
+};
+
+void Upscaling::InstallHooks()
+{
+#if defined(FALLOUT_POST_NG)
+	stl::detour_thunk<WindowSizeChanged>(REL::ID(2276824));
+	stl::detour_thunk<SetUseDynamicResolutionViewportAsDefaultViewport>(REL::ID(2277194));
+	stl::detour_thunk<BSGeometry_UpdateWorldData>(REL::ID(2270409));
+	stl::write_thunk_call<PlayerCharacter_UpdateScenegraphNG>(REL::ID(2233006).address() + 0x286);
+	stl::detour_thunk<TESObjectREFR_SetSequencePosition>(REL::ID(2200766));
+	stl::detour_thunk<DrawWorld_Forward>(REL::ID(2318315));
+	stl::write_thunk_call<DrawWorld_Reticle>(REL::ID(2318315).address() + 0x53D);
+#else
+	// Fix game initialising twice
+	stl::detour_thunk<WindowSizeChanged>(REL::ID(212827));
+
+	// Watch frame presentation
+	stl::detour_thunk<SetUseDynamicResolutionViewportAsDefaultViewport>(REL::ID(676851));
+
+	// Fix broken motion vectors from bad geometry updates
+	stl::detour_thunk<BSGeometry_UpdateWorldData>(REL::ID(551661));
+	stl::write_thunk_call<PlayerCharacter_UpdateScenegraph>(REL::ID(978934).address() + 0x2ED);
+	stl::detour_thunk<TESObjectREFR_SetSequencePosition>(REL::ID(854236));
+
+	// Fix reticles on motion vectors
+	stl::detour_thunk<DrawWorld_Forward>(REL::ID(656535));
+	stl::write_thunk_call<DrawWorld_Reticle>(REL::ID(338205).address() + 0x253);
+#endif
+
+	logger::info("[Upscaling] Installed hooks");
 }
