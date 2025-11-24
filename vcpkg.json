@@ -13,11 +13,6 @@
       "name": "spdlog",
       "features": [ "wchar" ]
     },
-    "xbyak",
-    "directxtk",
-    "directxtex",
-    "directx-headers",
-    "magic-enum",
-    "simpleini"
+    "xbyak"
   ]
 }

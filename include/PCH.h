@@ -20,25 +20,11 @@ using namespace std::literals;
 
 #include "detours/detours.h"
 
-#include "SimpleMath.h"
-
-using float2 = DirectX::SimpleMath::Vector2;
-using float3 = DirectX::SimpleMath::Vector3;
-using float4 = DirectX::SimpleMath::Vector4;
-using float4x4 = DirectX::SimpleMath::Matrix;
-using uint = uint32_t;
-
-#include <directx/d3dx12.h>
-
-#include <magic_enum/magic_enum.hpp>
-
 #ifdef NDEBUG
 #	include <spdlog/sinks/basic_file_sink.h>
 #else
 #	include <spdlog/sinks/msvc_sink.h>
 #endif
-
-
 
 #define DLLEXPORT __declspec(dllexport)
 
@@ -93,36 +79,6 @@ namespace stl
 	void detour_vfunc(void* target)
 	{
 		*(uintptr_t*)&T::func = Detours::X64::DetourClassVTable(*(uintptr_t*)target, &T::thunk, idx);
-	}
-}
-
-
-namespace DX
-{
-	// Helper class for COM exceptions
-	class com_exception : public std::exception
-	{
-	public:
-		explicit com_exception(HRESULT hr) noexcept :
-			result(hr) {}
-
-		const char* what() const override
-		{
-			static char s_str[64] = {};
-			sprintf_s(s_str, "Failure with HRESULT of %08X", static_cast<unsigned int>(result));
-			return s_str;
-		}
-
-	private:
-		HRESULT result;
-	};
-
-	// Helper utility converts D3D API failures into exceptions.
-	inline void ThrowIfFailed(HRESULT hr)
-	{
-		if (FAILED(hr)) {
-			throw com_exception(hr);
-		}
 	}
 }
 

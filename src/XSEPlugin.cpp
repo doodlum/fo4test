@@ -1,6 +1,4 @@
-
-#include "DX11Hooks.h"
-#include "Upscaling.h"
+#include "MotionVectorFixes.h"
 
 void InitializeLog()
 {
@@ -55,17 +53,6 @@ extern "C" DLLEXPORT bool F4SEAPI F4SEPlugin_Query(const F4SE::QueryInterface*, 
 }
 #endif
 
-void MessageHandler(F4SE::MessagingInterface::Message* message)
-{
-	switch (message->type) {
-	case F4SE::MessagingInterface::kPostPostLoad:
-		{
-			Upscaling::GetSingleton()->PostPostLoad();
-			break;
-		}
-	}
-}
-
 extern "C" DLLEXPORT bool F4SEAPI F4SEPlugin_Load(const F4SE::LoadInterface* a_f4se)
 {
 	F4SE::Init(a_f4se);
@@ -80,13 +67,7 @@ extern "C" DLLEXPORT bool F4SEAPI F4SEPlugin_Load(const F4SE::LoadInterface* a_f
 
 	InitializeLog();
 
-	DX11Hooks::Install();
-	Upscaling::InstallHooks();
-
-	Upscaling::GetSingleton()->LoadSettings();
-
-	auto messaging = F4SE::GetMessagingInterface();
-	messaging->RegisterListener(MessageHandler);
+	MotionVectorFixes::InstallHooks();
 
 	return true;
 }
