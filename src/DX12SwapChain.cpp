@@ -140,14 +140,7 @@ HRESULT DX12SwapChain::Present(UINT SyncInterval, UINT Flags)
 	}
 
 	auto upscaling = Upscaling::GetSingleton();
-
-	bool inMenuMode = false;
-
-	if (auto main = RE::Main::GetSingleton()) {
-		inMenuMode = main->inMenuMode;
-	}
-
-	bool useFrameGenerationThisFrame = upscaling->settings.frameGenerationMode && upscaling->inGame && !inMenuMode;
+	bool useFrameGenerationThisFrame = upscaling->settings.frameGenerationMode && upscaling->inGame;
 
 	FidelityFX::GetSingleton()->Present(useFrameGenerationThisFrame);
 
@@ -171,13 +164,13 @@ HRESULT DX12SwapChain::Present(UINT SyncInterval, UINT Flags)
 	// Update the frame index
 	frameIndex = swapChain->GetCurrentBackBufferIndex();
 
+	// Fix game running too fast
+	if (!upscaling->highFPSPhysicsFixLoaded && upscaling->inGame)
+		upscaling->GameFrameLimiter();
+
 	// If VSync is disabled, use frame limiter to prevent tearing and optimize pacing
 	if (SyncInterval == 0)
 		upscaling->FrameLimiter(useFrameGenerationThisFrame);
-
-	// Fix game running too fast
-	if (!upscaling->highFPSPhysicsFixLoaded && !inMenuMode)
-		upscaling->GameFrameLimiter();
 
 	upscaling->inGame = false;
 
