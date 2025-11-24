@@ -165,7 +165,7 @@ HRESULT DX12SwapChain::Present(UINT SyncInterval, UINT Flags)
 	frameIndex = swapChain->GetCurrentBackBufferIndex();
 
 	// Fix game running too fast
-	if (!upscaling->highFPSPhysicsFixLoaded && upscaling->inGame)
+	if (!upscaling->highFPSPhysicsFixLoaded)
 		upscaling->GameFrameLimiter();
 
 	// If VSync is disabled, use frame limiter to prevent tearing and optimize pacing
