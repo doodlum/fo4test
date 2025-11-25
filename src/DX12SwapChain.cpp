@@ -164,6 +164,9 @@ HRESULT DX12SwapChain::Present(UINT SyncInterval, UINT Flags)
 	// Update the frame index
 	frameIndex = swapChain->GetCurrentBackBufferIndex();
 
+	// Clear resources
+	upscaling->Reset();
+
 	// Fix game running too fast
 	if (!upscaling->highFPSPhysicsFixLoaded)
 		upscaling->GameFrameLimiter();
@@ -171,9 +174,6 @@ HRESULT DX12SwapChain::Present(UINT SyncInterval, UINT Flags)
 	// If VSync is disabled, use frame limiter to prevent tearing and optimize pacing
 	if (SyncInterval == 0)
 		upscaling->FrameLimiter(upscaling->settings.frameGenerationMode);
-
-	// Clear resources
-	upscaling->Reset();
 
 	return S_OK;
 }

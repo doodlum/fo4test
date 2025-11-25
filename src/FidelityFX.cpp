@@ -17,16 +17,16 @@ void FidelityFX::LoadFFX()
 
 void FidelityFX::SetupFrameGeneration()
 {
-	auto swapChain = DX12SwapChain::GetSingleton();
+	auto dx12SwapChain = DX12SwapChain::GetSingleton();
 
 	ffx::CreateContextDescFrameGeneration createFg{};
-	createFg.displaySize = { swapChain->swapChainDesc.Width, swapChain->swapChainDesc.Height };
+	createFg.displaySize = { dx12SwapChain->swapChainDesc.Width, dx12SwapChain->swapChainDesc.Height };
 	createFg.maxRenderSize = createFg.displaySize;
 	createFg.flags = FFX_FRAMEGENERATION_ENABLE_ASYNC_WORKLOAD_SUPPORT;
-	createFg.backBufferFormat = ffxApiGetSurfaceFormatDX12(swapChain->swapChainDesc.Format);
+	createFg.backBufferFormat = ffxApiGetSurfaceFormatDX12(dx12SwapChain->swapChainDesc.Format);
 
 	ffx::CreateBackendDX12Desc createBackend{};
-	createBackend.device = swapChain->d3d12Device.get();
+	createBackend.device = dx12SwapChain->d3d12Device.get();
 
 	if (ffx::CreateContext(frameGenContext, nullptr, createFg, createBackend) != ffx::ReturnCode::Ok) {
 		logger::critical("[FidelityFX] Failed to create frame generation context!");
