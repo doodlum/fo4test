@@ -1,68 +1,5 @@
 #include "MotionVectorFixes.h"
 
-#include <d3d11.h>
-
-enum class RenderTarget
-{
-	kFrameBuffer = 0,
-
-	kRefractionNormal = 1,
-	
-	kMainPreAlpha = 2,
-	kMain = 3,
-	kMainTemp = 4,
-
-	kSSRRaw = 7,
-	kSSRBlurred = 8,
-	kSSRBlurredExtra = 9,
-
-	kMainVerticalBlur = 14,
-	kMainHorizontalBlur = 15,
-
-	kSSRDirection = 10,
-	kSSRMask = 11,
-
-	kUI = 17,
-	kUITemp = 18,
-
-	kGbufferNormal = 20,
-	kGbufferNormalSwap = 21,
-	kGbufferAlbedo = 22,
-	kGbufferEmissive = 23,
-	kGbufferMaterial = 24, //  Glossiness, Specular, Backlighting, SSS
-
-	kSSAO = 28,
-
-	kTAAAccumulation = 26,
-	kTAAAccumulationSwap = 27,
-
-	kMotionVectors = 29,
-
-	kUIDownscaled = 36,
-	kUIDownscaledComposite = 37,
-
-	kMainDepthMips = 39,
-
-	kUnkMask = 57,
-
-	kSSAOTemp = 48,
-	kSSAOTemp2 = 49,
-	kSSAOTemp3 = 50,
-
-	kDiffuseBuffer = 58,
-	kSpecularBuffer = 59,
-
-	kDownscaledHDR = 64,
-	kDownscaledHDRLuminance2 = 65,
-	kDownscaledHDRLuminance3 = 66,
-	kDownscaledHDRLuminance4 = 67,
-	kDownscaledHDRLuminance5Adaptation = 68,
-	kDownscaledHDRLuminance6AdaptationSwap = 69,
-	kDownscaledHDRLuminance6 = 70,
-
-	kCount = 101
-};
-
 thread_local bool fixWeaponModel = false;
 thread_local bool fixAnimation = false;
 
@@ -118,22 +55,19 @@ struct TESObjectREFR_SetSequencePosition
 	static inline REL::Relocation<decltype(thunk)> func;
 };
 
-struct DrawWorld_DeferredPrePass
+struct BSLightingShaderProperty_GetRenderPasses
 {
-	static void thunk(void* This)
+	static RE::BSShaderProperty::RenderPassArray* thunk(
+		RE::BSLightingShaderProperty* This,
+		RE::NiAVObject* a2,
+		int a3,
+		RE::ShadowSceneNode** a4)
 	{
-		func(This);
-
-		if (auto main = RE::Main::GetSingleton()){
-			if (main->inMenuMode) {
-				auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
-				auto context = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
-
-				auto& motionVector = rendererData->renderTargets[(uint32_t)RenderTarget::kMotionVectors];
-				FLOAT clearColor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
-				context->ClearRenderTargetView(reinterpret_cast<ID3D11RenderTargetView*>(motionVector.rtView), clearColor);
-			}
-		}
+		thread_local static auto main = RE::Main::GetSingleton();
+		if (main->gameActive && (main->inMenuMode || main->freezeTime))
+			a2->previousWorld = a2->world;
+		
+		return func(This, a2, a3, a4);
 	}
 	static inline REL::Relocation<decltype(thunk)> func;
 };
@@ -146,8 +80,6 @@ void MotionVectorFixes::InstallHooks()
 	stl::write_thunk_call<PlayerCharacter_UpdateScenegraphNG>(REL::ID(2233006).address() + 0x286);
 
 	stl::detour_thunk<TESObjectREFR_SetSequencePosition>(REL::ID(2200766));
-
-	stl::detour_thunk<DrawWorld_DeferredPrePass>(REL::ID(2318301));
 #else
 	// Fix broken motion vectors from bad geometry updates
 	stl::detour_thunk<BSGeometry_UpdateWorldData>(REL::ID(551661));
@@ -157,10 +89,10 @@ void MotionVectorFixes::InstallHooks()
 
 	// Fix incorrect previous world transform on some animated objects, e.g. doors
 	stl::detour_thunk<TESObjectREFR_SetSequencePosition>(REL::ID(854236));
+#endif
 
 	// Fix vanilla motion vectors not updating in menus
-	stl::detour_thunk<DrawWorld_DeferredPrePass>(REL::ID(56596));
-#endif
+	stl::write_vfunc<43, BSLightingShaderProperty_GetRenderPasses>(RE::VTABLE::BSLightingShaderProperty[0]);
 
 	logger::info("[MotionVectorFixes] Installed hooks");
 }
