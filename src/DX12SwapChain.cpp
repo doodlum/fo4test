@@ -83,7 +83,10 @@ void DX12SwapChain::CreateInterop()
 	texDesc11.CPUAccessFlags = 0;
 	texDesc11.MiscFlags = 0;
 
-	swapChainBufferWrapped = new WrappedResource(texDesc11, d3d11Device.get(), d3d12Device.get());
+	swapChainBufferProxy = new Texture2D(texDesc11);
+
+	swapChainBufferWrapped[0] = new WrappedResource(texDesc11, d3d11Device.get(), d3d12Device.get());
+	swapChainBufferWrapped[1] = new WrappedResource(texDesc11, d3d11Device.get(), d3d12Device.get());
 }
 
 DXGISwapChainProxy* DX12SwapChain::GetSwapChainProxy()
@@ -103,12 +106,15 @@ void DX12SwapChain::SetD3D11DeviceContext(ID3D11DeviceContext* a_d3d11Context)
 
 HRESULT DX12SwapChain::GetBuffer(void** ppSurface)
 {
-	*ppSurface = swapChainBufferWrapped->resource11;
+	*ppSurface = swapChainBufferProxy->resource.get();
 	return S_OK;
 }
 
 HRESULT DX12SwapChain::Present(UINT SyncInterval, UINT Flags)
 {
+	// Copy proxy to wrapped resource
+	d3d11Context->CopyResource(swapChainBufferWrapped[frameIndex]->resource11, swapChainBufferProxy->resource.get());
+
 	// Wait for D3D11 to finish
 	DX::ThrowIfFailed(d3d11Context->Signal(d3d11Fence.get(), fenceValue));
 	DX::ThrowIfFailed(commandQueue->Wait(d3d12Fence.get(), fenceValue));
@@ -120,7 +126,7 @@ HRESULT DX12SwapChain::Present(UINT SyncInterval, UINT Flags)
 
 	// Copy shared texture to swap chain buffer
 	{
-		auto fakeSwapChain = swapChainBufferWrapped->resource.get();
+		auto fakeSwapChain = swapChainBufferWrapped[frameIndex]->resource.get();
 		auto realSwapChain = swapChainBuffers[frameIndex].get();
 		{
 			std::vector<D3D12_RESOURCE_BARRIER> barriers;
@@ -140,9 +146,8 @@ HRESULT DX12SwapChain::Present(UINT SyncInterval, UINT Flags)
 	}
 
 	auto upscaling = Upscaling::GetSingleton();
-	bool useFrameGenerationThisFrame = upscaling->settings.frameGenerationMode && upscaling->inGame;
 
-	FidelityFX::GetSingleton()->Present(useFrameGenerationThisFrame);
+	FidelityFX::GetSingleton()->Present(upscaling->settings.frameGenerationMode);
 
 	DX::ThrowIfFailed(commandLists[frameIndex]->Close());
 
@@ -156,11 +161,6 @@ HRESULT DX12SwapChain::Present(UINT SyncInterval, UINT Flags)
 	// Present the frame
 	DX::ThrowIfFailed(swapChain->Present(SyncInterval, Flags));
 
-	// Wait for D3D12 to finish
-	DX::ThrowIfFailed(commandQueue->Signal(d3d12Fence.get(), fenceValue));
-	DX::ThrowIfFailed(d3d11Context->Wait(d3d11Fence.get(), fenceValue));
-	fenceValue++;
-
 	// Update the frame index
 	frameIndex = swapChain->GetCurrentBackBufferIndex();
 
@@ -170,9 +170,10 @@ HRESULT DX12SwapChain::Present(UINT SyncInterval, UINT Flags)
 
 	// If VSync is disabled, use frame limiter to prevent tearing and optimize pacing
 	if (SyncInterval == 0)
-		upscaling->FrameLimiter(useFrameGenerationThisFrame);
+		upscaling->FrameLimiter(upscaling->settings.frameGenerationMode);
 
-	upscaling->inGame = false;
+	// Clear resources
+	upscaling->Reset();
 
 	return S_OK;
 }

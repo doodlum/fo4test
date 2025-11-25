@@ -22,7 +22,7 @@ void FidelityFX::SetupFrameGeneration()
 	ffx::CreateContextDescFrameGeneration createFg{};
 	createFg.displaySize = { swapChain->swapChainDesc.Width, swapChain->swapChainDesc.Height };
 	createFg.maxRenderSize = createFg.displaySize;
-	createFg.flags = 0;
+	createFg.flags = FFX_FRAMEGENERATION_ENABLE_ASYNC_WORKLOAD_SUPPORT;
 	createFg.backBufferFormat = ffxApiGetSurfaceFormatDX12(swapChain->swapChainDesc.Format);
 
 	ffx::CreateBackendDX12Desc createBackend{};
@@ -36,12 +36,12 @@ void FidelityFX::SetupFrameGeneration()
 void FidelityFX::Present(bool a_useFrameGeneration)
 {
 	auto upscaling = Upscaling::GetSingleton();
-	auto swapChain = DX12SwapChain::GetSingleton();
-	auto commandList = swapChain->commandLists[swapChain->frameIndex].get();
+	auto dx12SwapChain = DX12SwapChain::GetSingleton();
+	auto commandList = dx12SwapChain->commandLists[dx12SwapChain->frameIndex].get();
 	
-	auto HUDLessColor = upscaling->HUDLessBufferShared12.get();
-	auto depth = upscaling->depthBufferShared12.get();
-	auto motionVectors = upscaling->motionVectorBufferShared12.get();
+	auto HUDLessColor = upscaling->HUDLessBufferShared12[dx12SwapChain->frameIndex].get();
+	auto depth = upscaling->depthBufferShared12[dx12SwapChain->frameIndex].get();
+	auto motionVectors = upscaling->motionVectorBufferShared12[dx12SwapChain->frameIndex].get();
 
 	ffx::ConfigureDescFrameGeneration configParameters{};
 
@@ -70,15 +70,15 @@ void FidelityFX::Present(bool a_useFrameGeneration)
 
 	static uint64_t frameID = 0;
 	configParameters.frameID = frameID;
-	configParameters.swapChain = swapChain->swapChain;
+	configParameters.swapChain = dx12SwapChain->swapChain;
 	configParameters.onlyPresentGenerated = false;
-	configParameters.allowAsyncWorkloads = false;
+	configParameters.allowAsyncWorkloads = true;
 	configParameters.flags = 0;
 
-	configParameters.generationRect.left = (swapChain->swapChainDesc.Width - swapChain->swapChainDesc.Width) / 2;
-	configParameters.generationRect.top = (swapChain->swapChainDesc.Height - swapChain->swapChainDesc.Height) / 2;
-	configParameters.generationRect.width = swapChain->swapChainDesc.Width;
-	configParameters.generationRect.height = swapChain->swapChainDesc.Height;
+	configParameters.generationRect.left = (dx12SwapChain->swapChainDesc.Width - dx12SwapChain->swapChainDesc.Width) / 2;
+	configParameters.generationRect.top = (dx12SwapChain->swapChainDesc.Height - dx12SwapChain->swapChainDesc.Height) / 2;
+	configParameters.generationRect.width = dx12SwapChain->swapChainDesc.Width;
+	configParameters.generationRect.height = dx12SwapChain->swapChainDesc.Height;
 
 	if (ffx::Configure(frameGenContext, configParameters) != ffx::ReturnCode::Ok) {
 		logger::critical("[FidelityFX] Failed to configure frame generation!");
@@ -108,10 +108,10 @@ void FidelityFX::Present(bool a_useFrameGeneration)
 
 		dispatchParameters.commandList = commandList;
 
-		dispatchParameters.motionVectorScale.x = (float)swapChain->swapChainDesc.Width;
-		dispatchParameters.motionVectorScale.y = (float)swapChain->swapChainDesc.Height;
-		dispatchParameters.renderSize.width = swapChain->swapChainDesc.Width;
-		dispatchParameters.renderSize.height = swapChain->swapChainDesc.Height;
+		dispatchParameters.motionVectorScale.x = (float)dx12SwapChain->swapChainDesc.Width;
+		dispatchParameters.motionVectorScale.y = (float)dx12SwapChain->swapChainDesc.Height;
+		dispatchParameters.renderSize.width = dx12SwapChain->swapChainDesc.Width;
+		dispatchParameters.renderSize.height = dx12SwapChain->swapChainDesc.Height;
 		
 		dispatchParameters.jitterOffset.x = 0;
 		dispatchParameters.jitterOffset.y = 0;

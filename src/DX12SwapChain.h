@@ -9,6 +9,8 @@
 #include <d3d11_4.h>
 #include <d3d12.h>
 
+#include "Buffer.h"
+
 class WrappedResource
 {
 public:
@@ -73,7 +75,8 @@ public:
 
 	DXGI_SWAP_CHAIN_DESC1 swapChainDesc;
 
-	WrappedResource* swapChainBufferWrapped;
+	Texture2D* swapChainBufferProxy;
+	WrappedResource* swapChainBufferWrapped[2];
 
 	winrt::com_ptr<ID3D11Device5> d3d11Device;
 	winrt::com_ptr<ID3D11DeviceContext4> d3d11Context;

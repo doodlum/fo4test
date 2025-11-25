@@ -55,27 +55,7 @@ HRESULT WINAPI hk_D3D11CreateDeviceAndSwapChain(
 {
 	auto upscaling = Upscaling::GetSingleton();
 
-	auto refreshRate = Upscaling::GetRefreshRate(pSwapChainDesc->OutputWindow);
-	upscaling->refreshRate = refreshRate;
-
-	bool shouldProxy = pSwapChainDesc->Windowed;
-
-	if (shouldProxy) {
-		if (upscaling->settings.frameGenerationMode)
-			if (refreshRate >= 119)
-				shouldProxy = true;
-			else if (upscaling->settings.frameGenerationForceEnable)
-				shouldProxy = true;
-			else
-				shouldProxy = false;
-		else
-			shouldProxy = false;
-	}
-
-	upscaling->lowRefreshRate = refreshRate < 119;
-	upscaling->isWindowed = pSwapChainDesc->Windowed;
-
-	if (shouldProxy) {
+	if (pSwapChainDesc->Windowed) {
 		logger::info("[Frame Generation] Frame Generation enabled, using D3D12 proxy");
 		
 		auto fidelityFX = FidelityFX::GetSingleton();
@@ -101,8 +81,8 @@ HRESULT WINAPI hk_D3D11CreateDeviceAndSwapChain(
 					DriverType,
 					Software,
 					Flags,
-					&featureLevel,
-					1,
+					pFeatureLevels,
+					FeatureLevels,
 					SDKVersion,
 					ppDevice,
 					pFeatureLevel,
@@ -133,7 +113,6 @@ HRESULT WINAPI hk_D3D11CreateDeviceAndSwapChain(
 
 		} else {
 			logger::warn("[Frame Generation] amd_fidelityfx_dx12.dll is not loaded, skipping proxy");
-			upscaling->fidelityFXMissing = true;
 		}
 	}
 

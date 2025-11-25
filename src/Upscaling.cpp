@@ -147,116 +147,118 @@ void Upscaling::CreateFrameGenerationResources()
 	auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
 	auto& main = rendererData->renderTargets[(uint)RenderTarget::kMain];
 
-	D3D11_TEXTURE2D_DESC texDesc{};
-	D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-	D3D11_RENDER_TARGET_VIEW_DESC rtvDesc = {};
-	D3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+	for (int index = 0; index < 2; index++) {
+		D3D11_TEXTURE2D_DESC texDesc{};
+		D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+		D3D11_RENDER_TARGET_VIEW_DESC rtvDesc = {};
+		D3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
 
-	reinterpret_cast<ID3D11Texture2D*>(main.texture)->GetDesc(&texDesc);
-	reinterpret_cast<ID3D11ShaderResourceView*>(main.srView)->GetDesc(&srvDesc);
-	reinterpret_cast<ID3D11RenderTargetView*>(main.rtView)->GetDesc(&rtvDesc);
+		reinterpret_cast<ID3D11Texture2D*>(main.texture)->GetDesc(&texDesc);
+		reinterpret_cast<ID3D11ShaderResourceView*>(main.srView)->GetDesc(&srvDesc);
+		reinterpret_cast<ID3D11RenderTargetView*>(main.rtView)->GetDesc(&rtvDesc);
 
-	texDesc.BindFlags |= D3D11_BIND_UNORDERED_ACCESS;
+		texDesc.BindFlags |= D3D11_BIND_UNORDERED_ACCESS;
 
-	uavDesc.Format = texDesc.Format;
-	uavDesc.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D;
-	uavDesc.Texture2D.MipSlice = 0;
+		uavDesc.Format = texDesc.Format;
+		uavDesc.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D;
+		uavDesc.Texture2D.MipSlice = 0;
 
-	texDesc.MiscFlags = D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_NTHANDLE;
+		texDesc.MiscFlags = D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_NTHANDLE;
 
-	texDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-	srvDesc.Format = texDesc.Format;
-	rtvDesc.Format = texDesc.Format;
-	uavDesc.Format = texDesc.Format;
+		texDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+		srvDesc.Format = texDesc.Format;
+		rtvDesc.Format = texDesc.Format;
+		uavDesc.Format = texDesc.Format;
 
-	HUDLessBufferShared = new Texture2D(texDesc);
-	HUDLessBufferShared->CreateSRV(srvDesc);
-	HUDLessBufferShared->CreateRTV(rtvDesc);
-	HUDLessBufferShared->CreateUAV(uavDesc);
+		HUDLessBufferShared[index] = new Texture2D(texDesc);
+		HUDLessBufferShared[index]->CreateSRV(srvDesc);
+		HUDLessBufferShared[index]->CreateRTV(rtvDesc);
+		HUDLessBufferShared[index]->CreateUAV(uavDesc);
 
-	texDesc.Format = DXGI_FORMAT_R32_FLOAT;
-	srvDesc.Format = texDesc.Format;
-	rtvDesc.Format = texDesc.Format;
-	uavDesc.Format = texDesc.Format;
+		texDesc.Format = DXGI_FORMAT_R32_FLOAT;
+		srvDesc.Format = texDesc.Format;
+		rtvDesc.Format = texDesc.Format;
+		uavDesc.Format = texDesc.Format;
 
-	depthBufferShared = new Texture2D(texDesc);
-	depthBufferShared->CreateSRV(srvDesc);
-	depthBufferShared->CreateRTV(rtvDesc);
-	depthBufferShared->CreateUAV(uavDesc);
+		depthBufferShared[index] = new Texture2D(texDesc);
+		depthBufferShared[index]->CreateSRV(srvDesc);
+		depthBufferShared[index]->CreateRTV(rtvDesc);
+		depthBufferShared[index]->CreateUAV(uavDesc);
 
-	auto& motionVector = rendererData->renderTargets[(uint)RenderTarget::kMotionVectors];
-	D3D11_TEXTURE2D_DESC texDescMotionVector{};
-	reinterpret_cast<ID3D11Texture2D*>(motionVector.texture)->GetDesc(&texDescMotionVector);
+		auto& motionVector = rendererData->renderTargets[(uint)RenderTarget::kMotionVectors];
+		D3D11_TEXTURE2D_DESC texDescMotionVector{};
+		reinterpret_cast<ID3D11Texture2D*>(motionVector.texture)->GetDesc(&texDescMotionVector);
 
-	texDesc.Format = texDescMotionVector.Format;
-	srvDesc.Format = texDesc.Format;
-	rtvDesc.Format = texDesc.Format;
-	uavDesc.Format = texDesc.Format;
+		texDesc.Format = texDescMotionVector.Format;
+		srvDesc.Format = texDesc.Format;
+		rtvDesc.Format = texDesc.Format;
+		uavDesc.Format = texDesc.Format;
 
-	motionVectorBufferShared = new Texture2D(texDesc);
-	motionVectorBufferShared->CreateSRV(srvDesc);
-	motionVectorBufferShared->CreateRTV(rtvDesc);
-	motionVectorBufferShared->CreateUAV(uavDesc);
+		motionVectorBufferShared[index] = new Texture2D(texDesc);
+		motionVectorBufferShared[index]->CreateSRV(srvDesc);
+		motionVectorBufferShared[index]->CreateRTV(rtvDesc);
+		motionVectorBufferShared[index]->CreateUAV(uavDesc);
 
-	auto dx12SwapChain = DX12SwapChain::GetSingleton();
+		auto dx12SwapChain = DX12SwapChain::GetSingleton();
 
-	{
-		IDXGIResource1* dxgiResource = nullptr;
-		DX::ThrowIfFailed(HUDLessBufferShared->resource->QueryInterface(IID_PPV_ARGS(&dxgiResource)));
+		{
+			IDXGIResource1* dxgiResource = nullptr;
+			DX::ThrowIfFailed(HUDLessBufferShared[index]->resource->QueryInterface(IID_PPV_ARGS(&dxgiResource)));
 
-		if (dx12SwapChain->swapChain) {
-			HANDLE sharedHandle = nullptr;
-			DX::ThrowIfFailed(dxgiResource->CreateSharedHandle(
-				nullptr,
-				DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE,
-				nullptr,
-				&sharedHandle));
+			if (dx12SwapChain->swapChain) {
+				HANDLE sharedHandle = nullptr;
+				DX::ThrowIfFailed(dxgiResource->CreateSharedHandle(
+					nullptr,
+					DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE,
+					nullptr,
+					&sharedHandle));
 
-			DX::ThrowIfFailed(dx12SwapChain->d3d12Device->OpenSharedHandle(
-				sharedHandle,
-				IID_PPV_ARGS(&HUDLessBufferShared12)));
+				DX::ThrowIfFailed(dx12SwapChain->d3d12Device->OpenSharedHandle(
+					sharedHandle,
+					IID_PPV_ARGS(&HUDLessBufferShared12[index])));
 
-			CloseHandle(sharedHandle);
+				CloseHandle(sharedHandle);
+			}
 		}
-	}
 
-	{
-		IDXGIResource1* dxgiResource = nullptr;
-		DX::ThrowIfFailed(depthBufferShared->resource->QueryInterface(IID_PPV_ARGS(&dxgiResource)));
+		{
+			IDXGIResource1* dxgiResource = nullptr;
+			DX::ThrowIfFailed(depthBufferShared[index]->resource->QueryInterface(IID_PPV_ARGS(&dxgiResource)));
 
-		if (dx12SwapChain->swapChain) {
-			HANDLE sharedHandle = nullptr;
-			DX::ThrowIfFailed(dxgiResource->CreateSharedHandle(
-				nullptr,
-				DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE,
-				nullptr,
-				&sharedHandle));
+			if (dx12SwapChain->swapChain) {
+				HANDLE sharedHandle = nullptr;
+				DX::ThrowIfFailed(dxgiResource->CreateSharedHandle(
+					nullptr,
+					DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE,
+					nullptr,
+					&sharedHandle));
 
-			DX::ThrowIfFailed(dx12SwapChain->d3d12Device->OpenSharedHandle(
-				sharedHandle,
-				IID_PPV_ARGS(&depthBufferShared12)));
+				DX::ThrowIfFailed(dx12SwapChain->d3d12Device->OpenSharedHandle(
+					sharedHandle,
+					IID_PPV_ARGS(&depthBufferShared12[index])));
 
-			CloseHandle(sharedHandle);
+				CloseHandle(sharedHandle);
+			}
 		}
-	}
 
-	{
-		IDXGIResource1* dxgiResource = nullptr;
-		DX::ThrowIfFailed(motionVectorBufferShared->resource->QueryInterface(IID_PPV_ARGS(&dxgiResource)));
+		{
+			IDXGIResource1* dxgiResource = nullptr;
+			DX::ThrowIfFailed(motionVectorBufferShared[index]->resource->QueryInterface(IID_PPV_ARGS(&dxgiResource)));
 
-		if (dx12SwapChain->swapChain) {
-			HANDLE sharedHandle = nullptr;
-			DX::ThrowIfFailed(dxgiResource->CreateSharedHandle(
-				nullptr,
-				DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE,
-				nullptr,
-				&sharedHandle));
+			if (dx12SwapChain->swapChain) {
+				HANDLE sharedHandle = nullptr;
+				DX::ThrowIfFailed(dxgiResource->CreateSharedHandle(
+					nullptr,
+					DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE,
+					nullptr,
+					&sharedHandle));
 
-			DX::ThrowIfFailed(dx12SwapChain->d3d12Device->OpenSharedHandle(
-				sharedHandle,
-				IID_PPV_ARGS(&motionVectorBufferShared12)));
+				DX::ThrowIfFailed(dx12SwapChain->d3d12Device->OpenSharedHandle(
+					sharedHandle,
+					IID_PPV_ARGS(&motionVectorBufferShared12[index])));
 
-			CloseHandle(sharedHandle);
+				CloseHandle(sharedHandle);
+			}
 		}
 	}
 
@@ -310,7 +312,7 @@ void Upscaling::PostAlpha()
 
 			context->CSSetShaderResources(0, ARRAYSIZE(views), views);
 
-			ID3D11UnorderedAccessView* uavs[2] = { motionVectorBufferShared->uav.get(), depthBufferShared->uav.get()};
+			ID3D11UnorderedAccessView* uavs[2] = { motionVectorBufferShared[dx12SwapChain->frameIndex]->uav.get(), depthBufferShared[dx12SwapChain->frameIndex]->uav.get()};
 			context->CSSetUnorderedAccessViews(0, ARRAYSIZE(uavs), uavs, nullptr);
 
 			context->CSSetShader(generateSharedBuffersCS, nullptr, 0);
@@ -345,7 +347,7 @@ void Upscaling::CopyBuffersToSharedResources()
 	context->OMSetRenderTargets(0, nullptr, nullptr);
 
 	auto& motionVector = rendererData->renderTargets[(uint)RenderTarget::kMotionVectors];
-	context->CopyResource(motionVectorBufferShared->resource.get(), reinterpret_cast<ID3D11Texture2D*>(motionVector.texture));
+	context->CopyResource(motionVectorBufferShared[dx12SwapChain->frameIndex]->resource.get(), reinterpret_cast<ID3D11Texture2D*>(motionVector.texture));
 		
 	{
 		auto& depth = rendererData->depthStencilTargets[(uint)DepthStencilTarget::kMain];
@@ -358,7 +360,7 @@ void Upscaling::CopyBuffersToSharedResources()
 			ID3D11ShaderResourceView* views[1] = { reinterpret_cast<ID3D11ShaderResourceView*>(depth.srViewDepth) };
 			context->CSSetShaderResources(0, ARRAYSIZE(views), views);
 
-			ID3D11UnorderedAccessView* uavs[1] = { depthBufferShared->uav.get() };
+			ID3D11UnorderedAccessView* uavs[1] = { depthBufferShared[dx12SwapChain->frameIndex]->uav.get() };
 			context->CSSetUnorderedAccessViews(0, ARRAYSIZE(uavs), uavs, nullptr);
 
 			context->CSSetShader(copyDepthToSharedBufferCS, nullptr, 0);
@@ -501,8 +503,29 @@ void Upscaling::PostDisplay()
 	auto& swapChain = rendererData->renderTargets[(uint)RenderTarget::kFrameBuffer];
 	ID3D11Resource* swapChainResource;
 	reinterpret_cast<ID3D11RenderTargetView*>(swapChain.rtView)->GetResource(&swapChainResource);
+	
+	auto dx12SwapChain = DX12SwapChain::GetSingleton();
 
-	reinterpret_cast<ID3D11DeviceContext*>(rendererData->context)->CopyResource(HUDLessBufferShared->resource.get(), swapChainResource);
+	reinterpret_cast<ID3D11DeviceContext*>(rendererData->context)->CopyResource(HUDLessBufferShared[dx12SwapChain->frameIndex]->resource.get(), swapChainResource);
+}
+
+void Upscaling::Reset()
+{
+	if (!d3d12Interop)
+		return;
+
+	if (!setupBuffers)
+		CreateFrameGenerationResources();
+
+	auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
+	auto context = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
+
+	auto dx12SwapChain = DX12SwapChain::GetSingleton();
+
+	FLOAT clearColor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+	context->ClearRenderTargetView(HUDLessBufferShared[dx12SwapChain->frameIndex]->rtv.get(), clearColor);
+	context->ClearRenderTargetView(depthBufferShared[dx12SwapChain->frameIndex]->rtv.get(), clearColor);
+	context->ClearRenderTargetView(motionVectorBufferShared[dx12SwapChain->frameIndex]->rtv.get(), clearColor);
 }
 
 struct WindowSizeChanged
@@ -529,15 +552,11 @@ bool reticleFix = false;
 struct DrawWorld_Forward
 {
 	static void thunk(void* a1)
-	{
-		auto upscaling = Upscaling::GetSingleton();
-		
-		upscaling->inGame = true;
-
+	{		
 		func(a1);
 
 		if (!reticleFix)
-			upscaling->CopyBuffersToSharedResources();
+			Upscaling::GetSingleton()->CopyBuffersToSharedResources();
 
 		reticleFix = false;
 	}
@@ -557,6 +576,21 @@ struct DrawWorld_Reticle
 	static inline REL::Relocation<decltype(thunk)> func;
 };
 
+struct BSInputDeviceManager_PollInputDevices
+{
+	static void thunk(RE::BSInputDeviceManager* This, float a2)
+	{
+		auto dx12SwapChain = DX12SwapChain::GetSingleton();
+
+		if (auto swapChain = dx12SwapChain->swapChain)
+			if (auto waitableObject = swapChain->GetFrameLatencyWaitableObject())
+				WaitForSingleObjectEx(waitableObject, 0, TRUE);
+
+		func(This, a2);
+	}
+	static inline REL::Relocation<decltype(thunk)> func;
+};
+
 void Upscaling::InstallHooks()
 {
 #if defined(FALLOUT_POST_NG)
@@ -566,6 +600,9 @@ void Upscaling::InstallHooks()
 
 	stl::detour_thunk<DrawWorld_Forward>(REL::ID(2318315));
 	stl::write_thunk_call<DrawWorld_Reticle>(REL::ID(2318315).address() + 0x53D);
+
+	// Reduce input latency
+	stl::detour_thunk<BSInputDeviceManager_PollInputDevices>(REL::ID(2268382));
 #else
 	// Fix game initialising twice
 	stl::detour_thunk<WindowSizeChanged>(REL::ID(212827));
@@ -576,6 +613,9 @@ void Upscaling::InstallHooks()
 	// Fix reticles on motion vectors and depth
 	stl::detour_thunk<DrawWorld_Forward>(REL::ID(656535));
 	stl::write_thunk_call<DrawWorld_Reticle>(REL::ID(338205).address() + 0x253);
+	
+	// Reduce input latency
+	stl::detour_thunk<BSInputDeviceManager_PollInputDevices>(REL::ID(1328119));
 #endif
 
 	logger::info("[Upscaling] Installed hooks");
