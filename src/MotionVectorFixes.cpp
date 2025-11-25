@@ -91,7 +91,7 @@ void MotionVectorFixes::InstallHooks()
 	stl::detour_thunk<TESObjectREFR_SetSequencePosition>(REL::ID(854236));
 #endif
 
-	// Fix vanilla motion vectors not updating in menus
+	// Fix vanilla motion vectors not updating in menus or when time is frozen
 	stl::write_vfunc<43, BSLightingShaderProperty_GetRenderPasses>(RE::VTABLE::BSLightingShaderProperty[0]);
 
 	logger::info("[MotionVectorFixes] Installed hooks");
