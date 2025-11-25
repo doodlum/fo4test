@@ -22,28 +22,23 @@ public:
 
 	Settings settings;
 
-	bool isWindowed = false;
-	bool lowRefreshRate = false;
-
-	bool fidelityFXMissing = false;
 	bool highFPSPhysicsFixLoaded = false;
 
 	bool d3d12Interop = false;
 	double refreshRate = 0.0f;
 	
-	Texture2D* HUDLessBufferShared;
-	Texture2D* depthBufferShared;
-	Texture2D* motionVectorBufferShared;
+	Texture2D* HUDLessBufferShared[2];
+	Texture2D* depthBufferShared[2];
+	Texture2D* motionVectorBufferShared[2];
 	
-	winrt::com_ptr<ID3D12Resource> HUDLessBufferShared12;
-	winrt::com_ptr<ID3D12Resource> depthBufferShared12;
-	winrt::com_ptr<ID3D12Resource> motionVectorBufferShared12;
+	winrt::com_ptr<ID3D12Resource> HUDLessBufferShared12[2];
+	winrt::com_ptr<ID3D12Resource> depthBufferShared12[2];
+	winrt::com_ptr<ID3D12Resource> motionVectorBufferShared12[2];
 
 	ID3D11ComputeShader* copyDepthToSharedBufferCS;
 	ID3D11ComputeShader* generateSharedBuffersCS;
 
 	bool setupBuffers = false;
-	bool inGame = false;
 
 	void LoadSettings();
 
@@ -63,6 +58,8 @@ public:
 	static double GetRefreshRate(HWND a_window);
 
 	void PostDisplay();
+
+	void Reset();
 
 	static void InstallHooks();
 };
