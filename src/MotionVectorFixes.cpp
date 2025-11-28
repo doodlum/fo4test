@@ -1,56 +1,25 @@
 #include "MotionVectorFixes.h"
 
-thread_local bool fixWeaponModel = false;
-thread_local bool fixAnimation = false;
-
-struct BSGeometry_UpdateWorldData
+inline static void ResetPreviousWorldTransformDownwards(RE::NiAVObject* a_self)
 {
-	static void thunk(RE::NiAVObject* a_object, RE::NiUpdateData* a_updateData)
-	{
-		auto prevWorld = a_object->world;
+	if (a_self == nullptr)
+		return;
 
-		func(a_object, a_updateData);
+	if (RE::NiNode* node = fallout_cast<RE::NiNode*>(a_self))
+		for (auto& child : node->children)
+			ResetPreviousWorldTransformDownwards(child.get());
 
-		if (fixWeaponModel)
-			a_object->world = prevWorld;
-
-		if (fixAnimation)
-			a_object->previousWorld = a_object->world;
-	}
-	static inline REL::Relocation<decltype(thunk)> func;
-};
-
-struct PlayerCharacter_UpdateScenegraphNG
-{
-	static void thunk(float a1, void* a2, __int64 a3, unsigned __int8 a4)
-	{
-		fixWeaponModel = true;
-		func(a1, a2, a3, a4);
-		fixWeaponModel = false;
-	}
-	static inline REL::Relocation<decltype(thunk)> func;
-};
-
-struct PlayerCharacter_UpdateScenegraph
-{
-	static void thunk(RE::NiAVObject* NiAVObject, RE::NiUpdateData* NiUpdateData)
-	{
-		fixWeaponModel = true;
-		func(NiAVObject, NiUpdateData);
-		fixWeaponModel = false;
-	}
-	static inline REL::Relocation<decltype(thunk)> func;
-};
+	a_self->previousWorld = a_self->world;
+}
 
 struct TESObjectREFR_SetSequencePosition
 {
-	static void thunk(void* This, RE::NiControllerManager* a2,
+	static void thunk(RE::TESObjectREFR* This, RE::NiControllerManager* a2,
 		const char* a3,
 		float a4)
 	{
-		fixAnimation = true;
 		func(This, a2, a3, a4);
-		fixAnimation = false;
+		ResetPreviousWorldTransformDownwards(This->Get3D());
 	}
 	static inline REL::Relocation<decltype(thunk)> func;
 };
@@ -66,8 +35,52 @@ struct BSLightingShaderProperty_GetRenderPasses
 		thread_local static auto main = RE::Main::GetSingleton();
 		if (main->gameActive && (main->inMenuMode || main->freezeTime))
 			a2->previousWorld = a2->world;
-		
+
 		return func(This, a2, a3, a4);
+	}
+	static inline REL::Relocation<decltype(thunk)> func;
+};
+
+inline static void CachePreviousWorldTransformDownwards(RE::NiAVObject* a_self, std::unordered_map<RE::NiAVObject*, RE::NiTransform>& playerWorldCache)
+{
+	if (a_self == nullptr)
+		return;
+
+	if (RE::NiNode* node = fallout_cast<RE::NiNode*>(a_self))
+		for (auto& child : node->children)
+			CachePreviousWorldTransformDownwards(child.get(), playerWorldCache);
+
+	playerWorldCache.try_emplace(a_self, a_self->world);
+
+}
+
+inline static void SetPreviousWorldTransformDownwards(RE::NiAVObject* a_self, std::unordered_map<RE::NiAVObject*, RE::NiTransform>& playerWorldCache)
+{
+	if (a_self == nullptr)
+		return;
+
+	if (RE::NiNode* node = fallout_cast<RE::NiNode*>(a_self))
+		for (auto& child : node->children)
+			SetPreviousWorldTransformDownwards(child.get(), playerWorldCache);
+
+	if (auto it = playerWorldCache.find(a_self); it != playerWorldCache.end())
+		a_self->previousWorld = it->second;
+}
+
+struct OnIdle_UpdatePlayer
+{
+	static void thunk(RE::Main* This) {
+		std::unordered_map<RE::NiAVObject*, RE::NiTransform> playerWorldCache;
+
+		if (auto player = RE::PlayerCharacter::GetSingleton())
+			CachePreviousWorldTransformDownwards(player->Get3D(0), playerWorldCache);
+
+		func(This);
+
+		if (auto player = RE::PlayerCharacter::GetSingleton())
+			SetPreviousWorldTransformDownwards(player->Get3D(0), playerWorldCache);
+
+		playerWorldCache.clear();
 	}
 	static inline REL::Relocation<decltype(thunk)> func;
 };
@@ -75,17 +88,12 @@ struct BSLightingShaderProperty_GetRenderPasses
 void MotionVectorFixes::InstallHooks()
 {
 #if defined(FALLOUT_POST_NG)
-	stl::detour_thunk<BSGeometry_UpdateWorldData>(REL::ID(2270409));
-
-	stl::write_thunk_call<PlayerCharacter_UpdateScenegraphNG>(REL::ID(2233006).address() + 0x286);
+	stl::detour_thunk<OnIdle_UpdatePlayer>(REL::ID(2228929));
 
 	stl::detour_thunk<TESObjectREFR_SetSequencePosition>(REL::ID(2200766));
 #else
-	// Fix broken motion vectors from bad geometry updates
-	stl::detour_thunk<BSGeometry_UpdateWorldData>(REL::ID(551661));
-
 	// Fix weapon model world transform getting overwritten
-	stl::write_thunk_call<PlayerCharacter_UpdateScenegraph>(REL::ID(978934).address() + 0x2ED);
+	stl::detour_thunk<OnIdle_UpdatePlayer>(REL::ID(1318162));
 
 	// Fix incorrect previous world transform on some animated objects, e.g. doors
 	stl::detour_thunk<TESObjectREFR_SetSequencePosition>(REL::ID(854236));
