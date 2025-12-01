@@ -6,6 +6,8 @@
 #include "FidelityFX.h"
 #include "Upscaling.h"
 
+extern bool enbLoaded;
+
 void DX12SwapChain::CreateD3D12Device(IDXGIAdapter* a_adapter)
 {
 	DX::ThrowIfFailed(D3D12CreateDevice(a_adapter, D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(&d3d12Device)));
@@ -91,7 +93,10 @@ void DX12SwapChain::CreateInterop()
 	texDesc11.CPUAccessFlags = 0;
 	texDesc11.MiscFlags = 0;
 
-	swapChainBufferProxy = new Texture2D(texDesc11);
+	if (enbLoaded)
+		swapChainBufferProxyENB = new WrappedResource(texDesc11, d3d11Device.get(), d3d12Device.get());
+	else
+		swapChainBufferProxy = new Texture2D(texDesc11);
 
 	swapChainBufferWrapped[0] = new WrappedResource(texDesc11, d3d11Device.get(), d3d12Device.get());
 	swapChainBufferWrapped[1] = new WrappedResource(texDesc11, d3d11Device.get(), d3d12Device.get());
@@ -114,14 +119,20 @@ void DX12SwapChain::SetD3D11DeviceContext(ID3D11DeviceContext* a_d3d11Context)
 
 HRESULT DX12SwapChain::GetBuffer(void** ppSurface)
 {
-	*ppSurface = swapChainBufferProxy->resource.get();
+	if (enbLoaded)
+		*ppSurface = swapChainBufferProxyENB->resource11;
+	else
+		*ppSurface = swapChainBufferProxy->resource.get();
 	return S_OK;
 }
 
 HRESULT DX12SwapChain::Present(UINT SyncInterval, UINT Flags)
 {
 	// Copy proxy to wrapped resource
-	d3d11Context->CopyResource(swapChainBufferWrapped[frameIndex]->resource11, swapChainBufferProxy->resource.get());
+	if (enbLoaded)
+		d3d11Context->CopyResource(swapChainBufferWrapped[frameIndex]->resource11, swapChainBufferProxyENB->resource11);
+	else
+		d3d11Context->CopyResource(swapChainBufferWrapped[frameIndex]->resource11, swapChainBufferProxy->resource.get());
 
 	// Wait for D3D11 to finish
 	DX::ThrowIfFailed(d3d11Context->Signal(d3d11Fence.get(), fenceValue));
@@ -187,7 +198,7 @@ HRESULT DX12SwapChain::Present(UINT SyncInterval, UINT Flags)
 
 	// If VSync is disabled, use frame limiter to prevent tearing and optimize pacing
 	if (SyncInterval == 0)
-		upscaling->FrameLimiter(upscaling->frameGenerationWasEnabled);
+		upscaling->FrameLimiter(useFrameGenerationThisFrame);
 
 	return S_OK;
 }

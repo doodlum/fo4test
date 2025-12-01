@@ -76,6 +76,8 @@ public:
 	DXGI_SWAP_CHAIN_DESC1 swapChainDesc;
 
 	Texture2D* swapChainBufferProxy;
+	WrappedResource* swapChainBufferProxyENB;
+
 	WrappedResource* swapChainBufferWrapped[2];
 
 	winrt::com_ptr<ID3D11Device5> d3d11Device;
