@@ -31,7 +31,7 @@ HRESULT WINAPI hk_IDXGIFactory_CreateSwapChain(IDXGIFactory2* This, _In_ ID3D11D
 	proxy->SetD3D11DeviceContext(context);
 
 	proxy->CreateD3D12Device(adapter);
-	proxy->CreateSwapChain((IDXGIFactory4*)This, *pDesc);
+	proxy->CreateSwapChain((IDXGIFactory5*)This, *pDesc);
 	proxy->CreateInterop();
 
 	*ppSwapChain = proxy->GetSwapChainProxy();
@@ -65,8 +65,6 @@ HRESULT WINAPI hk_D3D11CreateDeviceAndSwapChain(
 
 			IDXGIFactory4* dxgiFactory;
 			pAdapter->GetParent(IID_PPV_ARGS(&dxgiFactory));
-
-			pSwapChainDesc->SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
 
 			const D3D_FEATURE_LEVEL featureLevel = D3D_FEATURE_LEVEL_11_1;
 			pFeatureLevels = &featureLevel;
@@ -103,7 +101,7 @@ HRESULT WINAPI hk_D3D11CreateDeviceAndSwapChain(
 				proxy->SetD3D11DeviceContext(context);
 
 				proxy->CreateD3D12Device(adapter);
-				proxy->CreateSwapChain((IDXGIFactory4*)dxgiFactory, *pSwapChainDesc);
+				proxy->CreateSwapChain((IDXGIFactory5*)dxgiFactory, *pSwapChainDesc);
 				proxy->CreateInterop();
 
 				*ppSwapChain = proxy->GetSwapChainProxy();

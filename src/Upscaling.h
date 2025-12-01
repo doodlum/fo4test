@@ -26,7 +26,11 @@ public:
 
 	bool d3d12Interop = false;
 	double refreshRate = 0.0f;
-	
+
+	bool useGameFrameLimiter = false;
+	bool useFrameLimiter = false;
+	bool frameGenerationWasEnabled = false;
+
 	Texture2D* HUDLessBufferShared[2];
 	Texture2D* depthBufferShared[2];
 	Texture2D* motionVectorBufferShared[2];

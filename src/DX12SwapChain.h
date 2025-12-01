@@ -96,7 +96,7 @@ public:
 	DXGISwapChainProxy* swapChainProxy = nullptr;
 
 	void CreateD3D12Device(IDXGIAdapter* a_adapter);
-	void CreateSwapChain(IDXGIFactory4* a_dxgiFactory, DXGI_SWAP_CHAIN_DESC swapChainDesc);
+	void CreateSwapChain(IDXGIFactory5* a_dxgiFactory, DXGI_SWAP_CHAIN_DESC swapChainDesc);
 
 	void CreateInterop();
 

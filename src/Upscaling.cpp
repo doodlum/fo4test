@@ -392,6 +392,8 @@ void Upscaling::FrameLimiter(bool a_useFrameGeneration)
 	static LARGE_INTEGER lastFrame = {};
 
 	if (d3d12Interop && settings.frameLimitMode) {
+
+		// Stick within VRR bounds
 		double bestRefreshRate = refreshRate - (refreshRate * refreshRate) / 3600.0;
 
 		LARGE_INTEGER qpf;
@@ -581,7 +583,16 @@ struct BSInputDeviceManager_PollInputDevices
 	static void thunk(RE::BSInputDeviceManager* This, float a2)
 	{
 		auto dx12SwapChain = DX12SwapChain::GetSingleton();
+		auto upscaling = Upscaling::GetSingleton();
 
+		// Fix game running too fast
+		if (upscaling->useGameFrameLimiter)
+			upscaling->GameFrameLimiter();
+
+		// If VSync is disabled, use frame limiter to prevent tearing and optimize pacing
+		if (upscaling->useFrameLimiter)
+			upscaling->FrameLimiter(upscaling->frameGenerationWasEnabled);
+		
 		if (auto swapChain = dx12SwapChain->swapChain)
 			if (auto waitableObject = swapChain->GetFrameLatencyWaitableObject())
 				WaitForSingleObjectEx(waitableObject, 0, TRUE);
