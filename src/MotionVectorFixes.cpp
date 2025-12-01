@@ -14,12 +14,10 @@ inline static void ResetPreviousWorldTransformDownwards(RE::NiAVObject* a_self)
 
 struct TESObjectREFR_SetSequencePosition
 {
-	static void thunk(RE::TESObjectREFR* This, RE::NiControllerManager* a2,
-		const char* a3,
-		float a4)
+	static void thunk(RE::NiAVObject* This, RE::NiUpdateData* a_updateData)
 	{
-		func(This, a2, a3, a4);
-		ResetPreviousWorldTransformDownwards(This->Get3D());
+		func(This, a_updateData);
+		ResetPreviousWorldTransformDownwards(This);
 	}
 	static inline REL::Relocation<decltype(thunk)> func;
 };
@@ -90,13 +88,13 @@ void MotionVectorFixes::InstallHooks()
 #if defined(FALLOUT_POST_NG)
 	stl::detour_thunk<OnIdle_UpdatePlayer>(REL::ID(2228929));
 
-	stl::detour_thunk<TESObjectREFR_SetSequencePosition>(REL::ID(2200766));
+	stl::write_thunk_call<TESObjectREFR_SetSequencePosition>(REL::ID(2200766).address() + 0x1D7);
 #else
 	// Fix weapon model world transform getting overwritten
 	stl::detour_thunk<OnIdle_UpdatePlayer>(REL::ID(1318162));
 
 	// Fix incorrect previous world transform on some animated objects, e.g. doors
-	stl::detour_thunk<TESObjectREFR_SetSequencePosition>(REL::ID(854236));
+	stl::write_thunk_call<TESObjectREFR_SetSequencePosition>(REL::ID(854236).address() + 0x1D7);
 #endif
 
 	// Fix vanilla motion vectors not updating in menus or when time is frozen
