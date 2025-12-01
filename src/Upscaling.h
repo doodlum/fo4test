@@ -17,7 +17,6 @@ public:
 	{
 		bool frameGenerationMode = 1;
 		bool frameLimitMode = 1;
-		bool frameGenerationForceEnable = 0;
 	};
 
 	Settings settings;
