@@ -44,7 +44,6 @@ void DX12SwapChain::CreateSwapChain(IDXGIFactory5* a_dxgiFactory, DXGI_SWAP_CHAI
 	));
 
 	swapChainDesc.Flags = allowTearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0;
-	swapChainDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
 
 	ffx::CreateContextDescFrameGenerationSwapChainForHwndDX12 ffxSwapChainDesc{};
 
@@ -184,17 +183,11 @@ HRESULT DX12SwapChain::Present(UINT SyncInterval, UINT Flags)
 
 	// Fix game running too fast
 	if (!upscaling->highFPSPhysicsFixLoaded)
-		upscaling->useGameFrameLimiter = true;
-	else
-		upscaling->useGameFrameLimiter = false;
+		upscaling->GameFrameLimiter();
 
 	// If VSync is disabled, use frame limiter to prevent tearing and optimize pacing
 	if (SyncInterval == 0)
-		upscaling->useFrameLimiter = true;
-	else
-		upscaling->useFrameLimiter = false;
-
-	upscaling->frameGenerationWasEnabled = useFrameGenerationThisFrame;
+		upscaling->FrameLimiter(upscaling->frameGenerationWasEnabled);
 
 	return S_OK;
 }

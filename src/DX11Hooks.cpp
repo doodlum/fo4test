@@ -62,6 +62,7 @@ HRESULT WINAPI hk_D3D11CreateDeviceAndSwapChain(
 
 		if (fidelityFX->module) {
 			upscaling->d3d12Interop = true;
+			upscaling->refreshRate = Upscaling::GetRefreshRate(pSwapChainDesc->OutputWindow);
 
 			IDXGIFactory4* dxgiFactory;
 			pAdapter->GetParent(IID_PPV_ARGS(&dxgiFactory));

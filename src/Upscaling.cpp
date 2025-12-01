@@ -578,30 +578,6 @@ struct DrawWorld_Reticle
 	static inline REL::Relocation<decltype(thunk)> func;
 };
 
-struct BSInputDeviceManager_PollInputDevices
-{
-	static void thunk(RE::BSInputDeviceManager* This, float a2)
-	{
-		auto dx12SwapChain = DX12SwapChain::GetSingleton();
-		auto upscaling = Upscaling::GetSingleton();
-
-		// Fix game running too fast
-		if (upscaling->useGameFrameLimiter)
-			upscaling->GameFrameLimiter();
-
-		// If VSync is disabled, use frame limiter to prevent tearing and optimize pacing
-		if (upscaling->useFrameLimiter)
-			upscaling->FrameLimiter(upscaling->frameGenerationWasEnabled);
-		
-		if (auto swapChain = dx12SwapChain->swapChain)
-			if (auto waitableObject = swapChain->GetFrameLatencyWaitableObject())
-				WaitForSingleObjectEx(waitableObject, 0, TRUE);
-
-		func(This, a2);
-	}
-	static inline REL::Relocation<decltype(thunk)> func;
-};
-
 void Upscaling::InstallHooks()
 {
 #if defined(FALLOUT_POST_NG)
@@ -611,9 +587,6 @@ void Upscaling::InstallHooks()
 
 	stl::detour_thunk<DrawWorld_Forward>(REL::ID(2318315));
 	stl::write_thunk_call<DrawWorld_Reticle>(REL::ID(2318315).address() + 0x53D);
-
-	// Reduce input latency
-	stl::detour_thunk<BSInputDeviceManager_PollInputDevices>(REL::ID(2268382));
 #else
 	// Fix game initialising twice
 	stl::detour_thunk<WindowSizeChanged>(REL::ID(212827));
@@ -624,9 +597,6 @@ void Upscaling::InstallHooks()
 	// Fix reticles on motion vectors and depth
 	stl::detour_thunk<DrawWorld_Forward>(REL::ID(656535));
 	stl::write_thunk_call<DrawWorld_Reticle>(REL::ID(338205).address() + 0x253);
-	
-	// Reduce input latency
-	stl::detour_thunk<BSInputDeviceManager_PollInputDevices>(REL::ID(1328119));
 #endif
 
 	logger::info("[Upscaling] Installed hooks");

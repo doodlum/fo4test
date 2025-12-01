@@ -91,8 +91,6 @@ public:
 
 	LARGE_INTEGER qpf;
 
-	double refreshRate = 0;
-
 	DXGISwapChainProxy* swapChainProxy = nullptr;
 
 	void CreateD3D12Device(IDXGIAdapter* a_adapter);
