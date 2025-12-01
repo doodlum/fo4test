@@ -186,6 +186,10 @@ HRESULT DX12SwapChain::Present(UINT SyncInterval, UINT Flags)
 	// Present the frame
 	DX::ThrowIfFailed(swapChain->Present(SyncInterval, Flags));
 
+	// Wait for previous frame to have finished
+	auto frameLatencyWaitableObject = swapChain->GetFrameLatencyWaitableObject();
+	WaitForSingleObjectEx(frameLatencyWaitableObject, INFINITE, TRUE);
+
 	// Update the frame index
 	frameIndex = swapChain->GetCurrentBackBufferIndex();
 
