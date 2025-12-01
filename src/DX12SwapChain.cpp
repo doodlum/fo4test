@@ -170,7 +170,7 @@ HRESULT DX12SwapChain::Present(UINT SyncInterval, UINT Flags)
 	
 	if (auto main = RE::Main::GetSingleton())
 		if (auto ui = RE::UI::GetSingleton())
-			useFrameGenerationThisFrame = upscaling->settings.frameGenerationMode && main->gameActive && !main->inMenuMode && !ui->itemMenuMode.load_unchecked();
+			useFrameGenerationThisFrame = upscaling->settings.frameGenerationMode && main->gameActive && !main->inMenuMode && !ui->movementToDirectionalCount;
 
 	FidelityFX::GetSingleton()->Present(useFrameGenerationThisFrame);
 
