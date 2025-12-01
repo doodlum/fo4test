@@ -121,11 +121,9 @@ void Upscaling::LoadSettings()
 
 	settings.frameGenerationMode = ini.GetBoolValue("Settings", "bFrameGenerationMode", true);
 	settings.frameLimitMode = ini.GetBoolValue("Settings", "bFrameLimitMode", true);
-	settings.frameGenerationForceEnable = ini.GetBoolValue("Settings", "bFrameGenerationForceEnable", false);
 
 	logger::info("[Frame Generation] bFrameGenerationMode: {}", settings.frameGenerationMode);
 	logger::info("[Frame Generation] bFrameLimitMode: {}", settings.frameLimitMode);
-	logger::info("[Frame Generation] bFrameGenerationForceEnable: {}", settings.frameGenerationForceEnable);
 }
 
 void Upscaling::PostPostLoad()
