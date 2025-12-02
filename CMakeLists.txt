@@ -1,8 +1,8 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(
-	AAAFrameGeneration
-	VERSION 1.3.2
+	Upscaling
+	VERSION 1.0.0
 	LANGUAGES CXX
 )
 
@@ -14,13 +14,11 @@ find_package(directxtex CONFIG REQUIRED)
 find_package(directx-headers CONFIG REQUIRED)
 find_package(magic_enum CONFIG REQUIRED)
 
-
 target_include_directories(
 	"${PROJECT_NAME}"
 	PRIVATE
 	${SIMPLEINI_INCLUDE_DIRS}
 )
-
 
 target_link_libraries(
 	${PROJECT_NAME}

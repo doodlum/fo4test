@@ -7,3 +7,9 @@
 [submodule "extern/CommonLibF4PostAE"]
 	path = extern/CommonLibF4PostAE
 	url = https://github.com/powerof3/CommonLibF4.git
+[submodule "extern/Streamline"]
+	path = extern/Streamline
+	url = https://github.com/NVIDIA-RTX/Streamline.git
+[submodule "extern/FidelityFX-SDK"]
+	path = extern/FidelityFX-SDK
+	url = https://github.com/MapleHinata/FidelityFX-SDK.git
