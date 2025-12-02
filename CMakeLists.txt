@@ -14,6 +14,10 @@ find_package(directxtex CONFIG REQUIRED)
 find_package(directx-headers CONFIG REQUIRED)
 find_package(magic_enum CONFIG REQUIRED)
 
+add_subdirectory(${CMAKE_SOURCE_DIR}/cmake/Streamline)
+
+include(FidelityFX-SDK)
+
 target_include_directories(
 	"${PROJECT_NAME}"
 	PRIVATE
@@ -31,4 +35,5 @@ target_link_libraries(
 	d3d12.lib
 	magic_enum::magic_enum
 	d3dcompiler.lib
+	Streamline
 )
