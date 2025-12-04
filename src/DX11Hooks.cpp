@@ -1,4 +1,4 @@
-#include "Hooks.h"
+#include "DX11Hooks.h"
 
 #include <d3d11.h>
 
@@ -81,9 +81,9 @@ HRESULT WINAPI hk_D3D11CreateDeviceAndSwapChain(
 		ppImmediateContext);
 }
 
-namespace Hooks
+namespace DX11Hooks
 {
-	void InstallD3DHooks()
+	void Install()
 	{
 		auto streamline = Streamline::GetSingleton();
 
