@@ -4,9 +4,12 @@
 #include <fstream>
 #include <wrl/client.h>
 
+
 #pragma comment(lib, "dxguid.lib")
 #pragma comment(lib, "d3dcompiler.lib")
 
+#include "DX11Hooks.h"
+#include "Upscaling.h"
 
 void InitializeLog()
 {
@@ -116,61 +119,6 @@ void Initialize()
 	AddDebugInformation();
 }
 
-struct BSGraphics_State_UpdateTemporalData
-{
-	static void thunk(RE::BSGraphics::State* This)
-	{
-		func(This);
-	}
-	static inline REL::Relocation<decltype(thunk)> func;
-};
-
-struct ImageSpaceEffectTemporalAA_IsActive
-{
-	static bool thunk(struct ImageSpaceEffectTemporalAA*)
-	{
-		return false;
-	}
-	static inline REL::Relocation<decltype(thunk)> func;
-};
-
-struct ImageSpaceEffectUpsampleDynamicResolution_IsActive
-{
-	static bool thunk(struct ImageSpaceEffectUpsampleDynamicResolution*)
-	{
-		return true;
-	}
-	static inline REL::Relocation<decltype(thunk)> func;
-};
-
-struct BSGraphics__RenderTargetManager__UpdateDynamicResolution
-{
-	static void thunk(RE::BSGraphics::RenderTargetManager* This,
-		float*,
-		float*,
-		float*,
-		float*)
-	{
-		This->dynamicWidthRatio = 0.5;
-		This->dynamicHeightRatio = 0.5;
-
-		This->isDynamicResolutionCurrentlyActivated = true;
-
-		This->SetEnableDynamicResolution(true);
-	}
-	static inline REL::Relocation<decltype(thunk)> func;
-};
-
-static void InstallHooks()
-{
-	stl::detour_thunk<BSGraphics_State_UpdateTemporalData>(REL::ID(376068)); // 141D16C00
-	
-	stl::write_vfunc<0x8, ImageSpaceEffectTemporalAA_IsActive>(RE::VTABLE::ImageSpaceEffectTemporalAA[0]);
-
-	stl::write_vfunc<0x8, ImageSpaceEffectUpsampleDynamicResolution_IsActive>(RE::VTABLE::ImageSpaceEffectUpsampleDynamicResolution[0]);
-	
-	stl::detour_thunk<BSGraphics__RenderTargetManager__UpdateDynamicResolution>(REL::ID(1115215)); // 141D31B90
-}
 
 extern "C" DLLEXPORT bool F4SEAPI F4SEPlugin_Load(const F4SE::LoadInterface* a_f4se)
 {
@@ -185,7 +133,8 @@ extern "C" DLLEXPORT bool F4SEAPI F4SEPlugin_Load(const F4SE::LoadInterface* a_f
 #endif
 
 	InitializeLog();
-	InstallHooks();
+	DX11Hooks::Install();
+	Upscaling::InstallHooks();
 
 	return true;
 }

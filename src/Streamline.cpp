@@ -6,7 +6,7 @@
 
 void Streamline::LoadInterposer()
 {
-	interposer = LoadLibraryW(L"Data/SKSE/Plugins/ENBAntiAliasing/Streamline/sl.interposer.dll");
+	interposer = LoadLibraryW(L"Data/F4SE/Plugins/Upscaling/Streamline/sl.interposer.dll");
 	if (interposer == nullptr) {
 		DWORD errorCode = GetLastError();
 		logger::info("[Streamline] Failed to load interposer: Error Code {0:x}", errorCode);

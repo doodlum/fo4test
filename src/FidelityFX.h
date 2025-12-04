@@ -20,4 +20,7 @@ public:
 	void CreateFSRResources();
 	void DestroyFSRResources();
 	void Upscale(Texture2D* a_color, float2 a_jitter, float a_sharpness);
+private:
+	// FSR scratch buffer - needs to be freed in DestroyFSRResources
+	void* fsrScratchBuffer = nullptr;
 };

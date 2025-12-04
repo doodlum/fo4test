@@ -29,15 +29,29 @@ void FidelityFX::CreateFSRResources()
 	static auto device = reinterpret_cast<ID3D11Device*>(rendererData->device);
 	static auto context = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
 
+	// Prevent multiple allocations
+	if (fsrScratchBuffer) {
+		logger::warn("[FidelityFX] FSR resources already created, skipping allocation");
+		return;
+	}
+
 	auto fsrDevice = ffxGetDeviceDX11(device);
 
 	size_t scratchBufferSize = ffxGetScratchMemorySizeDX11(FFX_FSR3UPSCALER_CONTEXT_COUNT);
-	void* scratchBuffer = calloc(scratchBufferSize, 1);
-	memset(scratchBuffer, 0, scratchBufferSize);
+	fsrScratchBuffer = calloc(scratchBufferSize, 1);
+	if (!fsrScratchBuffer) {
+		logger::critical("[FidelityFX] Failed to allocate FSR3 scratch buffer memory!");
+		return;
+	}
+	memset(fsrScratchBuffer, 0, scratchBufferSize);
 
 	FfxInterface fsrInterface;
-	if (ffxGetInterfaceDX11(&fsrInterface, fsrDevice, scratchBuffer, scratchBufferSize, FFX_FSR3UPSCALER_CONTEXT_COUNT) != FFX_OK)
+	if (ffxGetInterfaceDX11(&fsrInterface, fsrDevice, fsrScratchBuffer, scratchBufferSize, FFX_FSR3UPSCALER_CONTEXT_COUNT) != FFX_OK) {
 		logger::critical("[FidelityFX] Failed to initialize FSR3 backend interface!");
+		free(fsrScratchBuffer);
+		fsrScratchBuffer = nullptr;
+		return;
+	}
 
 	FfxFsr3ContextDescription contextDescription;
 	contextDescription.maxRenderSize.width = gameViewport.screenWidth;
@@ -46,18 +60,27 @@ void FidelityFX::CreateFSRResources()
 	contextDescription.maxUpscaleSize.height = gameViewport.screenHeight;
 	contextDescription.displaySize.width = gameViewport.screenWidth;
 	contextDescription.displaySize.height = gameViewport.screenHeight;
-	contextDescription.flags = FFX_FSR3_ENABLE_UPSCALING_ONLY;
-	contextDescription.backBufferFormat = FFX_SURFACE_FORMAT_R8G8B8A8_UNORM;
+	contextDescription.flags = FFX_FSR3_ENABLE_UPSCALING_ONLY | FFX_FSR3_ENABLE_AUTO_EXPOSURE;
 	contextDescription.backendInterfaceUpscaling = fsrInterface;
 
-	if (ffxFsr3ContextCreate(&fsrContext, &contextDescription) != FFX_OK)
+	if (ffxFsr3ContextCreate(&fsrContext, &contextDescription) != FFX_OK) {
 		logger::critical("[FidelityFX] Failed to initialize FSR3 context!");
+		free(fsrScratchBuffer);
+		fsrScratchBuffer = nullptr;
+		return;
+	}
 }
 
 void FidelityFX::DestroyFSRResources()
 {
 	if (ffxFsr3ContextDestroy(&fsrContext) != FFX_OK)
 		logger::critical("[FidelityFX] Failed to destroy FSR3 context!");
+
+	// Free the scratch buffer to prevent memory leak
+	if (fsrScratchBuffer) {
+		free(fsrScratchBuffer);
+		fsrScratchBuffer = nullptr;
+	}
 }
 
 void FidelityFX::Upscale(Texture2D* a_color, float2 a_jitter, float a_sharpness)
@@ -125,7 +148,7 @@ void FidelityFX::Upscale(Texture2D* a_color, float2 a_jitter, float a_sharpness)
 		dispatchParameters.reset = false;
 		dispatchParameters.preExposure = 1.0f;
 
-		dispatchParameters.flags = 0;
+		dispatchParameters.flags = FFX_FSR3_UPSCALER_FLAG_DRAW_DEBUG_VIEW;
 
 		if (ffxFsr3ContextDispatchUpscale(&fsrContext, &dispatchParameters) != FFX_OK)
 			logger::critical("[FidelityFX] Failed to dispatch upscaling!");
