@@ -41,14 +41,10 @@ public:
 	ID3D11ComputeShader* rcasCS;
 	ID3D11ComputeShader* GetRCASComputeShader();
 
-	ID3D11ComputeShader* encodeTexturesCS;
-	ID3D11ComputeShader* GetEncodeTexturesCS();
-
 	void UpdateJitter();
 	void Upscale();
 
 	Texture2D* upscalingTexture;
-	Texture2D* alphaMaskTexture;
 
 	void CreateUpscalingResources();
 	void DestroyUpscalingResources();
@@ -65,6 +61,6 @@ public:
 
 	static void InstallHooks()
 	{
-	//	stl::write_thunk_call<Main_UpdateJitter>(REL::RelocationID(75460, 77245).address() + REL::Relocate(0xE5, 0xE2, 0x104));	
+		stl::write_thunk_call<Main_UpdateJitter>(REL::ID(502840).address() + 0x3C1);
 	}
 };

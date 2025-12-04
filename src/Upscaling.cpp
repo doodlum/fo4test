@@ -36,7 +36,7 @@ void Upscaling::CheckResources()
 ID3D11ComputeShader* Upscaling::GetRCASComputeShader()
 {
 	static auto previousSharpness = settings.sharpness;
-	auto currentSharpness = settings.sharpness;
+	float currentSharpness = (-2.0f * settings.sharpness) + 2.0f;
 
 	if (previousSharpness != currentSharpness) {
 		previousSharpness = currentSharpness;
@@ -49,25 +49,9 @@ ID3D11ComputeShader* Upscaling::GetRCASComputeShader()
 
 	if (!rcasCS) {
 		logger::debug("Compiling RCAS.hlsl");
-		rcasCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data/SKSE/Plugins/ENBAntiAliasing/RCAS/RCAS.hlsl", { { "SHARPNESS", std::format("{}", currentSharpness).c_str() } }, "cs_5_0");
+		rcasCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data/F4SE/Plugins/Upscaling/RCAS/RCAS.hlsl", { { "SHARPNESS", std::format("{}", currentSharpness).c_str() } }, "cs_5_0");
 	}
 	return rcasCS;
-}
-
-ID3D11ComputeShader* Upscaling::GetEncodeTexturesCS()
-{
-	if (!encodeTexturesCS) {
-		logger::debug("Compiling EncodeTexturesCS.hlsl");
-		encodeTexturesCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data/SKSE/Plugins/ENBAntiAliasing/EncodeTexturesCS.hlsl", {}, "cs_5_0");
-	}
-	return encodeTexturesCS;
-}
-
-static void SetDirtyStates(bool a_computeShader)
-{
-	using func_t = decltype(&SetDirtyStates);
-	static REL::Relocation<func_t> func{ REL::ID(1557284) };
-	func(a_computeShader);
 }
 
 void Upscaling::UpdateJitter()
@@ -87,34 +71,17 @@ void Upscaling::Upscale()
 {
 	CheckResources();
 
-	SetDirtyStates(false);
-
 	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
 	static auto context = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
 
-	ID3D11ShaderResourceView* inputTextureSRV;
-	context->PSGetShaderResources(0, 1, &inputTextureSRV);
-
-	inputTextureSRV->Release();
-
-	ID3D11RenderTargetView* outputTextureRTV;
-	ID3D11DepthStencilView* dsv;
-	context->OMGetRenderTargets(1, &outputTextureRTV, &dsv);
 	context->OMSetRenderTargets(0, nullptr, nullptr);
 
-	outputTextureRTV->Release();
+	auto frameBufferSRV = reinterpret_cast<ID3D11ShaderResourceView*>(rendererData->renderTargets[(uint)Util::RenderTarget::kFrameBuffer].srView);
 
-	if (dsv)
-		dsv->Release();
+	ID3D11Resource* frameBufferResource;
+	frameBufferSRV->GetResource(&frameBufferResource);
 
-	ID3D11Resource* inputTextureResource;
-	inputTextureSRV->GetResource(&inputTextureResource);
-
-	ID3D11Resource* outputTextureResource;
-	outputTextureRTV->GetResource(&outputTextureResource);
-
-	context->CopyResource(upscalingTexture->resource.get(), inputTextureResource);
-
+	context->CopyResource(upscalingTexture->resource.get(), frameBufferResource);
 
 	auto upscaleMethod = GetUpscaleMethod();
 	auto dlssPreset = (sl::DLSSPreset)settings.dlssPreset;
@@ -125,7 +92,7 @@ void Upscaling::Upscale()
 		FidelityFX::GetSingleton()->Upscale(upscalingTexture, jitter, settings.sharpness);
 
 	if (upscaleMethod != UpscaleMethod::kFSR && settings.sharpness > 0.0f) {
-		context->CopyResource(inputTextureResource, upscalingTexture->resource.get());
+		context->CopyResource(frameBufferResource, upscalingTexture->resource.get());
 
 		static auto gameViewport = RE::BSGraphics::State::GetSingleton();
 		uint dispatchX = (uint)std::ceil((float)gameViewport.screenWidth / 8.0f);
@@ -133,7 +100,7 @@ void Upscaling::Upscale()
 
 		{
 			{
-				ID3D11ShaderResourceView* views[1] = { inputTextureSRV };
+				ID3D11ShaderResourceView* views[1] = { frameBufferSRV };
 				context->CSSetShaderResources(0, ARRAYSIZE(views), views);
 
 				ID3D11UnorderedAccessView* uavs[1] = { upscalingTexture->uav.get() };
@@ -155,7 +122,7 @@ void Upscaling::Upscale()
 		}
 	}
 
-	context->CopyResource(outputTextureResource, upscalingTexture->resource.get());
+	context->CopyResource(frameBufferResource, upscalingTexture->resource.get());
 }
 
 void Upscaling::CreateUpscalingResources()
@@ -186,14 +153,6 @@ void Upscaling::CreateUpscalingResources()
 	upscalingTexture = new Texture2D(texDesc);
 	upscalingTexture->CreateSRV(srvDesc);
 	upscalingTexture->CreateUAV(uavDesc);
-
-	texDesc.Format = DXGI_FORMAT_R8_UNORM;
-	srvDesc.Format = texDesc.Format;
-	uavDesc.Format = texDesc.Format;
-
-	alphaMaskTexture = new Texture2D(texDesc);
-	alphaMaskTexture->CreateSRV(srvDesc);
-	alphaMaskTexture->CreateUAV(uavDesc);
 }
 
 void Upscaling::DestroyUpscalingResources()
@@ -202,9 +161,4 @@ void Upscaling::DestroyUpscalingResources()
 	upscalingTexture->uav = nullptr;
 	upscalingTexture->resource = nullptr;
 	delete upscalingTexture;
-
-	alphaMaskTexture->srv = nullptr;
-	alphaMaskTexture->uav = nullptr;
-	alphaMaskTexture->resource = nullptr;
-	delete alphaMaskTexture;
 }
