@@ -83,11 +83,11 @@ void FidelityFX::DestroyFSRResources()
 	}
 }
 
-void FidelityFX::Upscale(Texture2D* a_color, float2 a_jitter, float a_sharpness)
+void FidelityFX::Upscale(Texture2D* a_color, float2 a_jitter, float2 a_renderSize, float a_sharpness)
 {
 	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
 	static auto& depthTexture = rendererData->depthStencilTargets[(uint)Util::DepthStencilTarget::kMain];
-	static auto& motionVectorsTexture = rendererData->renderTargets[(uint)Util::RenderTarget::kMotionVectors];
+	static auto& motionVectorTexture = rendererData->renderTargets[(uint)Util::RenderTarget::kMotionVectors];
 
 	static auto gameViewport = RE::BSGraphics::State::GetSingleton();
 	static auto context = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
@@ -117,7 +117,7 @@ void FidelityFX::Upscale(Texture2D* a_color, float2 a_jitter, float a_sharpness)
 		dispatchParameters.commandList = ffxGetCommandListDX11(context);
 		dispatchParameters.color = ffxGetResource(a_color->resource.get(), L"FSR3_Input_OutputColor", FFX_RESOURCE_STATE_PIXEL_COMPUTE_READ);
 		dispatchParameters.depth = ffxGetResource(depthTexture.texture, L"FSR3_InputDepth", FFX_RESOURCE_STATE_PIXEL_COMPUTE_READ);
-		dispatchParameters.motionVectors = ffxGetResource(motionVectorsTexture.texture, L"FSR3_InputMotionVectors", FFX_RESOURCE_STATE_PIXEL_COMPUTE_READ);
+		dispatchParameters.motionVectors = ffxGetResource(motionVectorTexture.texture, L"FSR3_InputMotionVectors", FFX_RESOURCE_STATE_PIXEL_COMPUTE_READ);
 		dispatchParameters.exposure = ffxGetResource(nullptr, L"FSR3_InputExposure", FFX_RESOURCE_STATE_PIXEL_COMPUTE_READ);
 		dispatchParameters.upscaleOutput = dispatchParameters.color;
 		dispatchParameters.reactive = ffxGetResource(nullptr, L"FSR3_InputReactiveMap", FFX_RESOURCE_STATE_PIXEL_COMPUTE_READ);
@@ -125,8 +125,8 @@ void FidelityFX::Upscale(Texture2D* a_color, float2 a_jitter, float a_sharpness)
 
 		dispatchParameters.motionVectorScale.x = (float)gameViewport.screenWidth;
 		dispatchParameters.motionVectorScale.y = (float)gameViewport.screenHeight;
-		dispatchParameters.renderSize.width = gameViewport.screenWidth;
-		dispatchParameters.renderSize.height = gameViewport.screenHeight;
+		dispatchParameters.renderSize.width = (uint)a_renderSize.x;
+		dispatchParameters.renderSize.height = (uint)a_renderSize.y;
 		dispatchParameters.jitterOffset.x = -a_jitter.x;
 		dispatchParameters.jitterOffset.y = -a_jitter.y;
 
@@ -148,9 +148,15 @@ void FidelityFX::Upscale(Texture2D* a_color, float2 a_jitter, float a_sharpness)
 		dispatchParameters.reset = false;
 		dispatchParameters.preExposure = 1.0f;
 
-		dispatchParameters.flags = FFX_FSR3_UPSCALER_FLAG_DRAW_DEBUG_VIEW;
+		dispatchParameters.flags = 0;
 
 		if (ffxFsr3ContextDispatchUpscale(&fsrContext, &dispatchParameters) != FFX_OK)
 			logger::critical("[FidelityFX] Failed to dispatch upscaling!");
 	}
+}
+
+float2 FidelityFX::GetInputResolutionScale(uint32_t, uint32_t, uint32_t qualityMode)
+{
+	float scale = 1.0f / ffxFsr3GetUpscaleRatioFromQualityMode((FfxFsr3QualityMode)qualityMode);
+	return { scale, scale };
 }

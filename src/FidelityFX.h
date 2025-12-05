@@ -19,7 +19,9 @@ public:
 
 	void CreateFSRResources();
 	void DestroyFSRResources();
-	void Upscale(Texture2D* a_color, float2 a_jitter, float a_sharpness);
+	void Upscale(Texture2D* a_color, float2 a_jitter, float2 a_renderSize, float a_sharpness);
+
+	float2 GetInputResolutionScale(uint32_t outputWidth, uint32_t outputHeight, uint32_t qualityMode);
 private:
 	// FSR scratch buffer - needs to be freed in DestroyFSRResources
 	void* fsrScratchBuffer = nullptr;

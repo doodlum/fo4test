@@ -128,13 +128,12 @@ HRESULT Streamline::CreateDeviceAndSwapChain(IDXGIAdapter* pAdapter,
 	return hr;
 }
 
-void Streamline::Upscale(Texture2D* a_upscaleTexture, float2 a_jitter, sl::DLSSPreset a_preset)
+void Streamline::Upscale(Texture2D* a_upscaleTexture, Texture2D* a_dilatedMotionVectorTexture, float2 a_jitter, float2 a_renderSize, uint a_qualityMode, sl::DLSSPreset a_preset)
 {
 	UpdateConstants(a_jitter);
 
 	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
 	static auto& depthTexture = rendererData->depthStencilTargets[(uint)Util::DepthStencilTarget::kMain];
-	static auto& motionVectorsTexture = rendererData->renderTargets[(uint)Util::RenderTarget::kMotionVectors];
 
 	static auto gameViewport = RE::BSGraphics::State::GetSingleton();
 	static auto context = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
@@ -147,8 +146,27 @@ void Streamline::Upscale(Texture2D* a_upscaleTexture, float2 a_jitter, sl::DLSSP
 	previousDlssPreset = a_preset;
 
 	{
+		sl::DLSSMode dlssMode;
+		switch (a_qualityMode) {
+		case 1:
+			dlssMode = sl::DLSSMode::eMaxQuality;
+			break;
+		case 2:
+			dlssMode = sl::DLSSMode::eBalanced;
+			break;
+		case 3:
+			dlssMode = sl::DLSSMode::eMaxPerformance;
+			break;
+		case 4:
+			dlssMode = sl::DLSSMode::eUltraPerformance;
+			break;
+		default:
+			dlssMode = sl::DLSSMode::eDLAA;
+			break;
+		}
+
 		sl::DLSSOptions dlssOptions{};
-		dlssOptions.mode = sl::DLSSMode::eMaxQuality;
+		dlssOptions.mode = dlssMode;
 		dlssOptions.outputWidth = gameViewport.screenWidth;
 		dlssOptions.outputHeight = gameViewport.screenHeight;
 		dlssOptions.colorBuffersHDR = sl::Boolean::eFalse;
@@ -165,22 +183,20 @@ void Streamline::Upscale(Texture2D* a_upscaleTexture, float2 a_jitter, sl::DLSSP
 	}
 
 	{
+		sl::Extent lowResExtent{ 0, 0, (uint)a_renderSize.x, (uint)a_renderSize.y };
 		sl::Extent fullExtent{ 0, 0, gameViewport.screenWidth, gameViewport.screenHeight };
 
 		sl::Resource colorIn = { sl::ResourceType::eTex2d, a_upscaleTexture->resource.get(), 0 };
 		sl::Resource colorOut = { sl::ResourceType::eTex2d, a_upscaleTexture->resource.get(), 0 };
 		sl::Resource depth = { sl::ResourceType::eTex2d, depthTexture.texture, 0 };
-		sl::Resource mvec = { sl::ResourceType::eTex2d, motionVectorsTexture.texture, 0 };
+		sl::Resource mvec = { sl::ResourceType::eTex2d, a_dilatedMotionVectorTexture->resource.get(), 0};
 
-		sl::ResourceTag colorInTag = sl::ResourceTag{ &colorIn, sl::kBufferTypeScalingInputColor, sl::ResourceLifecycle::eOnlyValidNow, &fullExtent };
+		sl::ResourceTag colorInTag = sl::ResourceTag{ &colorIn, sl::kBufferTypeScalingInputColor, sl::ResourceLifecycle::eOnlyValidNow, &lowResExtent };
 		sl::ResourceTag colorOutTag = sl::ResourceTag{ &colorOut, sl::kBufferTypeScalingOutputColor, sl::ResourceLifecycle::eOnlyValidNow, &fullExtent };
-		sl::ResourceTag depthTag = sl::ResourceTag{ &depth, sl::kBufferTypeDepth, sl::ResourceLifecycle::eValidUntilPresent, &fullExtent };
-		sl::ResourceTag mvecTag = sl::ResourceTag{ &mvec, sl::kBufferTypeMotionVectors, sl::ResourceLifecycle::eValidUntilPresent, &fullExtent };
+		sl::ResourceTag depthTag = sl::ResourceTag{ &depth, sl::kBufferTypeDepth, sl::ResourceLifecycle::eValidUntilPresent, &lowResExtent };
+		sl::ResourceTag mvecTag = sl::ResourceTag{ &mvec, sl::kBufferTypeMotionVectors, sl::ResourceLifecycle::eValidUntilPresent, &lowResExtent };
 
-		sl::Resource alpha = { sl::ResourceType::eTex2d, nullptr, 0 };
-		sl::ResourceTag alphaTag = sl::ResourceTag{ &alpha, sl::kBufferTypeBiasCurrentColorHint, sl::ResourceLifecycle::eValidUntilPresent, &fullExtent };
-
-		sl::ResourceTag resourceTags[] = { colorInTag, colorOutTag, depthTag, mvecTag, alphaTag };
+		sl::ResourceTag resourceTags[] = { colorInTag, colorOutTag, depthTag, mvecTag };
 		slSetTag(viewport, resourceTags, _countof(resourceTags), context);
 	}
 
@@ -232,6 +248,47 @@ void Streamline::UpdateConstants(float2 a_jitter)
 	if (SL_FAILED(res, slSetConstants(slConstants, *frameToken, viewport))) {
 		logger::error("[Streamline] Could not set constants");
 	}
+}
+
+float2 Streamline::GetInputResolutionScale(uint32_t outputWidth, uint32_t outputHeight, uint32_t qualityMode)
+{
+	sl::DLSSMode dlssMode;
+	switch (qualityMode) {
+	case 1:
+		dlssMode = sl::DLSSMode::eMaxQuality;
+		break;
+	case 2:
+		dlssMode = sl::DLSSMode::eBalanced;
+		break;
+	case 3:
+		dlssMode = sl::DLSSMode::eMaxPerformance;
+		break;
+	case 4:
+		dlssMode = sl::DLSSMode::eUltraPerformance;
+		break;
+	default:
+		dlssMode = sl::DLSSMode::eDLAA;
+		break;
+	}
+
+	sl::DLSSOptions dlssOptions{};
+	dlssOptions.mode = dlssMode;
+	dlssOptions.outputWidth = outputWidth;
+	dlssOptions.outputHeight = outputHeight;
+
+	sl::DLSSOptimalSettings optimalSettings{};
+	sl::Result result = slDLSSGetOptimalSettings(dlssOptions, optimalSettings);
+	if (result != sl::Result::eOk) {
+		logger::critical("[Streamline] Failed to get DLSS optimal settings, error code: {}", (int)result);
+		return { 1.0f, 1.0f };
+	}
+
+	// Calculate scale as ratio of optimal render resolution to output resolution
+	float scaleX = (float)optimalSettings.optimalRenderWidth / (float)outputWidth;
+	float scaleY = (float)optimalSettings.optimalRenderHeight / (float)outputHeight;
+	
+	// Return separate X and Y scales for more precision
+	return { scaleX, scaleY };
 }
 
 void Streamline::DestroyDLSSResources()
