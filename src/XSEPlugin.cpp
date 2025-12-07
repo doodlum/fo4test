@@ -4,7 +4,6 @@
 #include <fstream>
 #include <wrl/client.h>
 
-
 #pragma comment(lib, "dxguid.lib")
 #pragma comment(lib, "d3dcompiler.lib")
 
@@ -64,8 +63,6 @@ extern "C" DLLEXPORT bool F4SEAPI F4SEPlugin_Query(const F4SE::QueryInterface*, 
 }
 #endif
 
-bool initialized = false;
-
 void AddDebugInformation()
 {
 	auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
@@ -109,25 +106,22 @@ void AddDebugInformation()
 	}
 }
 
-void Initialize()
+void OnInit(F4SE::MessagingInterface::Message* a_msg)
 {
-	if (initialized)
-		return;
-
-	initialized = true;
-
-	AddDebugInformation();
-}
-
-struct BSGraphics_State_UpdateTemporalData
-{
-	static void thunk(RE::BSGraphics::State* a_state)
+	switch (a_msg->type) {
+	case F4SE::MessagingInterface::kGameDataReady:
 	{
-		func(a_state);
-		Initialize();
+		logger::info("Data loaded");
+		Upscaling::GetSingleton()->OnDataLoaded();
+#ifndef NDEBUG
+		AddDebugInformation();
+#endif
 	}
-	static inline REL::Relocation<decltype(thunk)> func;
-};
+	break;
+	default:
+		break;
+	}
+}
 
 extern "C" DLLEXPORT bool F4SEAPI F4SEPlugin_Load(const F4SE::LoadInterface* a_f4se)
 {
@@ -142,10 +136,12 @@ extern "C" DLLEXPORT bool F4SEAPI F4SEPlugin_Load(const F4SE::LoadInterface* a_f
 #endif
 
 	InitializeLog();
-	stl::write_thunk_call<BSGraphics_State_UpdateTemporalData>(REL::ID(502840).address() + 0x3C1);
 
 	DX11Hooks::Install();
 	Upscaling::InstallHooks();
+
+	const auto messaging = F4SE::GetMessagingInterface();
+	messaging->RegisterListener(OnInit);
 
 	return true;
 }

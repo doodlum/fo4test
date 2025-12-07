@@ -211,16 +211,10 @@ void Streamline::UpdateConstants(float2 a_jitter)
 
 	sl::Constants slConstants = {};
 
-#if defined(FALLOUT_POST_NG)
-	slConstants.cameraNear = *(float*)REL::ID(2712882).address();
-	slConstants.cameraFar = *(float*)REL::ID(2712883).address();
-#else
-	slConstants.cameraNear = *(float*)REL::ID(57985).address();
-	slConstants.cameraFar = *(float*)REL::ID(958877).address();
-#endif
-
-	slConstants.cameraAspectRatio = (float)gameViewport.screenWidth / (float)gameViewport.screenHeight;
-	slConstants.cameraFOV = 80.0f;
+	slConstants.cameraNear = 0;
+	slConstants.cameraFar = 1;
+	slConstants.cameraAspectRatio = 0.0f;
+	slConstants.cameraFOV = 0.0f;
 	slConstants.cameraMotionIncluded = sl::Boolean::eTrue;
 	slConstants.cameraPinholeOffset = { 0.f, 0.f };
 	slConstants.cameraPos = {};
