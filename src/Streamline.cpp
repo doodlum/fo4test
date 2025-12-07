@@ -244,47 +244,6 @@ void Streamline::UpdateConstants(float2 a_jitter)
 	}
 }
 
-float2 Streamline::GetInputResolutionScale(uint32_t outputWidth, uint32_t outputHeight, uint32_t qualityMode)
-{
-	sl::DLSSMode dlssMode;
-	switch (qualityMode) {
-	case 1:
-		dlssMode = sl::DLSSMode::eMaxQuality;
-		break;
-	case 2:
-		dlssMode = sl::DLSSMode::eBalanced;
-		break;
-	case 3:
-		dlssMode = sl::DLSSMode::eMaxPerformance;
-		break;
-	case 4:
-		dlssMode = sl::DLSSMode::eUltraPerformance;
-		break;
-	default:
-		dlssMode = sl::DLSSMode::eDLAA;
-		break;
-	}
-
-	sl::DLSSOptions dlssOptions{};
-	dlssOptions.mode = dlssMode;
-	dlssOptions.outputWidth = outputWidth;
-	dlssOptions.outputHeight = outputHeight;
-
-	sl::DLSSOptimalSettings optimalSettings{};
-	sl::Result result = slDLSSGetOptimalSettings(dlssOptions, optimalSettings);
-	if (result != sl::Result::eOk) {
-		logger::critical("[Streamline] Failed to get DLSS optimal settings, error code: {}", (int)result);
-		return { 1.0f, 1.0f };
-	}
-
-	// Calculate scale as ratio of optimal render resolution to output resolution
-	float scaleX = (float)optimalSettings.optimalRenderWidth / (float)outputWidth;
-	float scaleY = (float)optimalSettings.optimalRenderHeight / (float)outputHeight;
-	
-	// Return separate X and Y scales for more precision
-	return { scaleX, scaleY };
-}
-
 void Streamline::DestroyDLSSResources()
 {
 	sl::DLSSOptions dlssOptions{};

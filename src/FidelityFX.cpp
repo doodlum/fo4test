@@ -154,9 +154,3 @@ void FidelityFX::Upscale(Texture2D* a_color, float2 a_jitter, float2 a_renderSiz
 			logger::critical("[FidelityFX] Failed to dispatch upscaling!");
 	}
 }
-
-float2 FidelityFX::GetInputResolutionScale(uint32_t, uint32_t, uint32_t qualityMode)
-{
-	float scale = 1.0f / ffxFsr3GetUpscaleRatioFromQualityMode((FfxFsr3QualityMode)qualityMode);
-	return { scale, scale };
-}

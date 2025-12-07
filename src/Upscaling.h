@@ -19,7 +19,7 @@ public:
 
 	enum class UpscaleMethod
 	{
-		kTAA,
+		kDisabled,
 		kFSR,
 		kDLSS
 	};
@@ -99,9 +99,20 @@ public:
 
 	struct ImageSpaceEffectTemporalAA_IsActive
 	{
-		static bool thunk(struct ImageSpaceEffectTemporalAA*)
+		static bool thunk(struct ImageSpaceEffectTemporalAA* This)
 		{
-			return false;
+			auto upscaleMethod = GetSingleton()->GetUpscaleMethod();
+			return upscaleMethod == UpscaleMethod::kDisabled && func(This);
+		}
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
+
+	struct ImageSpaceEffectUpsampleDynamicResolution_IsActive
+	{
+		static bool thunk(struct ImageSpaceEffectUpsampleDynamicResolution*)
+		{
+			auto upscaleMethod = GetSingleton()->GetUpscaleMethod();
+			return upscaleMethod == UpscaleMethod::kDisabled;
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
@@ -140,24 +151,6 @@ public:
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
 
-	struct BSShaderUtil_SetCameraFOV
-	{
-		static void thunk(RE::ImageSpaceManager* This, uint a1, uint a2, uint a3, uint a4)
-		{
-			auto upscaling = Upscaling::GetSingleton();
-
-			func(This, a1, a2, a3, a4);
-
-			ImageSpaceManager_RenderEffectRange::func(This, 15, 21, 1, 0);
-
-			static auto renderTargetManager = RenderTargetManager_GetSingleton();
-			DrawWorld_Imagespace_SetUseDynamicResolutionViewportAsDefaultViewport::func(renderTargetManager, false);
-
-			upscaling->Upscale();
-		}
-		static inline REL::Relocation<decltype(thunk)> func;
-	};
-
 	static void InstallHooks()
 	{
 		// Control jitters, dynamic resolution, and sampler states
@@ -166,6 +159,9 @@ public:
 		// Disable TAA shader
 		stl::write_vfunc<0x8, ImageSpaceEffectTemporalAA_IsActive>(RE::VTABLE::ImageSpaceEffectTemporalAA[0]);
 		
+		// Enable dynamic resolution shader if TAA is enabled
+		stl::write_vfunc<0x8, ImageSpaceEffectUpsampleDynamicResolution_IsActive>(RE::VTABLE::ImageSpaceEffectUpsampleDynamicResolution[0]);
+
 		// Controls upscaling, and fixes the companion app and pipboy screen to render afterwards
 		stl::write_thunk_call<ImageSpaceManager_RenderEffectRange>(REL::ID(587723).address() + 0xD3);
 		stl::write_thunk_call<DrawWorld_Imagespace_SetUseDynamicResolutionViewportAsDefaultViewport>(REL::ID(587723).address() + 0xE1);

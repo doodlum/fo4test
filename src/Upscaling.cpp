@@ -60,6 +60,7 @@ void Upscaling::UpdateSamplerStates(float a_currentMipBias)
 	});
 
 	static float previousMipBias = 1.0f;
+	static float previousMipBiasSharper = 1.0f;
 
 	// Check for mipbias update
 	if (previousMipBias == a_currentMipBias)
@@ -86,8 +87,8 @@ void Upscaling::UpdateSamplerStates(float a_currentMipBias)
 			}
 
 			DX::ThrowIfFailed(device->CreateSamplerState(&samplerDesc, &biasedSamplerStates[a]));
-		}
-		else {
+
+		} else {
 			biasedSamplerStates[a] = nullptr;
 		}
 
@@ -108,21 +109,21 @@ Upscaling::UpscaleMethod Upscaling::GetUpscaleMethod()
 
 void Upscaling::CheckResources()
 {
-	static auto previousUpscaleMode = UpscaleMethod::kTAA;
+	static auto previousUpscaleMode = UpscaleMethod::kDisabled;
 	auto currentUpscaleMode = GetUpscaleMethod();
 
 	auto streamline = Streamline::GetSingleton();
 	auto fidelityFX = FidelityFX::GetSingleton();
 
 	if (previousUpscaleMode != currentUpscaleMode) {
-		if (previousUpscaleMode == UpscaleMethod::kTAA)
+		if (previousUpscaleMode == UpscaleMethod::kDisabled)
 			CreateUpscalingResources();
 		else if (previousUpscaleMode == UpscaleMethod::kFSR)
 			fidelityFX->DestroyFSRResources();
 		else if (previousUpscaleMode == UpscaleMethod::kDLSS)
 			streamline->DestroyDLSSResources();
 
-		if (currentUpscaleMode == UpscaleMethod::kTAA)
+		if (currentUpscaleMode == UpscaleMethod::kDisabled)
 			DestroyUpscalingResources();
 		else if (currentUpscaleMode == UpscaleMethod::kFSR)
 			fidelityFX->CreateFSRResources();
@@ -163,36 +164,6 @@ ID3D11ComputeShader* Upscaling::GetDilateMotionVectorCS()
 	return dilateMotionVectorCS;
 }
 
-int32_t GetJitterPhaseCount(int32_t renderWidth, int32_t displayWidth)
-{
-	const float basePhaseCount = 8.0f;
-	const int32_t jitterPhaseCount = int32_t(basePhaseCount * pow((float(displayWidth) / renderWidth), 2.0f));
-	return jitterPhaseCount;
-}
-
-// Calculate halton number for index and base
-static float Halton(int32_t index, int32_t base)
-{
-	float f = 1.0f, result = 0.0f;
-
-	for (int32_t currentIndex = index; currentIndex > 0;) {
-		f /= (float)base;
-		result = result + f * (float)(currentIndex % base);
-		currentIndex = (uint32_t)(floorf((float)(currentIndex) / (float)(base)));
-	}
-
-	return result;
-}
-
-void GetJitterOffset(float* outX, float* outY, int32_t index, int32_t phaseCount)
-{
-	const float x = Halton((index % phaseCount) + 1, 2) - 0.5f;
-	const float y = Halton((index % phaseCount) + 1, 3) - 0.5f;
-
-	*outX = x;
-	*outY = y;
-}
-
 void Upscaling::UpdateJitter()
 {
 	static auto gameViewport = State_GetSingleton();
@@ -200,39 +171,24 @@ void Upscaling::UpdateJitter()
 
 	auto upscaleMethod = GetUpscaleMethod();
 
+	float resolutionScaleBase = upscaleMethod == UpscaleMethod::kDisabled ? 1.0f : 1.0f / ffxFsr3GetUpscaleRatioFromQualityMode((FfxFsr3QualityMode)settings.qualityMode);
+
 	auto screenWidth = gameViewport->screenWidth;
 	auto screenHeight = gameViewport->screenHeight;
+	auto renderWidth = static_cast<uint>(screenWidth * resolutionScaleBase);
+	auto renderHeight = static_cast<uint>(screenHeight * resolutionScaleBase);
 
-	auto streamline = Streamline::GetSingleton();
-	auto fidelityFX = FidelityFX::GetSingleton();
+	resolutionScale.x = static_cast<float>(renderWidth) / static_cast<float>(screenWidth);
+	resolutionScale.y = static_cast<float>(renderHeight) / static_cast<float>(screenHeight);
+	
+	if (upscaleMethod != UpscaleMethod::kDisabled) {
+		auto phaseCount = ffxFsr3GetJitterPhaseCount(renderWidth, screenWidth);
 
-	float2 resolutionScaleBase = { 1.0f, 1.0f };
+		ffxFsr3GetJitterOffset(&jitter.x, &jitter.y, gameViewport->frameCount, phaseCount);
 
-	if (upscaleMethod == UpscaleMethod::kDLSS) {
-		resolutionScaleBase = streamline->GetInputResolutionScale(screenWidth, screenHeight, settings.qualityMode);
-	} else {
-		resolutionScaleBase = fidelityFX->GetInputResolutionScale(screenWidth, screenHeight, settings.qualityMode);
+		gameViewport->offsetX = 2.0f * -jitter.x / static_cast<float>(screenWidth);
+		gameViewport->offsetY = 2.0f * jitter.y / static_cast<float>(screenHeight);
 	}
-
-	auto renderWidth = static_cast<uint>(screenWidth * resolutionScaleBase.x);
-	auto renderHeight = static_cast<uint>(screenHeight * resolutionScaleBase.y);
-
-	// Use precise scale if the integer conversion doesn't change the dimensions
-	if (renderWidth == screenWidth && renderHeight == screenHeight) {
-		// For DLAA and other 1:1 modes, ensure exactly 1.0
-		resolutionScale.x = 1.0f;
-		resolutionScale.y = 1.0f;
-	} else {
-		resolutionScale.x = static_cast<float>(renderWidth) / static_cast<float>(screenWidth);
-		resolutionScale.y = static_cast<float>(renderHeight) / static_cast<float>(screenHeight);
-	}
-
-	auto phaseCount = upscaleMethod == UpscaleMethod::kTAA ? 8 : GetJitterPhaseCount(renderWidth, screenWidth);
-
-	GetJitterOffset(&jitter.x, &jitter.y, gameViewport->frameCount, phaseCount);
-
-	gameViewport->offsetX = 2.0f * -jitter.x / static_cast<float>(screenWidth);
-	gameViewport->offsetY = 2.0f * jitter.y / static_cast<float>(screenHeight);
 	
 	renderTargetManager->lowestWidthRatio = renderTargetManager->dynamicWidthRatio;
 	renderTargetManager->lowestHeightRatio = renderTargetManager->dynamicHeightRatio;
@@ -240,9 +196,9 @@ void Upscaling::UpdateJitter()
 	renderTargetManager->dynamicHeightRatio = resolutionScale.y;
 	
 	float currentMipBias = std::log2f(static_cast<float>(renderWidth) / static_cast<float>(screenWidth));
-
+	
 	if (upscaleMethod == UpscaleMethod::kDLSS)
-		currentMipBias -= -1.0f;
+		currentMipBias -= 1.0f;
 
 	UpdateSamplerStates(currentMipBias);
 }
@@ -250,6 +206,11 @@ void Upscaling::UpdateJitter()
 void Upscaling::Upscale()
 {
 	CheckResources();
+
+	auto upscaleMethod = GetUpscaleMethod();
+
+	if (upscaleMethod == UpscaleMethod::kDisabled)
+		return;
 
 	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
 	static auto context = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
@@ -269,7 +230,6 @@ void Upscaling::Upscale()
 	auto screenSize = float2(float(gameViewport->screenWidth), float(gameViewport->screenHeight));
 	auto renderSize = float2(screenSize.x * renderTargetManager->dynamicWidthRatio, screenSize.y * renderTargetManager->dynamicHeightRatio);
 
-	auto upscaleMethod = GetUpscaleMethod();
 	auto dlssPreset = (sl::DLSSPreset)settings.dlssPreset;
 
 	{
@@ -316,7 +276,7 @@ void Upscaling::Upscale()
 		ID3D11Buffer* nullBuffer = nullptr;
 		context->CSSetConstantBuffers(0, 1, &nullBuffer);
 
-		ID3D11ShaderResourceView* views[1] = { nullptr };
+		ID3D11ShaderResourceView* views[2] = { nullptr, nullptr };
 		context->CSSetShaderResources(0, ARRAYSIZE(views), views);
 
 		ID3D11UnorderedAccessView* uavs[1] = { nullptr };

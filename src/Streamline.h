@@ -66,7 +66,5 @@ public:
 	void Upscale(Texture2D* a_color, Texture2D* a_dilatedMotionVectorTexture, float2 a_jitter, float2 a_renderSize, uint a_qualityMode, sl::DLSSPreset a_preset);
 	void UpdateConstants(float2 a_jitter);
 
-	float2 GetInputResolutionScale(uint32_t outputWidth, uint32_t outputHeight, uint32_t qualityMode);
-
 	void DestroyDLSSResources();
 };
