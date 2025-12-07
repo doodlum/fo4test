@@ -183,12 +183,10 @@ void Upscaling::UpdateJitter()
 
 		auto phaseCount = GetJitterPhaseCount(renderWidth, screenWidth);
 
-		static uint frameCount = 0;
-		GetJitterOffset(&jitter.x, &jitter.y, frameCount, phaseCount);
-		frameCount++;
+		GetJitterOffset(&jitter.x, &jitter.y, gameViewport.frameCount, phaseCount);
 
-		gameViewport.offsetX = -jitter.x / float(screenWidth);
-		gameViewport.offsetY = jitter.y / float(screenHeight);
+		gameViewport.offsetX = -jitter.x / float(renderWidth);
+		gameViewport.offsetY = jitter.y / float(renderHeight);
 
 		currentMipBias = std::log2f(static_cast<float>(renderWidth) / screenSize.x);
 
@@ -320,23 +318,19 @@ void Upscaling::Upscale()
 	}
 
 	context->CopyResource(frameBufferResource, upscalingTexture->resource.get());
+
+	//renderTargetManager.dynamicWidthRatio = 1.0f;
+	//renderTargetManager.dynamicHeightRatio = 1.0f;
+	//renderTargetManager.lowestWidthRatio = 1.0f;
+	//renderTargetManager.lowestHeightRatio = 1.0f;
 }
 
 void Upscaling::UpdateDynamicResolution(RE::BSGraphics::RenderTargetManager* a_renderTargetManager)
 {	
+	a_renderTargetManager->lowestWidthRatio = a_renderTargetManager->dynamicWidthRatio;
+	a_renderTargetManager->lowestHeightRatio = a_renderTargetManager->dynamicHeightRatio;
 	a_renderTargetManager->dynamicWidthRatio = resolutionScale.x;
 	a_renderTargetManager->dynamicHeightRatio = resolutionScale.y;
-
-	if (resolutionScale.x == 1.0 && resolutionScale.y == 1.0f) {
-		a_renderTargetManager->isDynamicResolutionCurrentlyActivated = false;
-		a_renderTargetManager->SetEnableDynamicResolution(false);
-		enableDynamicResolution = false;
-	}
-	else {
-		a_renderTargetManager->isDynamicResolutionCurrentlyActivated = true;
-		a_renderTargetManager->SetEnableDynamicResolution(true);
-		enableDynamicResolution = true;
-	}
 }
 
 void Upscaling::CreateUpscalingResources()

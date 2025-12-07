@@ -73,8 +73,13 @@ public:
 	void CreateUpscalingResources();
 	void DestroyUpscalingResources();
 
-	bool enableDynamicResolution = false;
 	float currentMipBias = 0.0f;
+
+	[[nodiscard]] static RE::BSGraphics::RenderTargetManager* RenderTargetManager_GetSingleton()
+	{
+		REL::Relocation<RE::BSGraphics::RenderTargetManager*> singleton{ REL::ID(1508457) };
+		return singleton.get();
+	}
 
 	struct BSGraphics_State_UpdateTemporalData
 	{
@@ -95,15 +100,6 @@ public:
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
 
-	struct ImageSpaceEffectUpsampleDynamicResolution_IsActive
-	{
-		static bool thunk(struct ImageSpaceEffectUpsampleDynamicResolution*)
-		{
-			return GetSingleton()->enableDynamicResolution;
-		}
-		static inline REL::Relocation<decltype(thunk)> func;
-	};
-
 	struct BSGraphics_RenderTargetManager_UpdateDynamicResolution
 	{
 		static void thunk(RE::BSGraphics::RenderTargetManager* This,
@@ -119,100 +115,49 @@ public:
 
 	struct DrawWorld_Imagespace_SetUseDynamicResolutionViewportAsDefaultViewport
 	{
-		static void thunk(RE::BSGraphics::RenderTargetManager* This, bool a_true)
+		static void thunk(RE::BSGraphics::RenderTargetManager*, bool)
 		{
-			func(This, a_true);
-			GetSingleton()->Upscale();
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
 
-	struct DrawWorld_Imagespace
+	struct ImageSpaceManager_RenderEffectRange
 	{
-		static void thunk(RE::BSGraphics::RenderTargetManager* This)
+		static void thunk(RE::ImageSpaceManager*, uint, uint, uint, uint)
 		{
-			GetSingleton()->enableDynamicResolution = false;
-			func(This);
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
 
-	//static void ApplyJitterToProjection(RE::BSGraphics::CameraStateData& cameraData, float jitterX, float jitterY,
-	//	uint32_t renderWidth, uint32_t renderHeight)
-	//{
-	//	if (!cameraData.useJitter)
-	//		return;
+	struct ImageSpaceManager_RenderEffectRange2
+	{
+		static void thunk(RE::ImageSpaceManager* This, uint a1, uint a2, uint a3, uint a4)
+		{
+			auto upscaling = Upscaling::GetSingleton();
 
-	//	// Convert pixel jitter to NDC space [-1, 1]
-	//	float jitterNDC_X = (jitterX * 2.0f) / renderWidth;
-	//	float jitterNDC_Y = (jitterY * 2.0f) / renderHeight;
+			func(This, a1, a2, a3, a4);
 
-	//	// Apply jitter to projection matrix
-	//	// projMat[2] contains the third row (m02, m12, m22, m32)
-	//	// In DX, these are the z-related terms, but we offset x/y components
-	//	__m128 jitterOffset = _mm_set_ps(0.0f, 0.0f, jitterNDC_Y, jitterNDC_X);
+			ImageSpaceManager_RenderEffectRange::func(This, 15, 21, 1, 0);
 
-	//	// Apply to projection matrix - offset the projection center
-	//	cameraData.camViewData.projMat[2] = _mm_add_ps(
-	//		cameraData.camViewData.projMat[2],
-	//		jitterOffset
-	//	);
+			static auto renderTargetManager = RenderTargetManager_GetSingleton();
+			DrawWorld_Imagespace_SetUseDynamicResolutionViewportAsDefaultViewport::func(renderTargetManager, false);
 
-	//	// Recompute view-projection matrix with jittered projection
-	//	for (int row = 0; row < 4; row++) {
-	//		__m128 result = _mm_setzero_ps();
-	//		for (int i = 0; i < 4; i++) {
-	//			__m128 viewRow = cameraData.camViewData.viewMat[i];
-	//			__m128 projCol = _mm_set_ps(
-	//				cameraData.camViewData.projMat[3].m128_f32[row],
-	//				cameraData.camViewData.projMat[2].m128_f32[row],
-	//				cameraData.camViewData.projMat[1].m128_f32[row],
-	//				cameraData.camViewData.projMat[0].m128_f32[row]
-	//			);
-	//			result = _mm_add_ps(result, _mm_mul_ps(viewRow, projCol));
-	//		}
-	//		cameraData.camViewData.viewProjMat[row] = result;
-	//	}
-	//}
-
-	//struct BSGraphics_State_BuildCameraStateData
-	//{
-	//	static void thunk(RE::BSGraphics::State* This,
-	//		RE::BSGraphics::CameraStateData* a_stateData,
-	//		RE::NiCamera* a_camera,
-	//		bool a_useJitter)
-	//	{
-	//		func(This, a_stateData, a_camera, false);
-
-	//		a_stateData->useJitter = a_useJitter;
-
-	//		static auto gameViewport = RE::BSGraphics::State::GetSingleton();
-	//		static auto renderTargetManager = RE::BSGraphics::RenderTargetManager::GetSingleton();
-	//		auto renderSize = float2(float(gameViewport.screenWidth) * renderTargetManager.dynamicWidthRatio, float(gameViewport.screenHeight) * renderTargetManager.dynamicHeightRatio);
-
-	//		auto renderWidth = static_cast<uint>(renderSize.x);
-	//		auto renderHeight = static_cast<uint>(renderSize.y);
-
-	//		ApplyJitterToProjection(&a_stateData,
-	//			GetSingleton()->jitter.x,
-	//			GetSingleton()->jitter.y,
-	//			renderWidth,
-	//			renderHeight);
-	//	}
-	//	static inline REL::Relocation<decltype(thunk)> func;
-	//};
+			upscaling->Upscale();
+		}
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
 
 	static void InstallHooks()
 	{
 		stl::write_thunk_call<BSGraphics_State_UpdateTemporalData>(REL::ID(502840).address() + 0x3C1);
-		stl::write_thunk_call<DrawWorld_Imagespace_SetUseDynamicResolutionViewportAsDefaultViewport>(REL::ID(587723).address() + 0xE1);
 		
 		stl::write_vfunc<0x8, ImageSpaceEffectTemporalAA_IsActive>(RE::VTABLE::ImageSpaceEffectTemporalAA[0]);
-		stl::write_vfunc<0x8, ImageSpaceEffectUpsampleDynamicResolution_IsActive>(RE::VTABLE::ImageSpaceEffectUpsampleDynamicResolution[0]);
 		
-		stl::detour_thunk<DrawWorld_Imagespace>(REL::ID(587723)); // 141D31B90
 		stl::detour_thunk<BSGraphics_RenderTargetManager_UpdateDynamicResolution>(REL::ID(1115215)); // 141D31B90
 
-		//stl::detour_thunk<BSGraphics_State_BuildCameraStateData>(REL::ID(2424)); // 141D31B90
+		stl::write_thunk_call<ImageSpaceManager_RenderEffectRange>(REL::ID(587723).address() + 0xD3);
+		stl::write_thunk_call<DrawWorld_Imagespace_SetUseDynamicResolutionViewportAsDefaultViewport>(REL::ID(587723).address() + 0xE1);
+		stl::write_thunk_call<ImageSpaceManager_RenderEffectRange2>(REL::ID(587723).address() + 0x9F);
+
 	}
 };

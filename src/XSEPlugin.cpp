@@ -119,6 +119,15 @@ void Initialize()
 	AddDebugInformation();
 }
 
+struct BSGraphics_State_UpdateTemporalData
+{
+	static void thunk(RE::BSGraphics::State* a_state)
+	{
+		func(a_state);
+		Initialize();
+	}
+	static inline REL::Relocation<decltype(thunk)> func;
+};
 
 extern "C" DLLEXPORT bool F4SEAPI F4SEPlugin_Load(const F4SE::LoadInterface* a_f4se)
 {
@@ -133,6 +142,8 @@ extern "C" DLLEXPORT bool F4SEAPI F4SEPlugin_Load(const F4SE::LoadInterface* a_f
 #endif
 
 	InitializeLog();
+	stl::write_thunk_call<BSGraphics_State_UpdateTemporalData>(REL::ID(502840).address() + 0x3C1);
+
 	DX11Hooks::Install();
 	Upscaling::InstallHooks();
 
