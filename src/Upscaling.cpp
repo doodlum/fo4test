@@ -45,7 +45,7 @@ RE::BSEventNotifyControl Upscaling::ProcessEvent(const RE::MenuOpenCloseEvent& a
 }
 
 // Hacky method of overriding sampler states
-void Upscaling::UpdateSamplerStates()
+void Upscaling::UpdateSamplerStates(float a_currentMipBias)
 {
 	static auto samplerStates = SamplerStates::GetSingleton();
 	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
@@ -62,10 +62,10 @@ void Upscaling::UpdateSamplerStates()
 	static float previousMipBias = 1.0f;
 
 	// Check for mipbias update
-	if (previousMipBias == currentMipBias)
+	if (previousMipBias == a_currentMipBias)
 		return;
 
-	previousMipBias = currentMipBias;
+	previousMipBias = a_currentMipBias;
 
 	for (int a = 0; a < 320; a++) {
 		// Delete any existing biased sampler state
@@ -82,7 +82,7 @@ void Upscaling::UpdateSamplerStates()
 			// Apply mip bias
 			if (samplerDesc.Filter == D3D11_FILTER_ANISOTROPIC && samplerDesc.MaxAnisotropy == 16) {
 				samplerDesc.MaxAnisotropy = 8;
-				samplerDesc.MipLODBias = currentMipBias;
+				samplerDesc.MipLODBias = a_currentMipBias;
 			}
 
 			DX::ThrowIfFailed(device->CreateSamplerState(&samplerDesc, &biasedSamplerStates[a]));
@@ -233,18 +233,18 @@ void Upscaling::UpdateJitter()
 
 	gameViewport->offsetX = 2.0f * -jitter.x / static_cast<float>(screenWidth);
 	gameViewport->offsetY = 2.0f * jitter.y / static_cast<float>(screenHeight);
-
-	currentMipBias = std::log2f(static_cast<float>(renderWidth) / static_cast<float>(screenWidth));
-
-	if (upscaleMethod == Upscaling::UpscaleMethod::kDLSS)
-		currentMipBias -= 1.0f;
 	
 	renderTargetManager->lowestWidthRatio = renderTargetManager->dynamicWidthRatio;
 	renderTargetManager->lowestHeightRatio = renderTargetManager->dynamicHeightRatio;
 	renderTargetManager->dynamicWidthRatio = resolutionScale.x;
 	renderTargetManager->dynamicHeightRatio = resolutionScale.y;
+	
+	float currentMipBias = std::log2f(static_cast<float>(renderWidth) / static_cast<float>(screenWidth));
 
-	UpdateSamplerStates();
+	if (upscaleMethod == UpscaleMethod::kDLSS)
+		currentMipBias -= -1.0f;
+
+	UpdateSamplerStates(currentMipBias);
 }
 
 void Upscaling::Upscale()

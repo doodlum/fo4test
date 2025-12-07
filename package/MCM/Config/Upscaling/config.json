@@ -21,7 +21,6 @@
 		"text": "When ENBSeries is active, the Quality Mode is locked to Native AA for compatibility.",
 		"type": "text"
 		},
-		{ "type": "spacer" },
 		{
 		"text": "Options",
 		"type": "section"
