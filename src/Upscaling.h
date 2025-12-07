@@ -54,8 +54,6 @@ public:
 	void UpdateJitter();
 	void Upscale();
 
-	void UpdateDynamicResolution(RE::BSGraphics::RenderTargetManager* a_renderTargetManager);
-
 	Texture2D* upscalingTexture;
 	Texture2D* dilatedMotionVectorTexture;
 
@@ -74,6 +72,12 @@ public:
 	void DestroyUpscalingResources();
 
 	float currentMipBias = 0.0f;
+
+	[[nodiscard]] static RE::BSGraphics::State* State_GetSingleton()
+	{
+		REL::Relocation<RE::BSGraphics::State*> singleton{ REL::ID(600795) };
+		return singleton.get();
+	}
 
 	[[nodiscard]] static RE::BSGraphics::RenderTargetManager* RenderTargetManager_GetSingleton()
 	{
@@ -96,19 +100,6 @@ public:
 		static bool thunk(struct ImageSpaceEffectTemporalAA*)
 		{
 			return false;
-		}
-		static inline REL::Relocation<decltype(thunk)> func;
-	};
-
-	struct BSGraphics_RenderTargetManager_UpdateDynamicResolution
-	{
-		static void thunk(RE::BSGraphics::RenderTargetManager* This,
-			float*,
-			float*,
-			float*,
-			float*)
-		{
-			GetSingleton()->UpdateDynamicResolution(This);
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
@@ -153,11 +144,8 @@ public:
 		
 		stl::write_vfunc<0x8, ImageSpaceEffectTemporalAA_IsActive>(RE::VTABLE::ImageSpaceEffectTemporalAA[0]);
 		
-		stl::detour_thunk<BSGraphics_RenderTargetManager_UpdateDynamicResolution>(REL::ID(1115215)); // 141D31B90
-
 		stl::write_thunk_call<ImageSpaceManager_RenderEffectRange>(REL::ID(587723).address() + 0xD3);
 		stl::write_thunk_call<DrawWorld_Imagespace_SetUseDynamicResolutionViewportAsDefaultViewport>(REL::ID(587723).address() + 0xE1);
 		stl::write_thunk_call<ImageSpaceManager_RenderEffectRange2>(REL::ID(587723).address() + 0x9F);
-
 	}
 };

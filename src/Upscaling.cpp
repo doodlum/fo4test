@@ -143,14 +143,13 @@ void GetJitterOffset(float* outX, float* outY, int32_t index, int32_t phaseCount
 
 void Upscaling::UpdateJitter()
 {
-	auto gameViewport = RE::BSGraphics::State::GetSingleton();
+	static auto gameViewport = State_GetSingleton();
+	static auto renderTargetManager = RenderTargetManager_GetSingleton();
 
 	auto upscaleMethod = GetUpscaleMethod();
 
-	auto screenWidth = gameViewport.screenWidth;
-	auto screenHeight = gameViewport.screenHeight;
-
-	auto screenSize = float2(float(screenWidth), float(screenHeight));
+	auto screenWidth = gameViewport->screenWidth;
+	auto screenHeight = gameViewport->screenHeight;
 
 	auto streamline = Streamline::GetSingleton();
 	auto fidelityFX = FidelityFX::GetSingleton();
@@ -158,13 +157,10 @@ void Upscaling::UpdateJitter()
 	if (upscaleMethod != UpscaleMethod::kNone && upscaleMethod != UpscaleMethod::kTAA) {
 		float2 resolutionScaleBase = { 1.0f, 1.0f };
 
-		//static auto iniSettingCollection = RE::INISettingCollection::GetSingleton();
-		//iniSettingCollection->GetSetting("bUseTAA:Display")->SetBinary(true);
-
 		if (upscaleMethod == UpscaleMethod::kDLSS) {
-			resolutionScaleBase = streamline->GetInputResolutionScale((uint32_t)screenSize.x, (uint32_t)screenSize.y, settings.qualityMode);
+			resolutionScaleBase = streamline->GetInputResolutionScale(screenWidth, screenHeight, settings.qualityMode);
 		} else if (upscaleMethod == UpscaleMethod::kFSR) {
-			resolutionScaleBase = fidelityFX->GetInputResolutionScale((uint32_t)screenSize.x, (uint32_t)screenSize.y, settings.qualityMode);
+			resolutionScaleBase = fidelityFX->GetInputResolutionScale(screenWidth, screenHeight, settings.qualityMode);
 		}
 
 		auto renderWidth = static_cast<uint>(screenWidth * resolutionScaleBase.x);
@@ -175,20 +171,19 @@ void Upscaling::UpdateJitter()
 			// For DLAA and other 1:1 modes, ensure exactly 1.0
 			resolutionScale.x = 1.0f;
 			resolutionScale.y = 1.0f;
-		}
-		else {
+		} else {
 			resolutionScale.x = static_cast<float>(renderWidth) / static_cast<float>(screenWidth);
 			resolutionScale.y = static_cast<float>(renderHeight) / static_cast<float>(screenHeight);
 		}
 
 		auto phaseCount = GetJitterPhaseCount(renderWidth, screenWidth);
 
-		GetJitterOffset(&jitter.x, &jitter.y, gameViewport.frameCount, phaseCount);
+		GetJitterOffset(&jitter.x, &jitter.y, gameViewport->frameCount, phaseCount);
 
-		gameViewport.offsetX = -jitter.x / float(renderWidth);
-		gameViewport.offsetY = jitter.y / float(renderHeight);
+		gameViewport->offsetX = 2.0f * -jitter.x / static_cast<float>(renderWidth);
+		gameViewport->offsetY = 2.0f * jitter.y / static_cast<float>(renderHeight);
 
-		currentMipBias = std::log2f(static_cast<float>(renderWidth) / screenSize.x);
+		currentMipBias = std::log2f(static_cast<float>(renderWidth) / static_cast<float>(screenWidth));
 
 		if (upscaleMethod == Upscaling::UpscaleMethod::kDLSS)
 			currentMipBias -= 1.0f;
@@ -196,9 +191,16 @@ void Upscaling::UpdateJitter()
 		resolutionScale = { 1.0f, 1.0f };
 		currentMipBias = 0.0f;
 
-		jitter.x = -gameViewport.offsetX * screenWidth / 2.0f;
-		jitter.y = gameViewport.offsetY * screenHeight / 2.0f;
+		jitter.x = -gameViewport->offsetX * static_cast<float>(screenWidth) / 2.0f;
+		jitter.y = gameViewport->offsetY * static_cast<float>(screenHeight) / 2.0f;
 	}
+
+	renderTargetManager->lowestWidthRatio = renderTargetManager->dynamicWidthRatio;
+	renderTargetManager->lowestHeightRatio = renderTargetManager->dynamicHeightRatio;
+	renderTargetManager->dynamicWidthRatio = resolutionScale.x;
+	renderTargetManager->dynamicHeightRatio = resolutionScale.y;
+	renderTargetManager->ratioIncreasePerSeconds = 0.0f;
+	renderTargetManager->ratioDecreasePerSeconds = 0.0f;
 
 	// Hacky method of overriding sampler states
 	OverrideSamplerStates();
@@ -220,11 +222,11 @@ void Upscaling::Upscale()
 
 	context->CopyResource(upscalingTexture->resource.get(), frameBufferResource);
 
-	static auto gameViewport = RE::BSGraphics::State::GetSingleton();
-	static auto renderTargetManager = RE::BSGraphics::RenderTargetManager::GetSingleton();
+	static auto gameViewport = State_GetSingleton();
+	static auto renderTargetManager = RenderTargetManager_GetSingleton();
 	
-	auto screenSize = float2(float(gameViewport.screenWidth), float(gameViewport.screenHeight));
-	auto renderSize = float2(screenSize.x * renderTargetManager.dynamicWidthRatio, screenSize.y * renderTargetManager.dynamicHeightRatio);
+	auto screenSize = float2(float(gameViewport->screenWidth), float(gameViewport->screenHeight));
+	auto renderSize = float2(screenSize.x * renderTargetManager->dynamicWidthRatio, screenSize.y * renderTargetManager->dynamicHeightRatio);
 
 	auto upscaleMethod = GetUpscaleMethod();
 	auto dlssPreset = (sl::DLSSPreset)settings.dlssPreset;
@@ -318,19 +320,6 @@ void Upscaling::Upscale()
 	}
 
 	context->CopyResource(frameBufferResource, upscalingTexture->resource.get());
-
-	//renderTargetManager.dynamicWidthRatio = 1.0f;
-	//renderTargetManager.dynamicHeightRatio = 1.0f;
-	//renderTargetManager.lowestWidthRatio = 1.0f;
-	//renderTargetManager.lowestHeightRatio = 1.0f;
-}
-
-void Upscaling::UpdateDynamicResolution(RE::BSGraphics::RenderTargetManager* a_renderTargetManager)
-{	
-	a_renderTargetManager->lowestWidthRatio = a_renderTargetManager->dynamicWidthRatio;
-	a_renderTargetManager->lowestHeightRatio = a_renderTargetManager->dynamicHeightRatio;
-	a_renderTargetManager->dynamicWidthRatio = resolutionScale.x;
-	a_renderTargetManager->dynamicHeightRatio = resolutionScale.y;
 }
 
 void Upscaling::CreateUpscalingResources()
