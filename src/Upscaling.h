@@ -43,7 +43,7 @@ public:
 
 	RE::BSEventNotifyControl ProcessEvent(const RE::MenuOpenCloseEvent& a_event, RE::BSTEventSource<RE::MenuOpenCloseEvent>*);
 
-	void UpdateSamplerStates();
+	void UpdateSamplerStates(float a_currentMipBias);
 
 	UpscaleMethod GetUpscaleMethod();
 
@@ -74,8 +74,6 @@ public:
 
 	void CreateUpscalingResources();
 	void DestroyUpscalingResources();
-
-	float currentMipBias = 0.0f;
 
 	[[nodiscard]] static RE::BSGraphics::State* State_GetSingleton()
 	{
