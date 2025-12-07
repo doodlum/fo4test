@@ -6,7 +6,7 @@
 #include "FidelityFX.h"
 #include "Streamline.h"
 
-class Upscaling
+class Upscaling : public RE::BSTEventSink<RE::MenuOpenCloseEvent>
 {
 public:
 	static Upscaling* GetSingleton()
@@ -19,7 +19,6 @@ public:
 
 	enum class UpscaleMethod
 	{
-		kNone,
 		kTAA,
 		kFSR,
 		kDLSS
@@ -27,8 +26,7 @@ public:
 
 	struct Settings
 	{
-		uint upscaleMethod = (uint)UpscaleMethod::kDLSS;
-		uint upscaleMethodNoDLSS = (uint)UpscaleMethod::kFSR;
+		uint upscaleMethodPreference = (uint)UpscaleMethod::kDLSS;
 		float sharpness = 0.0f;
 		uint dlssPreset = (uint)sl::DLSSPreset::ePresetK;
 		uint qualityMode = 1;  // Default to Quality (1=Quality, 2=Balanced, 3=Performance, 4=Ultra Performance, 0=Native AA)
@@ -36,10 +34,16 @@ public:
 
 	Settings settings;
 
-	ID3D11SamplerState* forwardSamplerStates[320];
+	ID3D11SamplerState* originalSamplerStates[320];
 	ID3D11SamplerState* biasedSamplerStates[320];
 
-	void OverrideSamplerStates();
+	void LoadSettings();
+
+	void OnDataLoaded();
+
+	RE::BSEventNotifyControl ProcessEvent(const RE::MenuOpenCloseEvent& a_event, RE::BSTEventSource<RE::MenuOpenCloseEvent>*);
+
+	void UpdateSamplerStates();
 
 	UpscaleMethod GetUpscaleMethod();
 
@@ -138,14 +142,39 @@ public:
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
 
+	struct BSShaderUtil_SetCameraFOV
+	{
+		static void thunk(RE::ImageSpaceManager* This, uint a1, uint a2, uint a3, uint a4)
+		{
+			auto upscaling = Upscaling::GetSingleton();
+
+			func(This, a1, a2, a3, a4);
+
+			ImageSpaceManager_RenderEffectRange::func(This, 15, 21, 1, 0);
+
+			static auto renderTargetManager = RenderTargetManager_GetSingleton();
+			DrawWorld_Imagespace_SetUseDynamicResolutionViewportAsDefaultViewport::func(renderTargetManager, false);
+
+			upscaling->Upscale();
+		}
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
+
 	static void InstallHooks()
 	{
+		// Control jitters, dynamic resolution, and sampler states
 		stl::write_thunk_call<BSGraphics_State_UpdateTemporalData>(REL::ID(502840).address() + 0x3C1);
 		
+		// Disable TAA shader
 		stl::write_vfunc<0x8, ImageSpaceEffectTemporalAA_IsActive>(RE::VTABLE::ImageSpaceEffectTemporalAA[0]);
 		
+		// Controls upscaling, and fixes the companion app and pipboy screen to render afterwards
 		stl::write_thunk_call<ImageSpaceManager_RenderEffectRange>(REL::ID(587723).address() + 0xD3);
 		stl::write_thunk_call<DrawWorld_Imagespace_SetUseDynamicResolutionViewportAsDefaultViewport>(REL::ID(587723).address() + 0xE1);
 		stl::write_thunk_call<ImageSpaceManager_RenderEffectRange2>(REL::ID(587723).address() + 0x9F);
+		
+		// Disable BSGraphics::RenderTargetManager::UpdateDynamicResolution
+		REL::Relocation<std::uintptr_t> target{ REL::ID(984743), 0x14B };
+		REL::safe_fill(target.address(), 0x90, 5);
 	}
 };

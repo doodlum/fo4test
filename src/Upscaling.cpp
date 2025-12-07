@@ -1,6 +1,7 @@
 #include "Upscaling.h"
 
 #include <unordered_set>
+#include <SimpleIni.h>
 
 #include "Util.h"
 
@@ -15,43 +16,94 @@ struct SamplerStates
 	}
 };
 
-void Upscaling::OverrideSamplerStates()
+void Upscaling::LoadSettings()
 {
-	auto samplerStates = SamplerStates::GetSingleton();
+	CSimpleIniA ini;
+	ini.SetUnicode();
+	ini.LoadFile("Data\\MCM\\Settings\\Upscaling.ini");
+	
+	settings.upscaleMethodPreference = static_cast<uint>(ini.GetLongValue("Settings", "iUpscaleMethodPreference", 2));
+	settings.qualityMode = static_cast<uint>(ini.GetLongValue("Settings", "iQualityMode", 1));
+	settings.sharpness = static_cast<float>(ini.GetDoubleValue("Settings", "fSharpness", 0.5));
+}
+
+void Upscaling::OnDataLoaded()
+{
+	RE::UI::GetSingleton()->RegisterSink<RE::MenuOpenCloseEvent>(this);
+	LoadSettings();
+}
+
+RE::BSEventNotifyControl Upscaling::ProcessEvent(const RE::MenuOpenCloseEvent& a_event, RE::BSTEventSource<RE::MenuOpenCloseEvent>*)
+{
+	if (a_event.menuName == "PauseMenu") {
+		if (!a_event.opening) {
+			GetSingleton()->LoadSettings();
+		}
+	}
+
+	return RE::BSEventNotifyControl::kContinue;
+}
+
+// Hacky method of overriding sampler states
+void Upscaling::UpdateSamplerStates()
+{
+	static auto samplerStates = SamplerStates::GetSingleton();
+	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
+	auto device = reinterpret_cast<ID3D11Device*>(rendererData->device);
+
+	// Store original sampler states
 	static std::once_flag setup;
 	std::call_once(setup, [&]() {
-		auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
-		auto device = reinterpret_cast<ID3D11Device*>(rendererData->device);
-
-		// Store original sampler states and create biased versions
 		for (int a = 0; a < 320; a++) {
-			forwardSamplerStates[a] = samplerStates->a[a];
-
-			if (auto samplerState = forwardSamplerStates[a]) {
-				D3D11_SAMPLER_DESC samplerDesc;
-				samplerState->GetDesc(&samplerDesc);
-
-				// Apply mip bias
-				if (samplerDesc.Filter == D3D11_FILTER_ANISOTROPIC && samplerDesc.MaxAnisotropy == 16) {
-					samplerDesc.MaxAnisotropy = 8;
-					samplerDesc.MipLODBias = currentMipBias;
-				}
-
-				DX::ThrowIfFailed(device->CreateSamplerState(&samplerDesc, &biasedSamplerStates[a]));
-			}
-			else {
-				biasedSamplerStates[a] = nullptr;
-			}
-
-			samplerStates->a[a] = biasedSamplerStates[a];
+			originalSamplerStates[a] = samplerStates->a[a];
 		}
 	});
+
+	static float previousMipBias = 1.0f;
+
+	// Check for mipbias update
+	if (previousMipBias == currentMipBias)
+		return;
+
+	previousMipBias = currentMipBias;
+
+	for (int a = 0; a < 320; a++) {
+		// Delete any existing biased sampler state
+		if (biasedSamplerStates[a]){
+			biasedSamplerStates[a]->Release();
+			biasedSamplerStates[a] = nullptr;
+		}
+		
+		// Replace sampler state with biased version
+		if (auto samplerState = originalSamplerStates[a]) {
+			D3D11_SAMPLER_DESC samplerDesc;
+			samplerState->GetDesc(&samplerDesc);
+
+			// Apply mip bias
+			if (samplerDesc.Filter == D3D11_FILTER_ANISOTROPIC && samplerDesc.MaxAnisotropy == 16) {
+				samplerDesc.MaxAnisotropy = 8;
+				samplerDesc.MipLODBias = currentMipBias;
+			}
+
+			DX::ThrowIfFailed(device->CreateSamplerState(&samplerDesc, &biasedSamplerStates[a]));
+		}
+		else {
+			biasedSamplerStates[a] = nullptr;
+		}
+
+		samplerStates->a[a] = biasedSamplerStates[a];
+	}
 }
 
 Upscaling::UpscaleMethod Upscaling::GetUpscaleMethod()
 {
 	auto streamline = Streamline::GetSingleton();
-	return streamline->featureDLSS ? (UpscaleMethod)settings.upscaleMethod : (UpscaleMethod)settings.upscaleMethodNoDLSS;
+
+	// If DLSS is not available, default to FSR
+	if (!streamline->featureDLSS && settings.upscaleMethodPreference == (uint)UpscaleMethod::kDLSS)
+		return UpscaleMethod::kFSR;
+
+	return (UpscaleMethod)settings.upscaleMethodPreference;
 }
 
 void Upscaling::CheckResources()
@@ -118,7 +170,7 @@ int32_t GetJitterPhaseCount(int32_t renderWidth, int32_t displayWidth)
 	return jitterPhaseCount;
 }
 
-// Calculate halton number for index and base.
+// Calculate halton number for index and base
 static float Halton(int32_t index, int32_t base)
 {
 	float f = 1.0f, result = 0.0f;
@@ -154,56 +206,45 @@ void Upscaling::UpdateJitter()
 	auto streamline = Streamline::GetSingleton();
 	auto fidelityFX = FidelityFX::GetSingleton();
 
-	if (upscaleMethod != UpscaleMethod::kNone && upscaleMethod != UpscaleMethod::kTAA) {
-		float2 resolutionScaleBase = { 1.0f, 1.0f };
+	float2 resolutionScaleBase = { 1.0f, 1.0f };
 
-		if (upscaleMethod == UpscaleMethod::kDLSS) {
-			resolutionScaleBase = streamline->GetInputResolutionScale(screenWidth, screenHeight, settings.qualityMode);
-		} else if (upscaleMethod == UpscaleMethod::kFSR) {
-			resolutionScaleBase = fidelityFX->GetInputResolutionScale(screenWidth, screenHeight, settings.qualityMode);
-		}
-
-		auto renderWidth = static_cast<uint>(screenWidth * resolutionScaleBase.x);
-		auto renderHeight = static_cast<uint>(screenHeight * resolutionScaleBase.y);
-
-		// Use precise scale if the integer conversion doesn't change the dimensions
-		if (renderWidth == screenWidth && renderHeight == screenHeight) {
-			// For DLAA and other 1:1 modes, ensure exactly 1.0
-			resolutionScale.x = 1.0f;
-			resolutionScale.y = 1.0f;
-		} else {
-			resolutionScale.x = static_cast<float>(renderWidth) / static_cast<float>(screenWidth);
-			resolutionScale.y = static_cast<float>(renderHeight) / static_cast<float>(screenHeight);
-		}
-
-		auto phaseCount = GetJitterPhaseCount(renderWidth, screenWidth);
-
-		GetJitterOffset(&jitter.x, &jitter.y, gameViewport->frameCount, phaseCount);
-
-		gameViewport->offsetX = 2.0f * -jitter.x / static_cast<float>(renderWidth);
-		gameViewport->offsetY = 2.0f * jitter.y / static_cast<float>(renderHeight);
-
-		currentMipBias = std::log2f(static_cast<float>(renderWidth) / static_cast<float>(screenWidth));
-
-		if (upscaleMethod == Upscaling::UpscaleMethod::kDLSS)
-			currentMipBias -= 1.0f;
+	if (upscaleMethod == UpscaleMethod::kDLSS) {
+		resolutionScaleBase = streamline->GetInputResolutionScale(screenWidth, screenHeight, settings.qualityMode);
 	} else {
-		resolutionScale = { 1.0f, 1.0f };
-		currentMipBias = 0.0f;
-
-		jitter.x = -gameViewport->offsetX * static_cast<float>(screenWidth) / 2.0f;
-		jitter.y = gameViewport->offsetY * static_cast<float>(screenHeight) / 2.0f;
+		resolutionScaleBase = fidelityFX->GetInputResolutionScale(screenWidth, screenHeight, settings.qualityMode);
 	}
 
+	auto renderWidth = static_cast<uint>(screenWidth * resolutionScaleBase.x);
+	auto renderHeight = static_cast<uint>(screenHeight * resolutionScaleBase.y);
+
+	// Use precise scale if the integer conversion doesn't change the dimensions
+	if (renderWidth == screenWidth && renderHeight == screenHeight) {
+		// For DLAA and other 1:1 modes, ensure exactly 1.0
+		resolutionScale.x = 1.0f;
+		resolutionScale.y = 1.0f;
+	} else {
+		resolutionScale.x = static_cast<float>(renderWidth) / static_cast<float>(screenWidth);
+		resolutionScale.y = static_cast<float>(renderHeight) / static_cast<float>(screenHeight);
+	}
+
+	auto phaseCount = upscaleMethod == UpscaleMethod::kTAA ? 8 : GetJitterPhaseCount(renderWidth, screenWidth);
+
+	GetJitterOffset(&jitter.x, &jitter.y, gameViewport->frameCount, phaseCount);
+
+	gameViewport->offsetX = 2.0f * -jitter.x / static_cast<float>(screenWidth);
+	gameViewport->offsetY = 2.0f * jitter.y / static_cast<float>(screenHeight);
+
+	currentMipBias = std::log2f(static_cast<float>(renderWidth) / static_cast<float>(screenWidth));
+
+	if (upscaleMethod == Upscaling::UpscaleMethod::kDLSS)
+		currentMipBias -= 1.0f;
+	
 	renderTargetManager->lowestWidthRatio = renderTargetManager->dynamicWidthRatio;
 	renderTargetManager->lowestHeightRatio = renderTargetManager->dynamicHeightRatio;
 	renderTargetManager->dynamicWidthRatio = resolutionScale.x;
 	renderTargetManager->dynamicHeightRatio = resolutionScale.y;
-	renderTargetManager->ratioIncreasePerSeconds = 0.0f;
-	renderTargetManager->ratioDecreasePerSeconds = 0.0f;
 
-	// Hacky method of overriding sampler states
-	OverrideSamplerStates();
+	UpdateSamplerStates();
 }
 
 void Upscaling::Upscale()

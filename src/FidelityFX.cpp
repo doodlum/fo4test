@@ -123,10 +123,10 @@ void FidelityFX::Upscale(Texture2D* a_color, float2 a_jitter, float2 a_renderSiz
 		dispatchParameters.reactive = ffxGetResource(nullptr, L"FSR3_InputReactiveMap", FFX_RESOURCE_STATE_PIXEL_COMPUTE_READ);
 		dispatchParameters.transparencyAndComposition = ffxGetResource(nullptr, L"FSR3_TransparencyAndCompositionMap", FFX_RESOURCE_STATE_PIXEL_COMPUTE_READ);
 
-		dispatchParameters.motionVectorScale.x = (float)gameViewport.screenWidth;
-		dispatchParameters.motionVectorScale.y = (float)gameViewport.screenHeight;
-		dispatchParameters.renderSize.width = (uint)a_renderSize.x;
-		dispatchParameters.renderSize.height = (uint)a_renderSize.y;
+		dispatchParameters.motionVectorScale.x = a_renderSize.x;
+		dispatchParameters.motionVectorScale.y = a_renderSize.y;
+		dispatchParameters.renderSize.width = static_cast<uint>(a_renderSize.x);
+		dispatchParameters.renderSize.height = static_cast<uint>(a_renderSize.y);
 		dispatchParameters.jitterOffset.x = -a_jitter.x;
 		dispatchParameters.jitterOffset.y = -a_jitter.y;
 

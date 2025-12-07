@@ -1,0 +1,72 @@
+{
+	"modName": "Upscaling",
+	"displayName": "Upscaling",
+	"minMcmVersion": 2,
+	"pluginRequirements": [],
+	"content": [
+		{
+		"text": "<font size='30'><p align='center'>Upscaling</p></font>",
+		"html": true,
+		"type": "text"
+		},
+		{
+		"text": "About",
+		"type": "section"
+		},
+		{
+		"text": "Upscaling reconstructs lower resolutions to the native resolution using advanced algorithms, improving image quality and performance.",
+		"type": "text"
+		},
+		{
+		"text": "When ENBSeries is active, the Quality Mode is locked to Native AA for compatibility.",
+		"type": "text"
+		},
+		{ "type": "spacer" },
+		{
+		"text": "Options",
+		"type": "section"
+		},
+		{
+			"id": "iUpscaleMethodPreference:Settings",
+			"text": "Upscale Method Preference",
+			"type": "stepper",
+			"help": "NVIDIA DLSS 4 is automatically used if available, otherwise AMD FSR 3.1 is used. (Default: DLSS)",
+			"valueOptions": {
+				"sourceType": "ModSettingInt",
+				"options": [
+					"TAA",
+					"AMD FSR 3.1",
+					"NVIDIA DLSS"
+				]
+			}
+		},
+		{
+			"id": "iQualityMode:Settings",
+			"text": "Quality Mode",
+			"type": "stepper",
+			"help": "Controls the internal resolution. (Default: Quality)",
+			"valueOptions": {
+				"sourceType": "ModSettingInt",
+				"options": [
+					"Native AA",
+					"Quality",
+					"Balanced",
+					"Performance",
+					"Ultra Performance"
+				]
+			}
+		},
+		{
+			"id": "fSharpness:Settings",
+			"text": "Sharpness",
+			"type": "slider",
+			"help": "Adjusts image clarity using AMD Robust Contrast Adaptive Sharpening. (Default: 0.5)",
+			"valueOptions": {
+				"min": 0.0,
+				"max": 1.0,
+				"step": 0.1,
+				"sourceType": "ModSettingFloat"
+			}
+		}
+	]
+}
