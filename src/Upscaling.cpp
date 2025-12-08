@@ -377,3 +377,9 @@ void Upscaling::DestroyUpscalingResources()
 
 	upscalingDataCB = nullptr;
 }
+
+bool Upscaling::AlternateRenderingOrder()
+{
+	static auto ui = RE::UI::GetSingleton();
+	return !ui->GetMenuOpen("ExamineMenu");
+}
