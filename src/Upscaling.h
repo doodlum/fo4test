@@ -87,6 +87,8 @@ public:
 		return singleton.get();
 	}
 
+	static bool AlternateRenderingOrder();
+
 	struct BSGraphics_State_UpdateTemporalData
 	{
 		static void thunk(RE::BSGraphics::State* a_state)
@@ -119,34 +121,39 @@ public:
 
 	struct DrawWorld_Imagespace_SetUseDynamicResolutionViewportAsDefaultViewport
 	{
-		static void thunk(RE::BSGraphics::RenderTargetManager*, bool)
+		static void thunk(RE::BSGraphics::RenderTargetManager* This, bool a_true)
 		{
+			func(This, a_true);
+
+			auto upscaling = Upscaling::GetSingleton();
+			upscaling->Upscale();
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
 
 	struct ImageSpaceManager_RenderEffectRange
 	{
-		static void thunk(RE::ImageSpaceManager*, uint, uint, uint, uint)
+		static void thunk(RE::ImageSpaceManager* This, int a1, int a2, int a3, int a4)
 		{
+			func(This, a1, a2, a3, a4);
+
+			static auto renderTargetManager = RenderTargetManager_GetSingleton();
+
+			if (AlternateRenderingOrder())
+				DrawWorld_Imagespace_SetUseDynamicResolutionViewportAsDefaultViewport::func(renderTargetManager, false);
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
 
 	struct ImageSpaceManager_RenderEffectRange2
 	{
-		static void thunk(RE::ImageSpaceManager* This, uint a1, uint a2, uint a3, uint a4)
+		static void thunk(RE::ImageSpaceManager* This, int a1, int a2, int a3, int a4)
 		{
-			auto upscaling = Upscaling::GetSingleton();
+			static auto renderTargetManager = RenderTargetManager_GetSingleton();
+
+			DrawWorld_Imagespace_SetUseDynamicResolutionViewportAsDefaultViewport::func(renderTargetManager, true);
 
 			func(This, a1, a2, a3, a4);
-
-			ImageSpaceManager_RenderEffectRange::func(This, 15, 21, 1, 0);
-
-			static auto renderTargetManager = RenderTargetManager_GetSingleton();
-			DrawWorld_Imagespace_SetUseDynamicResolutionViewportAsDefaultViewport::func(renderTargetManager, false);
-
-			upscaling->Upscale();
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
@@ -162,10 +169,10 @@ public:
 		// Enable dynamic resolution shader if TAA is enabled
 		stl::write_vfunc<0x8, ImageSpaceEffectUpsampleDynamicResolution_IsActive>(RE::VTABLE::ImageSpaceEffectUpsampleDynamicResolution[0]);
 
-		// Controls upscaling, and fixes the companion app and pipboy screen to render afterwards
-		stl::write_thunk_call<ImageSpaceManager_RenderEffectRange>(REL::ID(587723).address() + 0xD3);
+		// Controls upscaling, and fixes the pipboy screen
+		stl::write_thunk_call<ImageSpaceManager_RenderEffectRange>(REL::ID(587723).address() + 0x9F);
+		stl::write_thunk_call<ImageSpaceManager_RenderEffectRange2>(REL::ID(587723).address() + 0xD3);
 		stl::write_thunk_call<DrawWorld_Imagespace_SetUseDynamicResolutionViewportAsDefaultViewport>(REL::ID(587723).address() + 0xE1);
-		stl::write_thunk_call<ImageSpaceManager_RenderEffectRange2>(REL::ID(587723).address() + 0x9F);
 		
 		// Disable BSGraphics::RenderTargetManager::UpdateDynamicResolution
 		REL::Relocation<std::uintptr_t> target{ REL::ID(984743), 0x14B };
