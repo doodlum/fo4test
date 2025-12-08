@@ -164,6 +164,24 @@ ID3D11ComputeShader* Upscaling::GetDilateMotionVectorCS()
 	return dilateMotionVectorCS;
 }
 
+ID3D11VertexShader* Upscaling::GetUpscaleVS()
+{
+	if (!upscaleVS) {
+		logger::debug("Compiling UpscaleVS.hlsl");
+		upscaleVS = (ID3D11VertexShader*)Util::CompileShader(L"Data/F4SE/Plugins/Upscaling/UpscaleVS.hlsl", { }, "vs_5_0");
+	}
+	return upscaleVS;
+}
+
+ID3D11PixelShader* Upscaling::GetDepthRefractionUpscalePS()
+{
+	if (!depthRefractionUpscalePS) {
+		logger::debug("Compiling DepthRefractionUpscalePS.hlsl");
+		depthRefractionUpscalePS = (ID3D11PixelShader*)Util::CompileShader(L"Data/F4SE/Plugins/Upscaling/DepthRefractionUpscalePS.hlsl", { }, "ps_5_0");
+	}
+	return depthRefractionUpscalePS;
+}
+
 void Upscaling::UpdateJitter()
 {
 	static auto gameViewport = State_GetSingleton();
@@ -216,13 +234,6 @@ void Upscaling::Upscale()
 	static auto context = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
 
 	context->OMSetRenderTargets(0, nullptr, nullptr);
-
-	auto frameBufferSRV = reinterpret_cast<ID3D11ShaderResourceView*>(rendererData->renderTargets[(uint)Util::RenderTarget::kFrameBuffer].srView);
-
-	ID3D11Resource* frameBufferResource;
-	frameBufferSRV->GetResource(&frameBufferResource);
-
-	context->CopyResource(upscalingTexture->resource.get(), frameBufferResource);
 
 	static auto gameViewport = State_GetSingleton();
 	static auto renderTargetManager = RenderTargetManager_GetSingleton();
@@ -287,19 +298,23 @@ void Upscaling::Upscale()
 	}
 
 	if (upscaleMethod == UpscaleMethod::kDLSS)
-		Streamline::GetSingleton()->Upscale(upscalingTexture, dilatedMotionVectorTexture, jitter, renderSize, settings.qualityMode, dlssPreset);
+		Streamline::GetSingleton()->Upscale(dilatedMotionVectorTexture, jitter, renderSize, settings.qualityMode, dlssPreset);
 	else
-		FidelityFX::GetSingleton()->Upscale(upscalingTexture, jitter, renderSize, settings.sharpness);
+		FidelityFX::GetSingleton()->Upscale(jitter, renderSize, settings.sharpness);
 
 	if (upscaleMethod != UpscaleMethod::kFSR) {
-		context->CopyResource(frameBufferResource, upscalingTexture->resource.get());
+		
+		auto& mainTexture = rendererData->renderTargets[(uint)Util::RenderTarget::kMain];
+		auto& mainTempTexture = rendererData->renderTargets[(uint)Util::RenderTarget::kMainTemp];
+
+		context->CopyResource(mainTexture.texture, mainTempTexture.texture);
 
 		{
 			{
-				ID3D11ShaderResourceView* views[1] = { frameBufferSRV };
+				ID3D11ShaderResourceView* views[1] = { mainTexture.srView };
 				context->CSSetShaderResources(0, ARRAYSIZE(views), views);
 
-				ID3D11UnorderedAccessView* uavs[1] = { upscalingTexture->uav.get() };
+				ID3D11UnorderedAccessView* uavs[1] = { mainTempTexture.uaView };
 				context->CSSetUnorderedAccessViews(0, ARRAYSIZE(uavs), uavs, nullptr);
 
 				context->CSSetShader(GetRCAS(), nullptr, 0);
@@ -320,17 +335,95 @@ void Upscaling::Upscale()
 		}
 	}
 
-	context->CopyResource(frameBufferResource, upscalingTexture->resource.get());
+	UpscaleDepth();
+}
+
+void Upscaling::UpscaleDepth()
+{
+	if (resolutionScale.x != 1.0f || resolutionScale.y != 1.0f) {
+		static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
+		auto context = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
+		
+		static auto gameViewport = State_GetSingleton();
+		static auto renderTargetManager = RenderTargetManager_GetSingleton();
+
+		// Set up Input Assembler for fullscreen triangle (no vertex/index buffers needed)
+		context->IASetInputLayout(nullptr);
+		context->IASetVertexBuffers(0, 0, nullptr, nullptr, nullptr);
+		context->IASetIndexBuffer(nullptr, DXGI_FORMAT_UNKNOWN, 0);
+		context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+		// Set up vertex shader that generates fullscreen triangle using SV_VertexID
+		context->VSSetShader(GetUpscaleVS(), nullptr, 0);
+
+		// Set up viewport for fullscreen rendering
+		auto screenSize = float2(float(gameViewport->screenWidth), float(gameViewport->screenHeight));
+		auto renderSize = float2(screenSize.x * renderTargetManager->dynamicWidthRatio, screenSize.y * renderTargetManager->dynamicHeightRatio);
+
+		D3D11_VIEWPORT viewport = {};
+		viewport.TopLeftX = 0.0f;
+		viewport.TopLeftY = 0.0f;
+		viewport.Width = screenSize.x;
+		viewport.Height = screenSize.y;
+		viewport.MinDepth = 0.0f;
+		viewport.MaxDepth = 1.0f;
+		context->RSSetViewports(1, &viewport);
+
+		// Set rasterizer state
+		context->RSSetState(upscaleRasterizerState);
+
+		// Set blend state
+		context->OMSetBlendState(upscaleBlendState, nullptr, 0xffffffff);
+
+		// Set up pixel shader resources
+		ID3D11SamplerState* samplers[] = { linearSampler };
+		context->PSSetSamplers(0, ARRAYSIZE(samplers), samplers);
+
+		// Set up constant buffer for upscaling
+		UpscaleCB upscaleData;
+		upscaleData.Jitter = jitter;
+		upscaleData.ResolutionScale = resolutionScale;
+		upscaleData.BufferDim = float4(screenSize.x, screenSize.y, 1.0f / screenSize.x, 1.0f / screenSize.y);
+		jitterCB->Update(upscaleData);
+
+		auto buffer = jitterCB->CB();
+		context->PSSetConstantBuffers(0, 1, &buffer);
+
+		// black = underwater
+		
+		//auto& depth = rendererData->depthStencilTargets[(uint)Util::DepthStencilTarget::kMain];
+		//auto& depthCopy = rendererData->depthStencilTargets[(uint)Util::DepthStencilTarget::kMainCopy];
+		//auto& refractionNormal = rendererData->renderTargets[(uint)Util::RenderTarget::kRefractionNormal];
+
+		//context->CopyResource(depthCopy.texture, depth.texture);
+
+		//ID3D11ShaderResourceView* srvs[] = { refractionNormal.srView, depthCopy.srViewDepth };
+		//context->PSSetShaderResources(0, ARRAYSIZE(srvs), srvs);
+
+		//context->OMSetRenderTargets(0, nullptr, depth.dsView[0]);
+
+		//context->PSSetShader(GetDepthRefractionUpscalePS(), nullptr, 0);
+		//context->Draw(3, 0);
+		//
+		//// Unbind resources
+		//ID3D11SamplerState* nullSamplers[] = { nullptr };
+		//context->PSSetSamplers(0, ARRAYSIZE(nullSamplers), nullSamplers);
+
+		//ID3D11ShaderResourceView* nullPSResources[3] = { nullptr, nullptr, nullptr };
+		//context->PSSetShaderResources(0, ARRAYSIZE(nullPSResources), nullPSResources);
+
+		//context->OMSetRenderTargets(0, nullptr, nullptr);
+
+	}
 }
 
 void Upscaling::CreateUpscalingResources()
 {
-	auto renderer = RE::BSGraphics::RendererData::GetSingleton();
-	auto& main = renderer->renderTargets[(uint)Util::RenderTarget::kMain];
+	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
+	auto& main = rendererData->renderTargets[(uint)Util::RenderTarget::kMain];
 
 	D3D11_TEXTURE2D_DESC texDesc{};
 	main.texture->GetDesc(&texDesc);
-	texDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
 
 	D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {
 		.Format = texDesc.Format,
@@ -347,11 +440,6 @@ void Upscaling::CreateUpscalingResources()
 	};
 
 	texDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
-
-	upscalingTexture = new Texture2D(texDesc);
-	upscalingTexture->CreateSRV(srvDesc);
-	upscalingTexture->CreateUAV(uavDesc);
-
 	texDesc.Format = DXGI_FORMAT_R16G16_FLOAT;
 	srvDesc.Format = texDesc.Format;
 	uavDesc.Format = texDesc.Format;
@@ -361,25 +449,82 @@ void Upscaling::CreateUpscalingResources()
 	dilatedMotionVectorTexture->CreateUAV(uavDesc);
 
 	upscalingDataCB = new ConstantBuffer(ConstantBufferDesc<UpscalingDataCB>());
+	
+	auto device = reinterpret_cast<ID3D11Device*>(rendererData->device);
+
+	// Create depth stencil states for depth upscaling
+	D3D11_DEPTH_STENCIL_DESC depthStencilDesc = {};
+	depthStencilDesc.DepthEnable = true;                           // Enable depth testing
+	depthStencilDesc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL;  // Write to all depth bits
+	depthStencilDesc.DepthFunc = D3D11_COMPARISON_ALWAYS;          // Always pass depth test (write all depths)
+	depthStencilDesc.StencilEnable = false;						   // Disable stencil testing
+
+	DX::ThrowIfFailed(device->CreateDepthStencilState(&depthStencilDesc, &upscaleDepthStencilState));
+
+	depthStencilDesc.StencilEnable = true;     // Enable stencil testing
+	depthStencilDesc.StencilReadMask = 0xFF;   // Read all stencil bits
+	depthStencilDesc.StencilWriteMask = 0xFF;  // Write to all stencil bits
+
+	// Configure front-facing stencil operations
+	depthStencilDesc.FrontFace.StencilFailOp = D3D11_STENCIL_OP_KEEP;       // Replace on stencil fail
+	depthStencilDesc.FrontFace.StencilDepthFailOp = D3D11_STENCIL_OP_KEEP;  // Replace on depth fail
+	depthStencilDesc.FrontFace.StencilPassOp = D3D11_STENCIL_OP_REPLACE;    // Replace on pass
+	depthStencilDesc.FrontFace.StencilFunc = D3D11_COMPARISON_ALWAYS;       // Always pass stencil test
+
+	// Configure back-facing stencil operations (same as front)
+	depthStencilDesc.BackFace.StencilFailOp = depthStencilDesc.FrontFace.StencilFailOp;
+	depthStencilDesc.BackFace.StencilDepthFailOp = depthStencilDesc.FrontFace.StencilDepthFailOp;
+	depthStencilDesc.BackFace.StencilPassOp = depthStencilDesc.FrontFace.StencilPassOp;
+	depthStencilDesc.BackFace.StencilFunc = depthStencilDesc.FrontFace.StencilFunc;
+
+	DX::ThrowIfFailed(device->CreateDepthStencilState(&depthStencilDesc, &upscaleDepthStencilStateWithStencil));
+
+	// Create blend state for depth upscaling
+	D3D11_BLEND_DESC blendDesc = {};
+	blendDesc.AlphaToCoverageEnable = false;
+	blendDesc.IndependentBlendEnable = false;
+	blendDesc.RenderTarget[0].BlendEnable = false;
+	blendDesc.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+	DX::ThrowIfFailed(device->CreateBlendState(&blendDesc, &upscaleBlendState));
+
+	// Create rasterizer state for fullscreen rendering
+	D3D11_RASTERIZER_DESC rasterizerDesc = {};
+	rasterizerDesc.FillMode = D3D11_FILL_SOLID;
+	rasterizerDesc.CullMode = D3D11_CULL_NONE;
+	rasterizerDesc.FrontCounterClockwise = false;
+	rasterizerDesc.DepthBias = 0;
+	rasterizerDesc.DepthBiasClamp = 0.0f;
+	rasterizerDesc.SlopeScaledDepthBias = 0.0f;
+	rasterizerDesc.DepthClipEnable = false;
+	rasterizerDesc.ScissorEnable = false;
+	rasterizerDesc.MultisampleEnable = false;
+	rasterizerDesc.AntialiasedLineEnable = false;
+	DX::ThrowIfFailed(device->CreateRasterizerState(&rasterizerDesc, &upscaleRasterizerState));
+
+	// Create jitter offset constant buffer for depth upscaling
+	jitterCB = new ConstantBuffer(ConstantBufferDesc<UpscaleCB>());
+
+	// Create linear and point sampler
+	D3D11_SAMPLER_DESC samplerDesc = {};
+	samplerDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+	samplerDesc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
+	samplerDesc.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
+	samplerDesc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+	samplerDesc.MaxAnisotropy = 1;
+	samplerDesc.MinLOD = 0;
+	samplerDesc.MaxLOD = D3D11_FLOAT32_MAX;
+	DX::ThrowIfFailed(device->CreateSamplerState(&samplerDesc, &linearSampler));
+
+	samplerDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
+	DX::ThrowIfFailed(device->CreateSamplerState(&samplerDesc, &pointSampler));
 }
 
 void Upscaling::DestroyUpscalingResources()
 {
-	upscalingTexture->srv = nullptr;
-	upscalingTexture->uav = nullptr;
-	upscalingTexture->resource = nullptr;
-	delete upscalingTexture;
-
 	dilatedMotionVectorTexture->srv = nullptr;
 	dilatedMotionVectorTexture->uav = nullptr;
 	dilatedMotionVectorTexture->resource = nullptr;
 	delete dilatedMotionVectorTexture;
 
 	upscalingDataCB = nullptr;
-}
-
-bool Upscaling::AlternateRenderingOrder()
-{
-	static auto ui = RE::UI::GetSingleton();
-	return !ui->GetMenuOpen("ExamineMenu");
 }

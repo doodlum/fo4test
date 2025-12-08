@@ -55,10 +55,35 @@ public:
 	ID3D11ComputeShader* dilateMotionVectorCS;
 	ID3D11ComputeShader* GetDilateMotionVectorCS();
 
+	struct UpscaleCB
+	{
+		float2 Jitter;
+		float2 ResolutionScale;
+		float4 BufferDim;
+	};
+
+	ConstantBuffer* jitterCB = nullptr;
+
+	ID3D11VertexShader* upscaleVS;
+	ID3D11VertexShader* GetUpscaleVS();
+
+	ID3D11PixelShader* depthRefractionUpscalePS;
+	ID3D11PixelShader* GetDepthRefractionUpscalePS();
+
+	ID3D11SamplerState* linearSampler;
+	ID3D11SamplerState* pointSampler;
+
+	ID3D11DepthStencilState* upscaleDepthStencilState;
+	ID3D11DepthStencilState* upscaleDepthStencilStateWithStencil;
+
+	ID3D11BlendState* upscaleBlendState;
+	ID3D11RasterizerState* upscaleRasterizerState;
+
 	void UpdateJitter();
 	void Upscale();
 
-	Texture2D* upscalingTexture;
+	void UpscaleDepth();
+
 	Texture2D* dilatedMotionVectorTexture;
 
 	float2 resolutionScale = float2(1, 1);
@@ -87,8 +112,6 @@ public:
 		return singleton.get();
 	}
 
-	static bool AlternateRenderingOrder();
-
 	struct BSGraphics_State_UpdateTemporalData
 	{
 		static void thunk(RE::BSGraphics::State* a_state)
@@ -109,24 +132,10 @@ public:
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
 
-	struct ImageSpaceEffectUpsampleDynamicResolution_IsActive
-	{
-		static bool thunk(struct ImageSpaceEffectUpsampleDynamicResolution*)
-		{
-			auto upscaleMethod = GetSingleton()->GetUpscaleMethod();
-			return upscaleMethod == UpscaleMethod::kDisabled;
-		}
-		static inline REL::Relocation<decltype(thunk)> func;
-	};
-
 	struct DrawWorld_Imagespace_SetUseDynamicResolutionViewportAsDefaultViewport
 	{
-		static void thunk(RE::BSGraphics::RenderTargetManager* This, bool a_true)
+		static void thunk(RE::BSGraphics::RenderTargetManager*, bool)
 		{
-			func(This, a_true);
-
-			auto upscaling = Upscaling::GetSingleton();
-			upscaling->Upscale();
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
@@ -135,23 +144,11 @@ public:
 	{
 		static void thunk(RE::ImageSpaceManager* This, int a1, int a2, int a3, int a4)
 		{
-			func(This, a1, a2, a3, a4);
+			auto upscaling = Upscaling::GetSingleton();
+			upscaling->Upscale();
 
 			static auto renderTargetManager = RenderTargetManager_GetSingleton();
-
-			if (AlternateRenderingOrder())
-				DrawWorld_Imagespace_SetUseDynamicResolutionViewportAsDefaultViewport::func(renderTargetManager, false);
-		}
-		static inline REL::Relocation<decltype(thunk)> func;
-	};
-
-	struct ImageSpaceManager_RenderEffectRange2
-	{
-		static void thunk(RE::ImageSpaceManager* This, int a1, int a2, int a3, int a4)
-		{
-			static auto renderTargetManager = RenderTargetManager_GetSingleton();
-
-			DrawWorld_Imagespace_SetUseDynamicResolutionViewportAsDefaultViewport::func(renderTargetManager, true);
+			DrawWorld_Imagespace_SetUseDynamicResolutionViewportAsDefaultViewport::func(renderTargetManager, false);
 
 			func(This, a1, a2, a3, a4);
 		}
@@ -166,12 +163,10 @@ public:
 		// Disable TAA shader
 		stl::write_vfunc<0x8, ImageSpaceEffectTemporalAA_IsActive>(RE::VTABLE::ImageSpaceEffectTemporalAA[0]);
 		
-		// Enable dynamic resolution shader if TAA is enabled
-		stl::write_vfunc<0x8, ImageSpaceEffectUpsampleDynamicResolution_IsActive>(RE::VTABLE::ImageSpaceEffectUpsampleDynamicResolution[0]);
-
-		// Controls upscaling, and fixes the pipboy screen
+		// Upscaling pass
 		stl::write_thunk_call<ImageSpaceManager_RenderEffectRange>(REL::ID(587723).address() + 0x9F);
-		stl::write_thunk_call<ImageSpaceManager_RenderEffectRange2>(REL::ID(587723).address() + 0xD3);
+
+		// Patches out replaced call
 		stl::write_thunk_call<DrawWorld_Imagespace_SetUseDynamicResolutionViewportAsDefaultViewport>(REL::ID(587723).address() + 0xE1);
 		
 		// Disable BSGraphics::RenderTargetManager::UpdateDynamicResolution
