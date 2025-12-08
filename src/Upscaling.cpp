@@ -96,10 +96,32 @@ void Upscaling::UpdateSamplerStates(float a_currentMipBias)
 	}
 }
 
-Upscaling::UpscaleMethod Upscaling::GetUpscaleMethod()
+void Upscaling::OverrideSamplerStates()
+{
+	static auto samplerStates = SamplerStates::GetSingleton();
+	for (int a = 0; a < 320; a++)
+		samplerStates->a[a] = biasedSamplerStates[a];
+}
+
+void Upscaling::ResetSamplerStates()
+{
+	static auto samplerStates = SamplerStates::GetSingleton();
+	for (int a = 0; a < 320; a++)
+		samplerStates->a[a] = originalSamplerStates[a];
+}
+
+Upscaling::UpscaleMethod Upscaling::GetUpscaleMethod(bool a_checkMenu)
 {
 	auto streamline = Streamline::GetSingleton();
-
+	
+	static auto ui = RE::UI::GetSingleton();
+	
+	// Disable the upscaling method when certain menus are open
+	if (a_checkMenu){
+		if (ui->GetMenuOpen("ExamineMenu") || ui->GetMenuOpen("PipboyMenu") || ui->GetMenuOpen("LoadingMenu"))
+			return UpscaleMethod::kDisabled;
+	}
+		
 	// If DLSS is not available, default to FSR
 	if (!streamline->featureDLSS && settings.upscaleMethodPreference == (uint)UpscaleMethod::kDLSS)
 		return UpscaleMethod::kFSR;
@@ -110,7 +132,7 @@ Upscaling::UpscaleMethod Upscaling::GetUpscaleMethod()
 void Upscaling::CheckResources()
 {
 	static auto previousUpscaleMode = UpscaleMethod::kDisabled;
-	auto currentUpscaleMode = GetUpscaleMethod();
+	auto currentUpscaleMode = GetUpscaleMethod(false);
 
 	auto streamline = Streamline::GetSingleton();
 	auto fidelityFX = FidelityFX::GetSingleton();
@@ -169,35 +191,39 @@ void Upscaling::UpdateJitter()
 	static auto gameViewport = State_GetSingleton();
 	static auto renderTargetManager = RenderTargetManager_GetSingleton();
 
-	auto upscaleMethod = GetUpscaleMethod();
+	auto upscaleMethod = GetUpscaleMethod(false);
+	auto upscaleMethodMenu = GetUpscaleMethod(true);
 
 	float resolutionScaleBase = upscaleMethod == UpscaleMethod::kDisabled ? 1.0f : 1.0f / ffxFsr3GetUpscaleRatioFromQualityMode((FfxFsr3QualityMode)settings.qualityMode);
-
-	auto screenWidth = gameViewport->screenWidth;
-	auto screenHeight = gameViewport->screenHeight;
-	auto renderWidth = static_cast<uint>(screenWidth * resolutionScaleBase);
-	auto renderHeight = static_cast<uint>(screenHeight * resolutionScaleBase);
-
-	resolutionScale.x = static_cast<float>(renderWidth) / static_cast<float>(screenWidth);
-	resolutionScale.y = static_cast<float>(renderHeight) / static_cast<float>(screenHeight);
 	
-	if (upscaleMethod != UpscaleMethod::kDisabled) {
+	renderTargetManager->lowestWidthRatio = renderTargetManager->dynamicWidthRatio;
+	renderTargetManager->lowestHeightRatio = renderTargetManager->dynamicHeightRatio;
+
+	if (upscaleMethodMenu != UpscaleMethod::kDisabled) {
+		auto screenWidth = gameViewport->screenWidth;
+		auto screenHeight = gameViewport->screenHeight;
+		auto renderWidth = static_cast<uint>(screenWidth * resolutionScaleBase);
+		auto renderHeight = static_cast<uint>(screenHeight * resolutionScaleBase);
+
+		resolutionScale.x = static_cast<float>(renderWidth) / static_cast<float>(screenWidth);
+		resolutionScale.y = static_cast<float>(renderHeight) / static_cast<float>(screenHeight);
+
 		auto phaseCount = ffxFsr3GetJitterPhaseCount(renderWidth, screenWidth);
 
 		ffxFsr3GetJitterOffset(&jitter.x, &jitter.y, gameViewport->frameCount, phaseCount);
 
 		gameViewport->offsetX = 2.0f * -jitter.x / static_cast<float>(screenWidth);
 		gameViewport->offsetY = 2.0f * jitter.y / static_cast<float>(screenHeight);
+	} else {
+		resolutionScale = { 1.0f, 1.0f };
 	}
-	
-	renderTargetManager->lowestWidthRatio = renderTargetManager->dynamicWidthRatio;
-	renderTargetManager->lowestHeightRatio = renderTargetManager->dynamicHeightRatio;
+
 	renderTargetManager->dynamicWidthRatio = resolutionScale.x;
 	renderTargetManager->dynamicHeightRatio = resolutionScale.y;
+		
+	float currentMipBias = std::log2f(resolutionScaleBase);
 	
-	float currentMipBias = std::log2f(static_cast<float>(renderWidth) / static_cast<float>(screenWidth));
-	
-	if (upscaleMethod == UpscaleMethod::kDLSS)
+	if (upscaleMethod != UpscaleMethod::kDisabled)
 		currentMipBias -= 1.0f;
 
 	UpdateSamplerStates(currentMipBias);
@@ -207,7 +233,7 @@ void Upscaling::Upscale()
 {
 	CheckResources();
 
-	auto upscaleMethod = GetUpscaleMethod();
+	auto upscaleMethod = GetUpscaleMethod(true);
 
 	if (upscaleMethod == UpscaleMethod::kDisabled)
 		return;
@@ -376,10 +402,4 @@ void Upscaling::DestroyUpscalingResources()
 	delete dilatedMotionVectorTexture;
 
 	upscalingDataCB = nullptr;
-}
-
-bool Upscaling::AlternateRenderingOrder()
-{
-	static auto ui = RE::UI::GetSingleton();
-	return !ui->GetMenuOpen("ExamineMenu");
 }

@@ -45,7 +45,10 @@ public:
 
 	void UpdateSamplerStates(float a_currentMipBias);
 
-	UpscaleMethod GetUpscaleMethod();
+	void OverrideSamplerStates();
+	void ResetSamplerStates();
+
+	UpscaleMethod GetUpscaleMethod(bool a_checkMenu);
 
 	void CheckResources();
 
@@ -87,8 +90,6 @@ public:
 		return singleton.get();
 	}
 
-	static bool AlternateRenderingOrder();
-
 	struct BSGraphics_State_UpdateTemporalData
 	{
 		static void thunk(RE::BSGraphics::State* a_state)
@@ -103,7 +104,7 @@ public:
 	{
 		static bool thunk(struct ImageSpaceEffectTemporalAA* This)
 		{
-			auto upscaleMethod = GetSingleton()->GetUpscaleMethod();
+			auto upscaleMethod = GetSingleton()->GetUpscaleMethod(true);
 			return upscaleMethod == UpscaleMethod::kDisabled && func(This);
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
@@ -113,7 +114,7 @@ public:
 	{
 		static bool thunk(struct ImageSpaceEffectUpsampleDynamicResolution*)
 		{
-			auto upscaleMethod = GetSingleton()->GetUpscaleMethod();
+			auto upscaleMethod = GetSingleton()->GetUpscaleMethod(true);
 			return upscaleMethod == UpscaleMethod::kDisabled;
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
@@ -131,32 +132,42 @@ public:
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
 
-	struct ImageSpaceManager_RenderEffectRange
+	struct DrawWorld_Render_PreUI_DeferredPrePass
 	{
-		static void thunk(RE::ImageSpaceManager* This, int a1, int a2, int a3, int a4)
+		static void thunk(struct DrawWorld* This)
 		{
-			func(This, a1, a2, a3, a4);
-
-			static auto renderTargetManager = RenderTargetManager_GetSingleton();
-
-			if (AlternateRenderingOrder())
-				DrawWorld_Imagespace_SetUseDynamicResolutionViewportAsDefaultViewport::func(renderTargetManager, false);
+			auto upscaling = Upscaling::GetSingleton();
+			upscaling->OverrideSamplerStates();
+			func(This);
+			upscaling->ResetSamplerStates();
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
 
-	struct ImageSpaceManager_RenderEffectRange2
+	struct DrawWorld_Render_PreUI_DeferredDecals
 	{
-		static void thunk(RE::ImageSpaceManager* This, int a1, int a2, int a3, int a4)
+		static void thunk(struct DrawWorld* This)
 		{
-			static auto renderTargetManager = RenderTargetManager_GetSingleton();
-
-			DrawWorld_Imagespace_SetUseDynamicResolutionViewportAsDefaultViewport::func(renderTargetManager, true);
-
-			func(This, a1, a2, a3, a4);
+			auto upscaling = Upscaling::GetSingleton();
+			upscaling->OverrideSamplerStates();
+			func(This);
+			upscaling->ResetSamplerStates();
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
+
+	struct DrawWorld_Render_PreUI_Forward
+	{
+		static void thunk(struct DrawWorld* This)
+		{
+			auto upscaling = Upscaling::GetSingleton();
+			upscaling->OverrideSamplerStates();
+			func(This);
+			upscaling->ResetSamplerStates();
+		}
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
+
 
 	static void InstallHooks()
 	{
@@ -169,13 +180,16 @@ public:
 		// Enable dynamic resolution shader if TAA is enabled
 		stl::write_vfunc<0x8, ImageSpaceEffectUpsampleDynamicResolution_IsActive>(RE::VTABLE::ImageSpaceEffectUpsampleDynamicResolution[0]);
 
-		// Controls upscaling, and fixes the pipboy screen
-		stl::write_thunk_call<ImageSpaceManager_RenderEffectRange>(REL::ID(587723).address() + 0x9F);
-		stl::write_thunk_call<ImageSpaceManager_RenderEffectRange2>(REL::ID(587723).address() + 0xD3);
+		// Upscaling pass
 		stl::write_thunk_call<DrawWorld_Imagespace_SetUseDynamicResolutionViewportAsDefaultViewport>(REL::ID(587723).address() + 0xE1);
 		
 		// Disable BSGraphics::RenderTargetManager::UpdateDynamicResolution
 		REL::Relocation<std::uintptr_t> target{ REL::ID(984743), 0x14B };
 		REL::safe_fill(target.address(), 0x90, 5);
+
+		// Control sampler states
+		stl::write_thunk_call<DrawWorld_Render_PreUI_DeferredPrePass>(REL::ID(984743).address() + 0x17F);
+		stl::write_thunk_call<DrawWorld_Render_PreUI_DeferredDecals>(REL::ID(984743).address() + 0x189);
+		stl::write_thunk_call<DrawWorld_Render_PreUI_Forward>(REL::ID(984743).address() + 0x1C9);
 	}
 };
