@@ -223,7 +223,7 @@ void Upscaling::UpdateJitter()
 		
 	float currentMipBias = std::log2f(resolutionScaleBase);
 	
-	if (upscaleMethod != UpscaleMethod::kDisabled)
+	if (upscaleMethod == UpscaleMethod::kDLSS)
 		currentMipBias -= 1.0f;
 
 	UpdateSamplerStates(currentMipBias);
