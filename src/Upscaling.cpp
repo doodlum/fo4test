@@ -44,6 +44,409 @@ RE::BSEventNotifyControl Upscaling::ProcessEvent(const RE::MenuOpenCloseEvent& a
 	return RE::BSEventNotifyControl::kContinue;
 }
 
+void Upscaling::UpdateRenderTarget(int index, uint a_currentWidth, uint a_currentHeight)
+{
+	auto& originalRenderTarget = originalRenderTargets[index];
+	auto& proxyRenderTarget = proxyRenderTargets[index];
+
+	if (proxyRenderTarget.uaView)
+		proxyRenderTarget.uaView->Release();
+	proxyRenderTarget.uaView = nullptr;
+
+	if (proxyRenderTarget.copySRView)
+		proxyRenderTarget.copySRView->Release();
+	proxyRenderTarget.copySRView = nullptr;
+
+	if (proxyRenderTarget.srView)
+		proxyRenderTarget.srView->Release();
+	proxyRenderTarget.srView = nullptr;
+
+	if (proxyRenderTarget.rtView)
+		proxyRenderTarget.rtView->Release();
+	proxyRenderTarget.rtView = nullptr;
+
+	if (proxyRenderTarget.copyTexture)
+		proxyRenderTarget.copyTexture->Release();
+	proxyRenderTarget.copyTexture = nullptr;
+
+	if (proxyRenderTarget.texture)
+		proxyRenderTarget.texture->Release();
+	proxyRenderTarget.texture = nullptr;
+
+	D3D11_TEXTURE2D_DESC textureDesc{};
+	if (originalRenderTarget.texture)
+		originalRenderTarget.texture->GetDesc(&textureDesc);
+
+	D3D11_TEXTURE2D_DESC copyTextureDesc{};
+	if (originalRenderTarget.copyTexture)
+		originalRenderTarget.copyTexture->GetDesc(&copyTextureDesc);
+
+	D3D11_RENDER_TARGET_VIEW_DESC rtViewDesc{};
+	if (originalRenderTarget.rtView)
+		originalRenderTarget.rtView->GetDesc(&rtViewDesc);
+
+	D3D11_SHADER_RESOURCE_VIEW_DESC srViewDesc{};
+	if (originalRenderTarget.srView)
+		originalRenderTarget.srView->GetDesc(&srViewDesc);
+
+	D3D11_SHADER_RESOURCE_VIEW_DESC copySRViewDesc{};
+	if (originalRenderTarget.copySRView)
+		originalRenderTarget.copySRView->GetDesc(&copySRViewDesc);
+
+	D3D11_UNORDERED_ACCESS_VIEW_DESC uaViewDesc;
+	if (originalRenderTarget.uaView)
+		originalRenderTarget.uaView->GetDesc(&uaViewDesc);
+
+	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
+	auto device = reinterpret_cast<ID3D11Device*>(rendererData->device);
+
+	textureDesc.Width = a_currentWidth;
+	textureDesc.Height = a_currentHeight;
+
+	copyTextureDesc.Width = a_currentWidth;
+	copyTextureDesc.Height = a_currentHeight;
+
+	if (originalRenderTarget.texture)
+		device->CreateTexture2D(&textureDesc, nullptr, &proxyRenderTarget.texture);
+
+	if (originalRenderTarget.copyTexture)
+		device->CreateTexture2D(&copyTextureDesc, nullptr, &proxyRenderTarget.copyTexture);
+	
+	if (originalRenderTarget.rtView)
+		device->CreateRenderTargetView(proxyRenderTarget.texture, &rtViewDesc, &proxyRenderTarget.rtView);
+
+	if (originalRenderTarget.srView)
+		device->CreateShaderResourceView(proxyRenderTarget.texture, &srViewDesc, &proxyRenderTarget.srView);
+
+	if (originalRenderTarget.copySRView)
+		device->CreateShaderResourceView(proxyRenderTarget.copyTexture, &copySRViewDesc, &proxyRenderTarget.copySRView);
+
+	if (originalRenderTarget.uaView)
+		device->CreateUnorderedAccessView(proxyRenderTarget.texture, &uaViewDesc, &proxyRenderTarget.uaView);
+}
+
+void Upscaling::UpdateRenderTargets(uint a_currentWidth, uint a_currentHeight)
+{
+	// 20 57 24 23 58 59 2 25 3 9 39
+	// 4
+	// 22 
+	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
+
+	// Store original render targets
+	static std::once_flag setup;
+	std::call_once(setup, [&]() {
+
+		for (int i = 0; i < 101; i++) {
+			originalRenderTargets[i] = rendererData->renderTargets[i];
+		}
+
+		for (int i = 0; i < 13; i++) {
+			originalDepthStencilTargets[i] = rendererData->depthStencilTargets[i];
+		}
+
+	});
+
+	static uint previousWidth = 0;
+	static uint previousHeight = 0;
+
+	// Check for resolution update
+	if (previousWidth == a_currentWidth && previousHeight == a_currentHeight)
+		return;
+
+	previousWidth = a_currentWidth;
+	previousHeight = a_currentHeight;
+
+	UpdateRenderTarget(2, a_currentWidth, a_currentHeight);
+	UpdateRenderTarget(3, a_currentWidth, a_currentHeight);
+	UpdateRenderTarget(4, a_currentWidth, a_currentHeight);
+
+	UpdateRenderTarget(9, a_currentWidth, a_currentHeight);
+	UpdateRenderTarget(14, a_currentWidth, a_currentHeight);
+	UpdateRenderTarget(20, a_currentWidth, a_currentHeight);
+	UpdateRenderTarget(22, a_currentWidth, a_currentHeight);
+	UpdateRenderTarget(23, a_currentWidth, a_currentHeight);
+	UpdateRenderTarget(24, a_currentWidth, a_currentHeight);
+	UpdateRenderTarget(25, a_currentWidth, a_currentHeight);
+	UpdateRenderTarget(28, a_currentWidth, a_currentHeight);
+
+	//UpdateRenderTarget(39, a_currentWidth, a_currentHeight);
+	UpdateRenderTarget(57, a_currentWidth, a_currentHeight);
+	UpdateRenderTarget(58, a_currentWidth, a_currentHeight);
+	UpdateRenderTarget(59, a_currentWidth, a_currentHeight);
+
+	UpdateDepthStencilRenderTarget(2, a_currentWidth, a_currentHeight);
+	UpdateDepthStencilRenderTarget(4, a_currentWidth, a_currentHeight);
+}
+
+void Upscaling::OverrideRenderTarget(int index)
+{
+	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
+
+	rendererData->renderTargets[index] = proxyRenderTargets[index];
+
+	D3D11_TEXTURE2D_DESC srcDesc, dstDesc;
+	originalRenderTargets[index].texture->GetDesc(&srcDesc);
+	proxyRenderTargets[index].texture->GetDesc(&dstDesc);
+
+	D3D11_BOX srcBox;
+	srcBox.left = 0;
+	srcBox.top = 0;
+	srcBox.front = 0;
+	srcBox.right = dstDesc.Width;
+	srcBox.bottom = dstDesc.Height;
+	srcBox.back = 1;
+
+	auto context = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
+	context->CopySubresourceRegion(proxyRenderTargets[index].texture, 0, 0, 0, 0, originalRenderTargets[index].texture, 0, &srcBox);
+
+	static auto renderTargetManager = RenderTargetManager_GetSingleton();
+
+	renderTargetManager->renderTargetData[index].width = dstDesc.Width;
+	renderTargetManager->renderTargetData[index].height = dstDesc.Height;
+}
+
+void Upscaling::ResetRenderTarget(int index)
+{
+	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
+
+	rendererData->renderTargets[index] = originalRenderTargets[index];
+
+	D3D11_TEXTURE2D_DESC srcDesc, dstDesc;
+	proxyRenderTargets[index].texture->GetDesc(&srcDesc);
+	originalRenderTargets[index].texture->GetDesc(&dstDesc);
+
+	D3D11_BOX srcBox;
+	srcBox.left = 0;
+	srcBox.top = 0;
+	srcBox.front = 0;
+	srcBox.right = srcDesc.Width;
+	srcBox.bottom = srcDesc.Height;
+	srcBox.back = 1;
+
+	auto context = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
+	context->CopySubresourceRegion(originalRenderTargets[index].texture, 0, 0, 0, 0, proxyRenderTargets[index].texture, 0, &srcBox);
+	
+	static auto renderTargetManager = RenderTargetManager_GetSingleton();
+
+	renderTargetManager->renderTargetData[index].width = dstDesc.Width;
+	renderTargetManager->renderTargetData[index].height = dstDesc.Height;
+}
+
+void Upscaling::UpdateDepthStencilRenderTarget(int index, uint a_currentWidth, uint a_currentHeight)
+{
+	auto& originalDepthTarget = originalDepthStencilTargets[index];
+	auto& proxyDepthTarget = proxyDepthStencilTargets[index];
+
+	// Release existing resources
+	if (proxyDepthTarget.srViewStencil) {
+		proxyDepthTarget.srViewStencil->Release();
+		proxyDepthTarget.srViewStencil = nullptr;
+	}
+	if (proxyDepthTarget.srViewDepth) {
+		proxyDepthTarget.srViewDepth->Release();
+		proxyDepthTarget.srViewDepth = nullptr;
+	}
+	for (int i = 0; i < 4; ++i) {
+		if (proxyDepthTarget.dsViewReadOnlyDepthStencil[i]) {
+			proxyDepthTarget.dsViewReadOnlyDepthStencil[i]->Release();
+			proxyDepthTarget.dsViewReadOnlyDepthStencil[i] = nullptr;
+		}
+		if (proxyDepthTarget.dsViewReadOnlyStencil[i]) {
+			proxyDepthTarget.dsViewReadOnlyStencil[i]->Release();
+			proxyDepthTarget.dsViewReadOnlyStencil[i] = nullptr;
+		}
+		if (proxyDepthTarget.dsViewReadOnlyDepth[i]) {
+			proxyDepthTarget.dsViewReadOnlyDepth[i]->Release();
+			proxyDepthTarget.dsViewReadOnlyDepth[i] = nullptr;
+		}
+		if (proxyDepthTarget.dsView[i]) {
+			proxyDepthTarget.dsView[i]->Release();
+			proxyDepthTarget.dsView[i] = nullptr;
+		}
+	}
+	if (proxyDepthTarget.texture) {
+		proxyDepthTarget.texture->Release();
+		proxyDepthTarget.texture = nullptr;
+	}
+
+	// Get original descriptions
+	D3D11_TEXTURE2D_DESC textureDesc{};
+	if (originalDepthTarget.texture)
+		originalDepthTarget.texture->GetDesc(&textureDesc);
+
+	D3D11_DEPTH_STENCIL_VIEW_DESC dsViewDesc[4]{};
+	D3D11_DEPTH_STENCIL_VIEW_DESC dsViewReadOnlyDepthDesc[4]{};
+	D3D11_DEPTH_STENCIL_VIEW_DESC dsViewReadOnlyStencilDesc[4]{};
+	D3D11_DEPTH_STENCIL_VIEW_DESC dsViewReadOnlyDepthStencilDesc[4]{};
+
+	for (int i = 0; i < 4; ++i) {
+		if (originalDepthTarget.dsView[i])
+			originalDepthTarget.dsView[i]->GetDesc(&dsViewDesc[i]);
+		if (originalDepthTarget.dsViewReadOnlyDepth[i])
+			originalDepthTarget.dsViewReadOnlyDepth[i]->GetDesc(&dsViewReadOnlyDepthDesc[i]);
+		if (originalDepthTarget.dsViewReadOnlyStencil[i])
+			originalDepthTarget.dsViewReadOnlyStencil[i]->GetDesc(&dsViewReadOnlyStencilDesc[i]);
+		if (originalDepthTarget.dsViewReadOnlyDepthStencil[i])
+			originalDepthTarget.dsViewReadOnlyDepthStencil[i]->GetDesc(&dsViewReadOnlyDepthStencilDesc[i]);
+	}
+
+	D3D11_SHADER_RESOURCE_VIEW_DESC srViewDepthDesc{};
+	if (originalDepthTarget.srViewDepth)
+		originalDepthTarget.srViewDepth->GetDesc(&srViewDepthDesc);
+
+	D3D11_SHADER_RESOURCE_VIEW_DESC srViewStencilDesc{};
+	if (originalDepthTarget.srViewStencil)
+		originalDepthTarget.srViewStencil->GetDesc(&srViewStencilDesc);
+
+	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
+	auto device = reinterpret_cast<ID3D11Device*>(rendererData->device);
+
+	// Update dimensions
+	textureDesc.Width = a_currentWidth;
+	textureDesc.Height = a_currentHeight;
+
+	// Create new texture
+	if (originalDepthTarget.texture)
+		device->CreateTexture2D(&textureDesc, nullptr, &proxyDepthTarget.texture);
+
+	// Create depth stencil views
+	for (int i = 0; i < 4; ++i) {
+		if (originalDepthTarget.dsView[i])
+			device->CreateDepthStencilView(proxyDepthTarget.texture, &dsViewDesc[i], &proxyDepthTarget.dsView[i]);
+		if (originalDepthTarget.dsViewReadOnlyDepth[i])
+			device->CreateDepthStencilView(proxyDepthTarget.texture, &dsViewReadOnlyDepthDesc[i], &proxyDepthTarget.dsViewReadOnlyDepth[i]);
+		if (originalDepthTarget.dsViewReadOnlyStencil[i])
+			device->CreateDepthStencilView(proxyDepthTarget.texture, &dsViewReadOnlyStencilDesc[i], &proxyDepthTarget.dsViewReadOnlyStencil[i]);
+		if (originalDepthTarget.dsViewReadOnlyDepthStencil[i])
+			device->CreateDepthStencilView(proxyDepthTarget.texture, &dsViewReadOnlyDepthStencilDesc[i], &proxyDepthTarget.dsViewReadOnlyDepthStencil[i]);
+	}
+
+	// Create shader resource views
+	if (originalDepthTarget.srViewDepth)
+		device->CreateShaderResourceView(proxyDepthTarget.texture, &srViewDepthDesc, &proxyDepthTarget.srViewDepth);
+	if (originalDepthTarget.srViewStencil)
+		device->CreateShaderResourceView(proxyDepthTarget.texture, &srViewStencilDesc, &proxyDepthTarget.srViewStencil);
+}
+
+void Upscaling::OverrideDepthStencilRenderTarget(int index)
+{
+	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
+
+	rendererData->depthStencilTargets[index] = proxyDepthStencilTargets[index];
+
+	D3D11_TEXTURE2D_DESC srcDesc, dstDesc;
+	originalDepthStencilTargets[index].texture->GetDesc(&srcDesc);
+	proxyDepthStencilTargets[index].texture->GetDesc(&dstDesc);
+
+	D3D11_BOX srcBox;
+	srcBox.left = 0;
+	srcBox.top = 0;
+	srcBox.front = 0;
+	srcBox.right = dstDesc.Width;
+	srcBox.bottom = dstDesc.Height;
+	srcBox.back = 1;
+
+	auto context = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
+	context->CopySubresourceRegion(proxyDepthStencilTargets[index].texture, 0, 0, 0, 0, originalDepthStencilTargets[index].texture, 0, &srcBox);
+
+	static auto renderTargetManager = RenderTargetManager_GetSingleton();
+
+	renderTargetManager->depthStencilTargetData[index].width = dstDesc.Width;
+	renderTargetManager->depthStencilTargetData[index].height = dstDesc.Height;
+}
+
+void Upscaling::ResetDepthStencilRenderTarget(int index)
+{
+	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
+
+	rendererData->depthStencilTargets[index] = originalDepthStencilTargets[index];
+
+	D3D11_TEXTURE2D_DESC srcDesc, dstDesc;
+	proxyDepthStencilTargets[index].texture->GetDesc(&srcDesc);
+	originalDepthStencilTargets[index].texture->GetDesc(&dstDesc);
+
+	D3D11_BOX srcBox;
+	srcBox.left = 0;
+	srcBox.top = 0;
+	srcBox.front = 0;
+	srcBox.right = srcDesc.Width;
+	srcBox.bottom = srcDesc.Height;
+	srcBox.back = 1;
+
+	auto context = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
+	context->CopySubresourceRegion(originalDepthStencilTargets[index].texture, 0, 0, 0, 0, proxyDepthStencilTargets[index].texture, 0, &srcBox);
+
+	static auto renderTargetManager = RenderTargetManager_GetSingleton();
+
+	renderTargetManager->depthStencilTargetData[index].width = dstDesc.Width;
+	renderTargetManager->depthStencilTargetData[index].height = dstDesc.Height;
+}
+
+void Upscaling::OverrideRenderTargets()
+{
+	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
+	static auto context = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
+	
+	static auto gameViewport = State_GetSingleton();
+	static auto renderTargetManager = RenderTargetManager_GetSingleton();
+
+	auto screenSize = float2(float(gameViewport->screenWidth), float(gameViewport->screenHeight));
+	auto renderSize = float2(screenSize.x * renderTargetManager->dynamicWidthRatio, screenSize.y * renderTargetManager->dynamicHeightRatio);
+
+	UpdateRenderTargets((uint)renderSize.x, (uint)renderSize.y);
+
+	OverrideRenderTarget(2);
+	OverrideRenderTarget(3);
+	OverrideRenderTarget(4);
+	OverrideRenderTarget(9);
+	OverrideRenderTarget(14);
+	OverrideRenderTarget(20);
+	OverrideRenderTarget(22);
+	OverrideRenderTarget(23);
+	OverrideRenderTarget(24);
+	OverrideRenderTarget(25);
+	OverrideRenderTarget(28);
+
+	//OverrideRenderTarget(39);
+	OverrideRenderTarget(57);
+	OverrideRenderTarget(58);
+	OverrideRenderTarget(59);
+
+	OverrideDepthStencilRenderTarget(2);
+	OverrideDepthStencilRenderTarget(4);
+
+	DrawWorld_Imagespace_SetUseDynamicResolutionViewportAsDefaultViewport::func(renderTargetManager, false);
+}
+
+void Upscaling::ResetRenderTargets()
+{
+	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
+
+	ResetRenderTarget(2);
+	ResetRenderTarget(3);
+	ResetRenderTarget(4);
+	ResetRenderTarget(9);
+	ResetRenderTarget(14);
+	ResetRenderTarget(20);
+	ResetRenderTarget(22);
+	ResetRenderTarget(23);
+	ResetRenderTarget(24);
+	ResetRenderTarget(25);
+	ResetRenderTarget(28);
+
+	//ResetRenderTarget(39);
+	ResetRenderTarget(57);
+	ResetRenderTarget(58);
+	ResetRenderTarget(59);
+
+	ResetDepthStencilRenderTarget(2);
+	ResetDepthStencilRenderTarget(4);
+
+	static auto renderTargetManager = RenderTargetManager_GetSingleton();
+
+	DrawWorld_Imagespace_SetUseDynamicResolutionViewportAsDefaultViewport::func(renderTargetManager, true);
+}
+
 // Hacky method of overriding sampler states
 void Upscaling::UpdateSamplerStates(float a_currentMipBias)
 {
@@ -60,7 +463,6 @@ void Upscaling::UpdateSamplerStates(float a_currentMipBias)
 	});
 
 	static float previousMipBias = 1.0f;
-	static float previousMipBiasSharper = 1.0f;
 
 	// Check for mipbias update
 	if (previousMipBias == a_currentMipBias)

@@ -42,6 +42,25 @@ public:
 
 	RE::BSEventNotifyControl ProcessEvent(const RE::MenuOpenCloseEvent& a_event, RE::BSTEventSource<RE::MenuOpenCloseEvent>*);
 
+	void UpdateRenderTarget(int index, uint a_currentWidth, uint a_currentHeight);
+	void OverrideRenderTarget(int index);
+	void ResetRenderTarget(int index);
+
+	void UpdateDepthStencilRenderTarget(int index, uint a_currentWidth, uint a_currentHeight);
+	void OverrideDepthStencilRenderTarget(int index);
+	void ResetDepthStencilRenderTarget(int index);
+
+	void UpdateRenderTargets(uint a_currentWidth, uint a_currentHeight);
+
+	RE::BSGraphics::RenderTarget originalRenderTargets[101];
+	RE::BSGraphics::RenderTarget proxyRenderTargets[101];
+	
+	RE::BSGraphics::DepthStencilTarget originalDepthStencilTargets[13];
+	RE::BSGraphics::DepthStencilTarget proxyDepthStencilTargets[13];
+
+	void OverrideRenderTargets();
+	void ResetRenderTargets();
+
 	void UpdateSamplerStates(float a_currentMipBias);
 
 	void OverrideSamplerStates();
@@ -174,6 +193,21 @@ public:
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
 
+	struct BSDFComposite_Envmap
+	{
+		static void thunk(void* This, uint a2, bool a3)
+		{
+			auto upscaling = Upscaling::GetSingleton();
+			bool requiresPatching = upscaling->resolutionScale.x != 1.0 || upscaling->resolutionScale.y != 1.0;
+			if (requiresPatching)
+				upscaling->OverrideRenderTargets();
+			func(This, a2, a3);
+			if (requiresPatching)
+				upscaling->ResetRenderTargets();
+		}
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
+
 	static void InstallHooks()
 	{
 		// Control jitters, dynamic resolution, and sampler states
@@ -196,5 +230,8 @@ public:
 		stl::write_thunk_call<DrawWorld_Render_PreUI_DeferredPrePass>(REL::ID(984743).address() + 0x17F);
 		stl::write_thunk_call<DrawWorld_Render_PreUI_DeferredDecals>(REL::ID(984743).address() + 0x189);
 		stl::write_thunk_call<DrawWorld_Render_PreUI_Forward>(REL::ID(984743).address() + 0x1C9);
+
+		// Fix env map with dynamic resolution
+		stl::write_thunk_call<BSDFComposite_Envmap>(REL::ID(728427).address() + 0x8DC);
 	}
 };
