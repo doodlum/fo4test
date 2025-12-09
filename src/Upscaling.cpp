@@ -186,6 +186,85 @@ ID3D11ComputeShader* Upscaling::GetDilateMotionVectorCS()
 	return dilateMotionVectorCS;
 }
 
+ID3D11ComputeShader* Upscaling::GetGenerateReactiveMaskCS()
+{
+	if (!generateReactiveMaskCS) {
+		logger::debug("Compiling GenerateReactiveMaskCS.hlsl");
+		generateReactiveMaskCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data/F4SE/Plugins/Upscaling/GenerateReactiveMaskCS.hlsl", { }, "cs_5_0");
+	}
+	return generateReactiveMaskCS;
+}
+
+void Upscaling::GenerateReactiveMask()
+{
+	auto upscaleMethod = GetUpscaleMethod(true);
+
+	if (upscaleMethod == UpscaleMethod::kDisabled)
+		return;
+
+	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
+	static auto context = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
+
+	context->OMSetRenderTargets(0, nullptr, nullptr);
+
+	static auto gameViewport = State_GetSingleton();
+	static auto renderTargetManager = RenderTargetManager_GetSingleton();
+
+	auto screenSize = float2(float(gameViewport->screenWidth), float(gameViewport->screenHeight));
+	auto renderSize = float2(screenSize.x * renderTargetManager->dynamicWidthRatio, screenSize.y * renderTargetManager->dynamicHeightRatio);
+
+	auto mainPreAlphaSRV = reinterpret_cast<ID3D11ShaderResourceView*>(rendererData->renderTargets[(uint)Util::RenderTarget::kMainPreAlpha].srView);
+	auto mainPostAlpha = reinterpret_cast<ID3D11ShaderResourceView*>(rendererData->renderTargets[(uint)Util::RenderTarget::kMainTemp].srView);
+
+	{
+#if defined(FALLOUT_POST_NG)
+		float cameraNear = *(float*)REL::ID(2712882).address();
+		float cameraFar = *(float*)REL::ID(2712883).address();
+#else
+		float cameraNear = *(float*)REL::ID(57985).address();
+		float cameraFar = *(float*)REL::ID(958877).address();
+#endif
+
+		float4 cameraData{};
+		cameraData.x = cameraFar;
+		cameraData.y = cameraNear;
+		cameraData.z = cameraFar - cameraNear;
+		cameraData.w = cameraFar * cameraNear;
+
+		UpscalingDataCB upscalingData;
+		upscalingData.trueSamplingDim = renderSize;
+		upscalingData.cameraData = cameraData;
+
+		upscalingDataCB->Update(upscalingData);
+
+		auto upscalingBuffer = upscalingDataCB->CB();
+		context->CSSetConstantBuffers(0, 1, &upscalingBuffer);
+
+		{
+			ID3D11ShaderResourceView* views[] = { mainPreAlphaSRV, mainPostAlpha };
+			context->CSSetShaderResources(0, ARRAYSIZE(views), views);
+
+			ID3D11UnorderedAccessView* uavs[] = { reactiveMaskTexture->uav.get() };
+			context->CSSetUnorderedAccessViews(0, ARRAYSIZE(uavs), uavs, nullptr);
+
+			context->CSSetShader(GetGenerateReactiveMaskCS(), nullptr, 0);
+
+			uint dispatchX = (uint)std::ceil(renderSize.x / 8.0f);
+			uint dispatchY = (uint)std::ceil(renderSize.y / 8.0f);
+			context->Dispatch(dispatchX, dispatchY, 1);
+		}
+
+		ID3D11ShaderResourceView* views[1] = { nullptr };
+		context->CSSetShaderResources(0, ARRAYSIZE(views), views);
+
+		ID3D11UnorderedAccessView* uavs[1] = { nullptr };
+		context->CSSetUnorderedAccessViews(0, ARRAYSIZE(uavs), uavs, nullptr);
+
+		ID3D11ComputeShader* shader = nullptr;
+		context->CSSetShader(shader, nullptr, 0);
+	}
+}
+
 void Upscaling::UpdateJitter()
 {
 	static auto gameViewport = State_GetSingleton();
@@ -227,12 +306,12 @@ void Upscaling::UpdateJitter()
 		currentMipBias -= 1.0f;
 
 	UpdateSamplerStates(currentMipBias);
+
+	CheckResources();
 }
 
 void Upscaling::Upscale()
 {
-	CheckResources();
-
 	auto upscaleMethod = GetUpscaleMethod(true);
 
 	if (upscaleMethod == UpscaleMethod::kDisabled)
@@ -255,8 +334,6 @@ void Upscaling::Upscale()
 	
 	auto screenSize = float2(float(gameViewport->screenWidth), float(gameViewport->screenHeight));
 	auto renderSize = float2(screenSize.x * renderTargetManager->dynamicWidthRatio, screenSize.y * renderTargetManager->dynamicHeightRatio);
-
-	auto dlssPreset = (sl::DLSSPreset)settings.dlssPreset;
 
 	{
 		{
@@ -313,9 +390,9 @@ void Upscaling::Upscale()
 	}
 
 	if (upscaleMethod == UpscaleMethod::kDLSS)
-		Streamline::GetSingleton()->Upscale(upscalingTexture, dilatedMotionVectorTexture, jitter, renderSize, settings.qualityMode, dlssPreset);
+		Streamline::GetSingleton()->Upscale(upscalingTexture, dilatedMotionVectorTexture, jitter, renderSize, settings.qualityMode);
 	else
-		FidelityFX::GetSingleton()->Upscale(upscalingTexture, jitter, renderSize, settings.sharpness);
+		FidelityFX::GetSingleton()->Upscale(upscalingTexture, reactiveMaskTexture, jitter, renderSize, settings.sharpness);
 
 	if (upscaleMethod != UpscaleMethod::kFSR) {
 		context->CopyResource(frameBufferResource, upscalingTexture->resource.get());
@@ -386,6 +463,14 @@ void Upscaling::CreateUpscalingResources()
 	dilatedMotionVectorTexture->CreateSRV(srvDesc);
 	dilatedMotionVectorTexture->CreateUAV(uavDesc);
 
+	texDesc.Format = DXGI_FORMAT_R16_UNORM;
+	srvDesc.Format = texDesc.Format;
+	uavDesc.Format = texDesc.Format;
+
+	reactiveMaskTexture = new Texture2D(texDesc);
+	reactiveMaskTexture->CreateSRV(srvDesc);
+	reactiveMaskTexture->CreateUAV(uavDesc);
+
 	upscalingDataCB = new ConstantBuffer(ConstantBufferDesc<UpscalingDataCB>());
 }
 
@@ -401,5 +486,12 @@ void Upscaling::DestroyUpscalingResources()
 	dilatedMotionVectorTexture->resource = nullptr;
 	delete dilatedMotionVectorTexture;
 
+	reactiveMaskTexture->srv = nullptr;
+	reactiveMaskTexture->uav = nullptr;
+	reactiveMaskTexture->resource = nullptr;
+	delete reactiveMaskTexture;
+
 	upscalingDataCB = nullptr;
+
+	generateReactiveMaskCS = nullptr;
 }

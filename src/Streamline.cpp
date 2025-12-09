@@ -128,7 +128,7 @@ HRESULT Streamline::CreateDeviceAndSwapChain(IDXGIAdapter* pAdapter,
 	return hr;
 }
 
-void Streamline::Upscale(Texture2D* a_upscaleTexture, Texture2D* a_dilatedMotionVectorTexture, float2 a_jitter, float2 a_renderSize, uint a_qualityMode, sl::DLSSPreset a_preset)
+void Streamline::Upscale(Texture2D* a_upscaleTexture, Texture2D* a_dilatedMotionVectorTexture, float2 a_jitter, float2 a_renderSize, uint a_qualityMode)
 {
 	UpdateConstants(a_jitter);
 
@@ -137,13 +137,6 @@ void Streamline::Upscale(Texture2D* a_upscaleTexture, Texture2D* a_dilatedMotion
 
 	static auto gameViewport = RE::BSGraphics::State::GetSingleton();
 	static auto context = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
-
-	static auto previousDlssPreset = a_preset;
-
-	if (previousDlssPreset != a_preset)
-		DestroyDLSSResources();
-
-	previousDlssPreset = a_preset;
 
 	{
 		sl::DLSSMode dlssMode;
@@ -170,12 +163,6 @@ void Streamline::Upscale(Texture2D* a_upscaleTexture, Texture2D* a_dilatedMotion
 		dlssOptions.outputWidth = gameViewport.screenWidth;
 		dlssOptions.outputHeight = gameViewport.screenHeight;
 		dlssOptions.colorBuffersHDR = sl::Boolean::eFalse;
-		dlssOptions.preExposure = 1.0f;
-		dlssOptions.dlaaPreset = a_preset;
-		dlssOptions.qualityPreset = a_preset;
-		dlssOptions.balancedPreset = a_preset;
-		dlssOptions.performancePreset = a_preset;
-		dlssOptions.ultraPerformancePreset = a_preset;
 
 		if (SL_FAILED(result, slDLSSSetOptions(viewport, dlssOptions))) {
 			logger::critical("[Streamline] Could not enable DLSS");

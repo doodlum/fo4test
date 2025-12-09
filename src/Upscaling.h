@@ -28,7 +28,6 @@ public:
 	{
 		uint upscaleMethodPreference = (uint)UpscaleMethod::kDLSS;
 		float sharpness = 0.0f;
-		uint dlssPreset = (uint)sl::DLSSPreset::ePresetK;
 		uint qualityMode = 1;  // Default to Quality (1=Quality, 2=Balanced, 3=Performance, 4=Ultra Performance, 0=Native AA)
 	};
 
@@ -57,12 +56,18 @@ public:
 	
 	ID3D11ComputeShader* dilateMotionVectorCS;
 	ID3D11ComputeShader* GetDilateMotionVectorCS();
+	
+	ID3D11ComputeShader* generateReactiveMaskCS;
+	ID3D11ComputeShader* GetGenerateReactiveMaskCS();
+
+	void GenerateReactiveMask();
 
 	void UpdateJitter();
 	void Upscale();
 
 	Texture2D* upscalingTexture;
 	Texture2D* dilatedMotionVectorTexture;
+	Texture2D* reactiveMaskTexture;
 
 	float2 resolutionScale = float2(1, 1);
 
@@ -164,10 +169,10 @@ public:
 			upscaling->OverrideSamplerStates();
 			func(This);
 			upscaling->ResetSamplerStates();
+			upscaling->GenerateReactiveMask();
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
-
 
 	static void InstallHooks()
 	{

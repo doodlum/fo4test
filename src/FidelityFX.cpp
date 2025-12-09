@@ -83,7 +83,7 @@ void FidelityFX::DestroyFSRResources()
 	}
 }
 
-void FidelityFX::Upscale(Texture2D* a_color, float2 a_jitter, float2 a_renderSize, float a_sharpness)
+void FidelityFX::Upscale(Texture2D* a_color, Texture2D* a_reactiveMaskTexture, float2 a_jitter, float2 a_renderSize, float a_sharpness)
 {
 	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
 	static auto& depthTexture = rendererData->depthStencilTargets[(uint)Util::DepthStencilTarget::kMain];
@@ -120,8 +120,8 @@ void FidelityFX::Upscale(Texture2D* a_color, float2 a_jitter, float2 a_renderSiz
 		dispatchParameters.motionVectors = ffxGetResource(motionVectorTexture.texture, L"FSR3_InputMotionVectors", FFX_RESOURCE_STATE_PIXEL_COMPUTE_READ);
 		dispatchParameters.exposure = ffxGetResource(nullptr, L"FSR3_InputExposure", FFX_RESOURCE_STATE_PIXEL_COMPUTE_READ);
 		dispatchParameters.upscaleOutput = dispatchParameters.color;
-		dispatchParameters.reactive = ffxGetResource(nullptr, L"FSR3_InputReactiveMap", FFX_RESOURCE_STATE_PIXEL_COMPUTE_READ);
-		dispatchParameters.transparencyAndComposition = ffxGetResource(nullptr, L"FSR3_TransparencyAndCompositionMap", FFX_RESOURCE_STATE_PIXEL_COMPUTE_READ);
+		dispatchParameters.reactive = ffxGetResource(a_reactiveMaskTexture->resource.get(), L"FSR3_InputReactiveMap", FFX_RESOURCE_STATE_PIXEL_COMPUTE_READ);
+		dispatchParameters.transparencyAndComposition = ffxGetResource(a_reactiveMaskTexture->resource.get(), L"FSR3_TransparencyAndCompositionMap", FFX_RESOURCE_STATE_PIXEL_COMPUTE_READ);
 
 		dispatchParameters.motionVectorScale.x = a_renderSize.x;
 		dispatchParameters.motionVectorScale.y = a_renderSize.y;
