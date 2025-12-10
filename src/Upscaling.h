@@ -6,6 +6,9 @@
 #include "FidelityFX.h"
 #include "Streamline.h"
 
+const uint renderTargetsPatch[] = { 2, 3, 4, 9, 14, 20, 22, 23, 24, 25, 28, 57, 58, 59 };
+const uint depthStencilTargetPatch[] = { 2, 4 };
+
 class Upscaling : public RE::BSTEventSink<RE::MenuOpenCloseEvent>
 {
 public:
@@ -57,6 +60,8 @@ public:
 	
 	RE::BSGraphics::DepthStencilTarget originalDepthStencilTargets[13];
 	RE::BSGraphics::DepthStencilTarget proxyDepthStencilTargets[13];
+
+	RE::BSGraphics::RenderTargetProperties originalRenderTargetData[100];
 
 	void OverrideRenderTargets();
 	void ResetRenderTargets();

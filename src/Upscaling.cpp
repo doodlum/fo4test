@@ -156,26 +156,13 @@ void Upscaling::UpdateRenderTargets(uint a_currentWidth, uint a_currentHeight)
 	previousWidth = a_currentWidth;
 	previousHeight = a_currentHeight;
 
-	UpdateRenderTarget(2, a_currentWidth, a_currentHeight);
-	UpdateRenderTarget(3, a_currentWidth, a_currentHeight);
-	UpdateRenderTarget(4, a_currentWidth, a_currentHeight);
-
-	UpdateRenderTarget(9, a_currentWidth, a_currentHeight);
-	UpdateRenderTarget(14, a_currentWidth, a_currentHeight);
-	UpdateRenderTarget(20, a_currentWidth, a_currentHeight);
-	UpdateRenderTarget(22, a_currentWidth, a_currentHeight);
-	UpdateRenderTarget(23, a_currentWidth, a_currentHeight);
-	UpdateRenderTarget(24, a_currentWidth, a_currentHeight);
-	UpdateRenderTarget(25, a_currentWidth, a_currentHeight);
-	UpdateRenderTarget(28, a_currentWidth, a_currentHeight);
+	for (int i = 0; i < ARRAYSIZE(renderTargetsPatch); i++)
+		UpdateRenderTarget(renderTargetsPatch[i], a_currentWidth, a_currentHeight);
 
 	//UpdateRenderTarget(39, a_currentWidth, a_currentHeight);
-	UpdateRenderTarget(57, a_currentWidth, a_currentHeight);
-	UpdateRenderTarget(58, a_currentWidth, a_currentHeight);
-	UpdateRenderTarget(59, a_currentWidth, a_currentHeight);
 
-	UpdateDepthStencilRenderTarget(2, a_currentWidth, a_currentHeight);
-	UpdateDepthStencilRenderTarget(4, a_currentWidth, a_currentHeight);
+	for (int i = 0; i < ARRAYSIZE(depthStencilTargetPatch); i++)
+		UpdateDepthStencilRenderTarget(depthStencilTargetPatch[i], a_currentWidth, a_currentHeight);
 }
 
 void Upscaling::OverrideRenderTarget(int index)
@@ -198,11 +185,6 @@ void Upscaling::OverrideRenderTarget(int index)
 
 	auto context = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
 	context->CopySubresourceRegion(proxyRenderTargets[index].texture, 0, 0, 0, 0, originalRenderTargets[index].texture, 0, &srcBox);
-
-	static auto renderTargetManager = RenderTargetManager_GetSingleton();
-
-	renderTargetManager->renderTargetData[index].width = dstDesc.Width;
-	renderTargetManager->renderTargetData[index].height = dstDesc.Height;
 }
 
 void Upscaling::ResetRenderTarget(int index)
@@ -395,25 +377,17 @@ void Upscaling::OverrideRenderTargets()
 
 	UpdateRenderTargets((uint)renderSize.x, (uint)renderSize.y);
 
-	OverrideRenderTarget(2);
-	OverrideRenderTarget(3);
-	OverrideRenderTarget(4);
-	OverrideRenderTarget(9);
-	OverrideRenderTarget(14);
-	OverrideRenderTarget(20);
-	OverrideRenderTarget(22);
-	OverrideRenderTarget(23);
-	OverrideRenderTarget(24);
-	OverrideRenderTarget(25);
-	OverrideRenderTarget(28);
+	for (int i = 0; i < ARRAYSIZE(renderTargetsPatch); i++)
+		OverrideRenderTarget(renderTargetsPatch[i]);
 
-	//OverrideRenderTarget(39);
-	OverrideRenderTarget(57);
-	OverrideRenderTarget(58);
-	OverrideRenderTarget(59);
+	for (int i = 0; i < ARRAYSIZE(depthStencilTargetPatch); i++)
+		OverrideDepthStencilRenderTarget(depthStencilTargetPatch[i]);
 
-	OverrideDepthStencilRenderTarget(2);
-	OverrideDepthStencilRenderTarget(4);
+	for (int i = 0; i < 100; i++) {
+		originalRenderTargetData[i] = renderTargetManager->renderTargetData[i];
+		renderTargetManager->renderTargetData[i].width = (uint)renderSize.x;
+		renderTargetManager->renderTargetData[i].height = (uint)renderSize.y;
+	}
 
 	DrawWorld_Imagespace_SetUseDynamicResolutionViewportAsDefaultViewport::func(renderTargetManager, false);
 }
@@ -422,27 +396,19 @@ void Upscaling::ResetRenderTargets()
 {
 	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
 
-	ResetRenderTarget(2);
-	ResetRenderTarget(3);
-	ResetRenderTarget(4);
-	ResetRenderTarget(9);
-	ResetRenderTarget(14);
-	ResetRenderTarget(20);
-	ResetRenderTarget(22);
-	ResetRenderTarget(23);
-	ResetRenderTarget(24);
-	ResetRenderTarget(25);
-	ResetRenderTarget(28);
+	for(int i = 0; i < ARRAYSIZE(renderTargetsPatch); i++)
+		ResetRenderTarget(renderTargetsPatch[i]);
 
 	//ResetRenderTarget(39);
-	ResetRenderTarget(57);
-	ResetRenderTarget(58);
-	ResetRenderTarget(59);
 
-	ResetDepthStencilRenderTarget(2);
-	ResetDepthStencilRenderTarget(4);
+	for (int i = 0; i < ARRAYSIZE(depthStencilTargetPatch); i++)
+		ResetDepthStencilRenderTarget(depthStencilTargetPatch[i]);
 
 	static auto renderTargetManager = RenderTargetManager_GetSingleton();
+
+	for (int i = 0; i < 100; i++) {
+		renderTargetManager->renderTargetData[i] = originalRenderTargetData[i];
+	}
 
 	DrawWorld_Imagespace_SetUseDynamicResolutionViewportAsDefaultViewport::func(renderTargetManager, true);
 }
