@@ -44,7 +44,7 @@ RE::BSEventNotifyControl Upscaling::ProcessEvent(const RE::MenuOpenCloseEvent& a
 	return RE::BSEventNotifyControl::kContinue;
 }
 
-void Upscaling::UpdateRenderTarget(int index, uint a_currentWidth, uint a_currentHeight)
+void Upscaling::UpdateRenderTarget(int index, float a_currentWidthRatio, float a_currentHeightRatio)
 {
 	auto& originalRenderTarget = originalRenderTargets[index];
 	auto& proxyRenderTarget = proxyRenderTargets[index];
@@ -100,11 +100,11 @@ void Upscaling::UpdateRenderTarget(int index, uint a_currentWidth, uint a_curren
 	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
 	auto device = reinterpret_cast<ID3D11Device*>(rendererData->device);
 
-	textureDesc.Width = a_currentWidth;
-	textureDesc.Height = a_currentHeight;
+	textureDesc.Width = static_cast<uint>(static_cast<float>(textureDesc.Width) * a_currentWidthRatio);
+	textureDesc.Height = static_cast<uint>(static_cast<float>(textureDesc.Height) * a_currentHeightRatio);
 
-	copyTextureDesc.Width = a_currentWidth;
-	copyTextureDesc.Height = a_currentHeight;
+	copyTextureDesc.Width = static_cast<uint>(static_cast<float>(textureDesc.Width) * a_currentWidthRatio);
+	copyTextureDesc.Height = static_cast<uint>(static_cast<float>(textureDesc.Height) * a_currentHeightRatio);
 
 	if (originalRenderTarget.texture)
 		device->CreateTexture2D(&textureDesc, nullptr, &proxyRenderTarget.texture);
@@ -125,7 +125,7 @@ void Upscaling::UpdateRenderTarget(int index, uint a_currentWidth, uint a_curren
 		device->CreateUnorderedAccessView(proxyRenderTarget.texture, &uaViewDesc, &proxyRenderTarget.uaView);
 }
 
-void Upscaling::UpdateRenderTargets(uint a_currentWidth, uint a_currentHeight)
+void Upscaling::UpdateRenderTargets(float a_currentWidthRatio, float a_currentHeightRatio)
 {
 	// 20 57 24 23 58 59 2 25 3 9 39
 	// 4
@@ -146,23 +146,25 @@ void Upscaling::UpdateRenderTargets(uint a_currentWidth, uint a_currentHeight)
 
 	});
 
-	static uint previousWidth = 0;
-	static uint previousHeight = 0;
+	static auto previousWidthRatio = 0.0f;
+	static auto previousHeightRatio = 0.0f;
 
 	// Check for resolution update
-	if (previousWidth == a_currentWidth && previousHeight == a_currentHeight)
+	if (previousWidthRatio == a_currentWidthRatio && previousHeightRatio == a_currentHeightRatio)
 		return;
 
-	previousWidth = a_currentWidth;
-	previousHeight = a_currentHeight;
+	previousWidthRatio = a_currentWidthRatio;
+	previousHeightRatio = a_currentHeightRatio;
+
+	// Recreate render targets with new dimensions
 
 	for (int i = 0; i < ARRAYSIZE(renderTargetsPatch); i++)
-		UpdateRenderTarget(renderTargetsPatch[i], a_currentWidth, a_currentHeight);
+		UpdateRenderTarget(renderTargetsPatch[i], a_currentWidthRatio, a_currentHeightRatio);
 
 	//UpdateRenderTarget(39, a_currentWidth, a_currentHeight);
 
 	for (int i = 0; i < ARRAYSIZE(depthStencilTargetPatch); i++)
-		UpdateDepthStencilRenderTarget(depthStencilTargetPatch[i], a_currentWidth, a_currentHeight);
+		UpdateDepthStencilRenderTarget(depthStencilTargetPatch[i], a_currentWidthRatio, a_currentHeightRatio);
 }
 
 void Upscaling::OverrideRenderTarget(int index)
@@ -214,7 +216,7 @@ void Upscaling::ResetRenderTarget(int index)
 	renderTargetManager->renderTargetData[index].height = dstDesc.Height;
 }
 
-void Upscaling::UpdateDepthStencilRenderTarget(int index, uint a_currentWidth, uint a_currentHeight)
+void Upscaling::UpdateDepthStencilRenderTarget(int index, float a_currentWidthRatio, float a_currentHeightRatio)
 {
 	auto& originalDepthTarget = originalDepthStencilTargets[index];
 	auto& proxyDepthTarget = proxyDepthStencilTargets[index];
@@ -284,8 +286,8 @@ void Upscaling::UpdateDepthStencilRenderTarget(int index, uint a_currentWidth, u
 	auto device = reinterpret_cast<ID3D11Device*>(rendererData->device);
 
 	// Update dimensions
-	textureDesc.Width = a_currentWidth;
-	textureDesc.Height = a_currentHeight;
+	textureDesc.Width = static_cast<uint>(static_cast<float>(textureDesc.Width) * a_currentWidthRatio);
+	textureDesc.Height = static_cast<uint>(static_cast<float>(textureDesc.Height) * a_currentHeightRatio);
 
 	// Create new texture
 	if (originalDepthTarget.texture)
@@ -365,17 +367,13 @@ void Upscaling::ResetDepthStencilRenderTarget(int index)
 }
 
 void Upscaling::OverrideRenderTargets()
-{
-	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
-	static auto context = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
-	
-	static auto gameViewport = State_GetSingleton();
+{	
 	static auto renderTargetManager = RenderTargetManager_GetSingleton();
 
-	auto screenSize = float2(float(gameViewport->screenWidth), float(gameViewport->screenHeight));
-	auto renderSize = float2(screenSize.x * renderTargetManager->dynamicWidthRatio, screenSize.y * renderTargetManager->dynamicHeightRatio);
+	auto currentWidthRatio = renderTargetManager->dynamicWidthRatio;
+	auto currentHeightRatio = renderTargetManager->dynamicHeightRatio;
 
-	UpdateRenderTargets((uint)renderSize.x, (uint)renderSize.y);
+	UpdateRenderTargets(currentWidthRatio, currentHeightRatio);
 
 	for (int i = 0; i < ARRAYSIZE(renderTargetsPatch); i++)
 		OverrideRenderTarget(renderTargetsPatch[i]);
@@ -385,8 +383,8 @@ void Upscaling::OverrideRenderTargets()
 
 	for (int i = 0; i < 100; i++) {
 		originalRenderTargetData[i] = renderTargetManager->renderTargetData[i];
-		renderTargetManager->renderTargetData[i].width = (uint)renderSize.x;
-		renderTargetManager->renderTargetData[i].height = (uint)renderSize.y;
+		renderTargetManager->renderTargetData[i].width = static_cast<uint>(static_cast<float>(renderTargetManager->renderTargetData[i].width) * currentWidthRatio);
+		renderTargetManager->renderTargetData[i].height = static_cast<uint>(static_cast<float>(renderTargetManager->renderTargetData[i].height) * currentHeightRatio);
 	}
 
 	DrawWorld_Imagespace_SetUseDynamicResolutionViewportAsDefaultViewport::func(renderTargetManager, false);
@@ -646,14 +644,13 @@ void Upscaling::UpdateJitter()
 	renderTargetManager->lowestWidthRatio = renderTargetManager->dynamicWidthRatio;
 	renderTargetManager->lowestHeightRatio = renderTargetManager->dynamicHeightRatio;
 
+	float2 resolutionScale = float2(1, 1);
+
 	if (upscaleMethodMenu != UpscaleMethod::kDisabled) {
 		auto screenWidth = gameViewport->screenWidth;
 		auto screenHeight = gameViewport->screenHeight;
-		auto renderWidth = static_cast<uint>(screenWidth * resolutionScaleBase);
-		auto renderHeight = static_cast<uint>(screenHeight * resolutionScaleBase);
 
-		resolutionScale.x = static_cast<float>(renderWidth) / static_cast<float>(screenWidth);
-		resolutionScale.y = static_cast<float>(renderHeight) / static_cast<float>(screenHeight);
+		auto renderWidth = static_cast<uint>(static_cast<float>(screenWidth) * resolutionScaleBase);
 
 		auto phaseCount = ffxFsr3GetJitterPhaseCount(renderWidth, screenWidth);
 

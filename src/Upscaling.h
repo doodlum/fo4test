@@ -45,15 +45,14 @@ public:
 
 	RE::BSEventNotifyControl ProcessEvent(const RE::MenuOpenCloseEvent& a_event, RE::BSTEventSource<RE::MenuOpenCloseEvent>*);
 
-	void UpdateRenderTarget(int index, uint a_currentWidth, uint a_currentHeight);
+	void UpdateRenderTarget(int index, float a_currentWidthRatio, float a_currentHeightRatio);
+	void UpdateRenderTargets(float a_currentWidthRatio, float a_currentHeightRatio);
 	void OverrideRenderTarget(int index);
 	void ResetRenderTarget(int index);
 
-	void UpdateDepthStencilRenderTarget(int index, uint a_currentWidth, uint a_currentHeight);
+	void UpdateDepthStencilRenderTarget(int index, float a_currentWidthRatio, float a_currentHeightRatio);
 	void OverrideDepthStencilRenderTarget(int index);
 	void ResetDepthStencilRenderTarget(int index);
-
-	void UpdateRenderTargets(uint a_currentWidth, uint a_currentHeight);
 
 	RE::BSGraphics::RenderTarget originalRenderTargets[101];
 	RE::BSGraphics::RenderTarget proxyRenderTargets[101];
@@ -92,8 +91,6 @@ public:
 	Texture2D* upscalingTexture;
 	Texture2D* dilatedMotionVectorTexture;
 	Texture2D* reactiveMaskTexture;
-
-	float2 resolutionScale = float2(1, 1);
 
 	struct UpscalingDataCB
 	{
@@ -193,6 +190,12 @@ public:
 			upscaling->OverrideSamplerStates();
 			func(This);
 			upscaling->ResetSamplerStates();
+
+			static auto renderTargetManager = RenderTargetManager_GetSingleton();
+
+			if (renderTargetManager->dynamicWidthRatio != 1.0 || renderTargetManager->dynamicHeightRatio != 1.0)
+				upscaling->ResetRenderTargets();
+
 			upscaling->GenerateReactiveMask();
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
@@ -203,12 +206,12 @@ public:
 		static void thunk(void* This, uint a2, bool a3)
 		{
 			auto upscaling = Upscaling::GetSingleton();
-			bool requiresPatching = upscaling->resolutionScale.x != 1.0 || upscaling->resolutionScale.y != 1.0;
-			if (requiresPatching)
+			static auto renderTargetManager = RenderTargetManager_GetSingleton();
+			
+			if (renderTargetManager->dynamicWidthRatio != 1.0 || renderTargetManager->dynamicHeightRatio != 1.0)
 				upscaling->OverrideRenderTargets();
+
 			func(This, a2, a3);
-			if (requiresPatching)
-				upscaling->ResetRenderTargets();
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
