@@ -53,10 +53,6 @@ void Upscaling::UpdateRenderTarget(int index, float a_currentWidthRatio, float a
 		proxyRenderTarget.uaView->Release();
 	proxyRenderTarget.uaView = nullptr;
 
-	if (proxyRenderTarget.copySRView)
-		proxyRenderTarget.copySRView->Release();
-	proxyRenderTarget.copySRView = nullptr;
-
 	if (proxyRenderTarget.srView)
 		proxyRenderTarget.srView->Release();
 	proxyRenderTarget.srView = nullptr;
@@ -64,10 +60,6 @@ void Upscaling::UpdateRenderTarget(int index, float a_currentWidthRatio, float a
 	if (proxyRenderTarget.rtView)
 		proxyRenderTarget.rtView->Release();
 	proxyRenderTarget.rtView = nullptr;
-
-	if (proxyRenderTarget.copyTexture)
-		proxyRenderTarget.copyTexture->Release();
-	proxyRenderTarget.copyTexture = nullptr;
 
 	if (proxyRenderTarget.texture)
 		proxyRenderTarget.texture->Release();
@@ -77,10 +69,6 @@ void Upscaling::UpdateRenderTarget(int index, float a_currentWidthRatio, float a
 	if (originalRenderTarget.texture)
 		originalRenderTarget.texture->GetDesc(&textureDesc);
 
-	D3D11_TEXTURE2D_DESC copyTextureDesc{};
-	if (originalRenderTarget.copyTexture)
-		originalRenderTarget.copyTexture->GetDesc(&copyTextureDesc);
-
 	D3D11_RENDER_TARGET_VIEW_DESC rtViewDesc{};
 	if (originalRenderTarget.rtView)
 		originalRenderTarget.rtView->GetDesc(&rtViewDesc);
@@ -88,10 +76,6 @@ void Upscaling::UpdateRenderTarget(int index, float a_currentWidthRatio, float a
 	D3D11_SHADER_RESOURCE_VIEW_DESC srViewDesc{};
 	if (originalRenderTarget.srView)
 		originalRenderTarget.srView->GetDesc(&srViewDesc);
-
-	D3D11_SHADER_RESOURCE_VIEW_DESC copySRViewDesc{};
-	if (originalRenderTarget.copySRView)
-		originalRenderTarget.copySRView->GetDesc(&copySRViewDesc);
 
 	D3D11_UNORDERED_ACCESS_VIEW_DESC uaViewDesc;
 	if (originalRenderTarget.uaView)
@@ -103,23 +87,14 @@ void Upscaling::UpdateRenderTarget(int index, float a_currentWidthRatio, float a
 	textureDesc.Width = static_cast<uint>(static_cast<float>(textureDesc.Width) * a_currentWidthRatio);
 	textureDesc.Height = static_cast<uint>(static_cast<float>(textureDesc.Height) * a_currentHeightRatio);
 
-	copyTextureDesc.Width = static_cast<uint>(static_cast<float>(textureDesc.Width) * a_currentWidthRatio);
-	copyTextureDesc.Height = static_cast<uint>(static_cast<float>(textureDesc.Height) * a_currentHeightRatio);
-
 	if (originalRenderTarget.texture)
 		device->CreateTexture2D(&textureDesc, nullptr, &proxyRenderTarget.texture);
-
-	if (originalRenderTarget.copyTexture)
-		device->CreateTexture2D(&copyTextureDesc, nullptr, &proxyRenderTarget.copyTexture);
 	
 	if (originalRenderTarget.rtView)
 		device->CreateRenderTargetView(proxyRenderTarget.texture, &rtViewDesc, &proxyRenderTarget.rtView);
 
 	if (originalRenderTarget.srView)
 		device->CreateShaderResourceView(proxyRenderTarget.texture, &srViewDesc, &proxyRenderTarget.srView);
-
-	if (originalRenderTarget.copySRView)
-		device->CreateShaderResourceView(proxyRenderTarget.copyTexture, &copySRViewDesc, &proxyRenderTarget.copySRView);
 
 	if (originalRenderTarget.uaView)
 		device->CreateUnorderedAccessView(proxyRenderTarget.texture, &uaViewDesc, &proxyRenderTarget.uaView);
@@ -136,12 +111,14 @@ void Upscaling::UpdateRenderTargets(float a_currentWidthRatio, float a_currentHe
 	static std::once_flag setup;
 	std::call_once(setup, [&]() {
 
-		for (int i = 0; i < 101; i++) {
-			originalRenderTargets[i] = rendererData->renderTargets[i];
+		for (int i = 0; i < ARRAYSIZE(renderTargetsPatch); i++) {
+			auto index = renderTargetsPatch[i];
+			originalRenderTargets[i] = rendererData->renderTargets[index];
 		}
 
-		for (int i = 0; i < 13; i++) {
-			originalDepthStencilTargets[i] = rendererData->depthStencilTargets[i];
+		for (int i = 0; i < ARRAYSIZE(depthStencilTargetPatch); i++) {
+			auto index = depthStencilTargetPatch[i];
+			originalDepthStencilTargets[i] = rendererData->depthStencilTargets[index];
 		}
 
 	});
