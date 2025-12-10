@@ -169,6 +169,9 @@ void Upscaling::UpdateRenderTargets(float a_currentWidthRatio, float a_currentHe
 
 void Upscaling::OverrideRenderTarget(int index)
 {
+	if (!originalRenderTargets[index].texture || !proxyRenderTargets[index].texture)
+		return;
+
 	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
 
 	rendererData->renderTargets[index] = proxyRenderTargets[index];
@@ -191,6 +194,9 @@ void Upscaling::OverrideRenderTarget(int index)
 
 void Upscaling::ResetRenderTarget(int index)
 {
+	if (!originalRenderTargets[index].texture || !proxyRenderTargets[index].texture)
+		return;
+
 	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
 
 	rendererData->renderTargets[index] = originalRenderTargets[index];
@@ -314,6 +320,9 @@ void Upscaling::UpdateDepthStencilRenderTarget(int index, float a_currentWidthRa
 
 void Upscaling::OverrideDepthStencilRenderTarget(int index)
 {
+	if (!originalDepthStencilTargets[index].texture || !proxyDepthStencilTargets[index].texture)
+		return;
+
 	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
 
 	rendererData->depthStencilTargets[index] = proxyDepthStencilTargets[index];
@@ -341,6 +350,9 @@ void Upscaling::OverrideDepthStencilRenderTarget(int index)
 
 void Upscaling::ResetDepthStencilRenderTarget(int index)
 {
+	if (!originalDepthStencilTargets[index].texture || !proxyDepthStencilTargets[index].texture)
+		return;
+
 	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
 
 	rendererData->depthStencilTargets[index] = originalDepthStencilTargets[index];
@@ -381,10 +393,11 @@ void Upscaling::OverrideRenderTargets()
 	for (int i = 0; i < ARRAYSIZE(depthStencilTargetPatch); i++)
 		OverrideDepthStencilRenderTarget(depthStencilTargetPatch[i]);
 
-	for (int i = 0; i < 100; i++) {
-		originalRenderTargetData[i] = renderTargetManager->renderTargetData[i];
-		renderTargetManager->renderTargetData[i].width = static_cast<uint>(static_cast<float>(renderTargetManager->renderTargetData[i].width) * currentWidthRatio);
-		renderTargetManager->renderTargetData[i].height = static_cast<uint>(static_cast<float>(renderTargetManager->renderTargetData[i].height) * currentHeightRatio);
+	for (int i = 0; i < ARRAYSIZE(renderTargetsPatch); i++) {
+		auto index = renderTargetsPatch[i];
+		originalRenderTargetData[index] = renderTargetManager->renderTargetData[index];
+		renderTargetManager->renderTargetData[index].width = static_cast<uint>(static_cast<float>(renderTargetManager->renderTargetData[index].width) * currentWidthRatio);
+		renderTargetManager->renderTargetData[index].height = static_cast<uint>(static_cast<float>(renderTargetManager->renderTargetData[index].height) * currentHeightRatio);
 	}
 
 	DrawWorld_Imagespace_SetUseDynamicResolutionViewportAsDefaultViewport::func(renderTargetManager, false);
@@ -404,8 +417,9 @@ void Upscaling::ResetRenderTargets()
 
 	static auto renderTargetManager = RenderTargetManager_GetSingleton();
 
-	for (int i = 0; i < 100; i++) {
-		renderTargetManager->renderTargetData[i] = originalRenderTargetData[i];
+	for (int i = 0; i < ARRAYSIZE(renderTargetsPatch); i++) {
+		auto index = renderTargetsPatch[i];
+		renderTargetManager->renderTargetData[index] = originalRenderTargetData[index];
 	}
 
 	DrawWorld_Imagespace_SetUseDynamicResolutionViewportAsDefaultViewport::func(renderTargetManager, true);
