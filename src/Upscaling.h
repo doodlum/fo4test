@@ -6,7 +6,7 @@
 #include "FidelityFX.h"
 #include "Streamline.h"
 
-const uint renderTargetsPatch[] = { 20, 57, 24, 25, 23, 58, 59, 28, 3, 9 };
+const uint renderTargetsPatch[] = { 20, 57, 24, 25, 23, 58, 59, 28, 3, 9, 60, 61 };
 const uint depthStencilTargetPatch[] = { 2 };
 
 class Upscaling : public RE::BSTEventSink<RE::MenuOpenCloseEvent>
@@ -85,8 +85,8 @@ public:
 	ID3D11ComputeShader* generateReactiveMaskCS;
 	ID3D11ComputeShader* GetGenerateReactiveMaskCS();
 
-	ID3D11ComputeShader* overrideLinearDepthCS;
-	ID3D11ComputeShader* GetOverrideLinearDepthCS();
+	ID3D11ComputeShader* overrideDepthCS;
+	ID3D11ComputeShader* GetOverrideDepthCS();
 
 	void GenerateReactiveMask();
 
@@ -219,6 +219,18 @@ public:
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
 
+	struct BSImagespaceShaderLensFlare_RenderLensFlare
+	{
+		static void thunk(RE::NiCamera* a_camera)
+		{
+			auto upscaling = Upscaling::GetSingleton();
+			upscaling->OverrideDepth();
+			func(a_camera);
+			upscaling->ResetDepth();
+		}
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
+
 	static void InstallHooks()
 	{
 		// Control jitters, dynamic resolution, and sampler states
@@ -244,5 +256,6 @@ public:
 
 		// Fix env map with dynamic resolution
 		stl::write_thunk_call<BSDFComposite_Envmap>(REL::ID(728427).address() + 0x8DC);
+		stl::detour_thunk<BSImagespaceShaderLensFlare_RenderLensFlare>(REL::ID(676108));
 	}
 };
