@@ -46,6 +46,9 @@ RE::BSEventNotifyControl Upscaling::ProcessEvent(const RE::MenuOpenCloseEvent& a
 
 void Upscaling::UpdateRenderTarget(int index, float a_currentWidthRatio, float a_currentHeightRatio)
 {
+	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
+	originalRenderTargets[index] = rendererData->renderTargets[index];
+
 	auto& originalRenderTarget = originalRenderTargets[index];
 	auto& proxyRenderTarget = proxyRenderTargets[index];
 
@@ -81,48 +84,32 @@ void Upscaling::UpdateRenderTarget(int index, float a_currentWidthRatio, float a
 	if (originalRenderTarget.uaView)
 		originalRenderTarget.uaView->GetDesc(&uaViewDesc);
 
-	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
 	auto device = reinterpret_cast<ID3D11Device*>(rendererData->device);
 
 	textureDesc.Width = static_cast<uint>(static_cast<float>(textureDesc.Width) * a_currentWidthRatio);
 	textureDesc.Height = static_cast<uint>(static_cast<float>(textureDesc.Height) * a_currentHeightRatio);
 
-	if (originalRenderTarget.texture)
-		device->CreateTexture2D(&textureDesc, nullptr, &proxyRenderTarget.texture);
+	textureDesc.MipLevels = 1;
+	srViewDesc.Texture2D.MostDetailedMip = 0;
+	srViewDesc.Texture2D.MipLevels = 1;
 	
-	if (originalRenderTarget.rtView)
-		device->CreateRenderTargetView(proxyRenderTarget.texture, &rtViewDesc, &proxyRenderTarget.rtView);
+	if (originalRenderTarget.texture)
+		DX::ThrowIfFailed(device->CreateTexture2D(&textureDesc, nullptr, &proxyRenderTarget.texture));
+	
+	if (auto texture = proxyRenderTarget.texture) {
+		if (originalRenderTarget.rtView)
+			DX::ThrowIfFailed(device->CreateRenderTargetView(texture, &rtViewDesc, &proxyRenderTarget.rtView));
 
-	if (originalRenderTarget.srView)
-		device->CreateShaderResourceView(proxyRenderTarget.texture, &srViewDesc, &proxyRenderTarget.srView);
+		if (originalRenderTarget.srView)
+			DX::ThrowIfFailed(device->CreateShaderResourceView(texture, &srViewDesc, &proxyRenderTarget.srView));
 
-	if (originalRenderTarget.uaView)
-		device->CreateUnorderedAccessView(proxyRenderTarget.texture, &uaViewDesc, &proxyRenderTarget.uaView);
+		if (originalRenderTarget.uaView)
+			DX::ThrowIfFailed(device->CreateUnorderedAccessView(texture, &uaViewDesc, &proxyRenderTarget.uaView));
+	}
 }
 
 void Upscaling::UpdateRenderTargets(float a_currentWidthRatio, float a_currentHeightRatio)
 {
-	// 20 57 24 23 58 59 2 25 3 9 39
-	// 4
-	// 22 
-	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
-
-	// Store original render targets
-	static std::once_flag setup;
-	std::call_once(setup, [&]() {
-
-		for (int i = 0; i < ARRAYSIZE(renderTargetsPatch); i++) {
-			auto index = renderTargetsPatch[i];
-			originalRenderTargets[i] = rendererData->renderTargets[index];
-		}
-
-		for (int i = 0; i < ARRAYSIZE(depthStencilTargetPatch); i++) {
-			auto index = depthStencilTargetPatch[i];
-			originalDepthStencilTargets[i] = rendererData->depthStencilTargets[index];
-		}
-
-	});
-
 	static auto previousWidthRatio = 0.0f;
 	static auto previousHeightRatio = 0.0f;
 
@@ -137,9 +124,7 @@ void Upscaling::UpdateRenderTargets(float a_currentWidthRatio, float a_currentHe
 
 	for (int i = 0; i < ARRAYSIZE(renderTargetsPatch); i++)
 		UpdateRenderTarget(renderTargetsPatch[i], a_currentWidthRatio, a_currentHeightRatio);
-
-	//UpdateRenderTarget(39, a_currentWidth, a_currentHeight);
-
+	
 	for (int i = 0; i < ARRAYSIZE(depthStencilTargetPatch); i++)
 		UpdateDepthStencilRenderTarget(depthStencilTargetPatch[i], a_currentWidthRatio, a_currentHeightRatio);
 }
@@ -192,15 +177,13 @@ void Upscaling::ResetRenderTarget(int index)
 
 	auto context = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
 	context->CopySubresourceRegion(originalRenderTargets[index].texture, 0, 0, 0, 0, proxyRenderTargets[index].texture, 0, &srcBox);
-	
-	static auto renderTargetManager = RenderTargetManager_GetSingleton();
-
-	renderTargetManager->renderTargetData[index].width = dstDesc.Width;
-	renderTargetManager->renderTargetData[index].height = dstDesc.Height;
 }
 
 void Upscaling::UpdateDepthStencilRenderTarget(int index, float a_currentWidthRatio, float a_currentHeightRatio)
 {
+	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
+	originalDepthStencilTargets[index] = rendererData->depthStencilTargets[index];
+
 	auto& originalDepthTarget = originalDepthStencilTargets[index];
 	auto& proxyDepthTarget = proxyDepthStencilTargets[index];
 
@@ -265,7 +248,6 @@ void Upscaling::UpdateDepthStencilRenderTarget(int index, float a_currentWidthRa
 	if (originalDepthTarget.srViewStencil)
 		originalDepthTarget.srViewStencil->GetDesc(&srViewStencilDesc);
 
-	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
 	auto device = reinterpret_cast<ID3D11Device*>(rendererData->device);
 
 	// Update dimensions
@@ -274,25 +256,28 @@ void Upscaling::UpdateDepthStencilRenderTarget(int index, float a_currentWidthRa
 
 	// Create new texture
 	if (originalDepthTarget.texture)
-		device->CreateTexture2D(&textureDesc, nullptr, &proxyDepthTarget.texture);
+		DX::ThrowIfFailed(device->CreateTexture2D(&textureDesc, nullptr, &proxyDepthTarget.texture));
 
-	// Create depth stencil views
-	for (int i = 0; i < 4; ++i) {
-		if (originalDepthTarget.dsView[i])
-			device->CreateDepthStencilView(proxyDepthTarget.texture, &dsViewDesc[i], &proxyDepthTarget.dsView[i]);
-		if (originalDepthTarget.dsViewReadOnlyDepth[i])
-			device->CreateDepthStencilView(proxyDepthTarget.texture, &dsViewReadOnlyDepthDesc[i], &proxyDepthTarget.dsViewReadOnlyDepth[i]);
-		if (originalDepthTarget.dsViewReadOnlyStencil[i])
-			device->CreateDepthStencilView(proxyDepthTarget.texture, &dsViewReadOnlyStencilDesc[i], &proxyDepthTarget.dsViewReadOnlyStencil[i]);
-		if (originalDepthTarget.dsViewReadOnlyDepthStencil[i])
-			device->CreateDepthStencilView(proxyDepthTarget.texture, &dsViewReadOnlyDepthStencilDesc[i], &proxyDepthTarget.dsViewReadOnlyDepthStencil[i]);
+	if (auto texture = proxyDepthTarget.texture) {
+
+		// Create depth stencil views
+		for (int i = 0; i < 4; ++i) {
+			if (originalDepthTarget.dsView[i])
+				DX::ThrowIfFailed(device->CreateDepthStencilView(texture, &dsViewDesc[i], &proxyDepthTarget.dsView[i]));
+			if (originalDepthTarget.dsViewReadOnlyDepth[i])
+				DX::ThrowIfFailed(device->CreateDepthStencilView(texture, &dsViewReadOnlyDepthDesc[i], &proxyDepthTarget.dsViewReadOnlyDepth[i]));
+			if (originalDepthTarget.dsViewReadOnlyStencil[i])
+				DX::ThrowIfFailed(device->CreateDepthStencilView(texture, &dsViewReadOnlyStencilDesc[i], &proxyDepthTarget.dsViewReadOnlyStencil[i]));
+			if (originalDepthTarget.dsViewReadOnlyDepthStencil[i])
+				DX::ThrowIfFailed(device->CreateDepthStencilView(texture, &dsViewReadOnlyDepthStencilDesc[i], &proxyDepthTarget.dsViewReadOnlyDepthStencil[i]));
+		}
+
+		// Create shader resource views
+		if (originalDepthTarget.srViewDepth)
+			DX::ThrowIfFailed(device->CreateShaderResourceView(texture, &srViewDepthDesc, &proxyDepthTarget.srViewDepth));
+		if (originalDepthTarget.srViewStencil)
+			DX::ThrowIfFailed(device->CreateShaderResourceView(texture, &srViewStencilDesc, &proxyDepthTarget.srViewStencil));
 	}
-
-	// Create shader resource views
-	if (originalDepthTarget.srViewDepth)
-		device->CreateShaderResourceView(proxyDepthTarget.texture, &srViewDepthDesc, &proxyDepthTarget.srViewDepth);
-	if (originalDepthTarget.srViewStencil)
-		device->CreateShaderResourceView(proxyDepthTarget.texture, &srViewStencilDesc, &proxyDepthTarget.srViewStencil);
 }
 
 void Upscaling::OverrideDepthStencilRenderTarget(int index)
@@ -318,11 +303,6 @@ void Upscaling::OverrideDepthStencilRenderTarget(int index)
 
 	auto context = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
 	context->CopySubresourceRegion(proxyDepthStencilTargets[index].texture, 0, 0, 0, 0, originalDepthStencilTargets[index].texture, 0, &srcBox);
-
-	static auto renderTargetManager = RenderTargetManager_GetSingleton();
-
-	renderTargetManager->depthStencilTargetData[index].width = dstDesc.Width;
-	renderTargetManager->depthStencilTargetData[index].height = dstDesc.Height;
 }
 
 void Upscaling::ResetDepthStencilRenderTarget(int index)
@@ -348,11 +328,6 @@ void Upscaling::ResetDepthStencilRenderTarget(int index)
 
 	auto context = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
 	context->CopySubresourceRegion(originalDepthStencilTargets[index].texture, 0, 0, 0, 0, proxyDepthStencilTargets[index].texture, 0, &srcBox);
-
-	static auto renderTargetManager = RenderTargetManager_GetSingleton();
-
-	renderTargetManager->depthStencilTargetData[index].width = dstDesc.Width;
-	renderTargetManager->depthStencilTargetData[index].height = dstDesc.Height;
 }
 
 void Upscaling::OverrideRenderTargets()
@@ -370,11 +345,10 @@ void Upscaling::OverrideRenderTargets()
 	for (int i = 0; i < ARRAYSIZE(depthStencilTargetPatch); i++)
 		OverrideDepthStencilRenderTarget(depthStencilTargetPatch[i]);
 
-	for (int i = 0; i < ARRAYSIZE(renderTargetsPatch); i++) {
-		auto index = renderTargetsPatch[i];
-		originalRenderTargetData[index] = renderTargetManager->renderTargetData[index];
-		renderTargetManager->renderTargetData[index].width = static_cast<uint>(static_cast<float>(renderTargetManager->renderTargetData[index].width) * currentWidthRatio);
-		renderTargetManager->renderTargetData[index].height = static_cast<uint>(static_cast<float>(renderTargetManager->renderTargetData[index].height) * currentHeightRatio);
+	for (int i = 0; i < 100; i++) {
+		originalRenderTargetData[i] = renderTargetManager->renderTargetData[i];
+		renderTargetManager->renderTargetData[i].width = static_cast<uint>(static_cast<float>(renderTargetManager->renderTargetData[i].width) * currentWidthRatio);
+		renderTargetManager->renderTargetData[i].height = static_cast<uint>(static_cast<float>(renderTargetManager->renderTargetData[i].height) * currentHeightRatio);
 	}
 
 	DrawWorld_Imagespace_SetUseDynamicResolutionViewportAsDefaultViewport::func(renderTargetManager, false);
@@ -387,16 +361,13 @@ void Upscaling::ResetRenderTargets()
 	for(int i = 0; i < ARRAYSIZE(renderTargetsPatch); i++)
 		ResetRenderTarget(renderTargetsPatch[i]);
 
-	//ResetRenderTarget(39);
-
 	for (int i = 0; i < ARRAYSIZE(depthStencilTargetPatch); i++)
 		ResetDepthStencilRenderTarget(depthStencilTargetPatch[i]);
 
 	static auto renderTargetManager = RenderTargetManager_GetSingleton();
 
-	for (int i = 0; i < ARRAYSIZE(renderTargetsPatch); i++) {
-		auto index = renderTargetsPatch[i];
-		renderTargetManager->renderTargetData[index] = originalRenderTargetData[index];
+	for (int i = 0; i < 100; i++) {
+		renderTargetManager->renderTargetData[i] = originalRenderTargetData[i];
 	}
 
 	DrawWorld_Imagespace_SetUseDynamicResolutionViewportAsDefaultViewport::func(renderTargetManager, true);
@@ -467,17 +438,17 @@ void Upscaling::ResetSamplerStates()
 		samplerStates->a[a] = originalSamplerStates[a];
 }
 
-Upscaling::UpscaleMethod Upscaling::GetUpscaleMethod(bool a_checkMenu)
+Upscaling::UpscaleMethod Upscaling::GetUpscaleMethod(bool )
 {
 	auto streamline = Streamline::GetSingleton();
 	
 	static auto ui = RE::UI::GetSingleton();
 	
 	// Disable the upscaling method when certain menus are open
-	if (a_checkMenu){
-		if (ui->GetMenuOpen("ExamineMenu") || ui->GetMenuOpen("PipboyMenu") || ui->GetMenuOpen("LoadingMenu"))
-			return UpscaleMethod::kDisabled;
-	}
+	//if (a_checkMenu){
+	//	if (ui->GetMenuOpen("ExamineMenu") || ui->GetMenuOpen("PipboyMenu") || ui->GetMenuOpen("LoadingMenu"))
+	//		return UpscaleMethod::kDisabled;
+	//}
 		
 	// If DLSS is not available, default to FSR
 	if (!streamline->featureDLSS && settings.upscaleMethodPreference == (uint)UpscaleMethod::kDLSS)
@@ -635,8 +606,6 @@ void Upscaling::UpdateJitter()
 	renderTargetManager->lowestWidthRatio = renderTargetManager->dynamicWidthRatio;
 	renderTargetManager->lowestHeightRatio = renderTargetManager->dynamicHeightRatio;
 
-	float2 resolutionScale = float2(1, 1);
-
 	if (upscaleMethodMenu != UpscaleMethod::kDisabled) {
 		auto screenWidth = gameViewport->screenWidth;
 		auto screenHeight = gameViewport->screenHeight;
@@ -649,12 +618,10 @@ void Upscaling::UpdateJitter()
 
 		gameViewport->offsetX = 2.0f * -jitter.x / static_cast<float>(screenWidth);
 		gameViewport->offsetY = 2.0f * jitter.y / static_cast<float>(screenHeight);
-	} else {
-		resolutionScale = { 1.0f, 1.0f };
 	}
 
-	renderTargetManager->dynamicWidthRatio = resolutionScale.x;
-	renderTargetManager->dynamicHeightRatio = resolutionScale.y;
+	renderTargetManager->dynamicWidthRatio = resolutionScaleBase;
+	renderTargetManager->dynamicHeightRatio = resolutionScaleBase;
 		
 	float currentMipBias = std::log2f(resolutionScaleBase);
 	

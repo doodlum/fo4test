@@ -193,9 +193,6 @@ public:
 
 			static auto renderTargetManager = RenderTargetManager_GetSingleton();
 
-			if (renderTargetManager->dynamicWidthRatio != 1.0 || renderTargetManager->dynamicHeightRatio != 1.0)
-				upscaling->ResetRenderTargets();
-
 			upscaling->GenerateReactiveMask();
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
@@ -208,10 +205,11 @@ public:
 			auto upscaling = Upscaling::GetSingleton();
 			static auto renderTargetManager = RenderTargetManager_GetSingleton();
 			
-			if (renderTargetManager->dynamicWidthRatio != 1.0 || renderTargetManager->dynamicHeightRatio != 1.0)
-				upscaling->OverrideRenderTargets();
+			upscaling->OverrideRenderTargets();
 
 			func(This, a2, a3);
+
+			upscaling->ResetRenderTargets();
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
