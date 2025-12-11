@@ -6,8 +6,8 @@
 #include "FidelityFX.h"
 #include "Streamline.h"
 
-const uint renderTargetsPatch[] = { 2, 3, 4, 9, 14, 20, 22, 23, 24, 25, 28, 57, 58, 59 };
-const uint depthStencilTargetPatch[] = { 2, 4 };
+const uint renderTargetsPatch[] = { 20, 57, 24, 25, 23, 58, 59, 28, 3, 9 };
+const uint depthStencilTargetPatch[] = { 2 };
 
 class Upscaling : public RE::BSTEventSink<RE::MenuOpenCloseEvent>
 {
@@ -39,6 +39,8 @@ public:
 	ID3D11SamplerState* originalSamplerStates[320];
 	ID3D11SamplerState* biasedSamplerStates[320];
 
+	ID3D11ShaderResourceView* originalDepthView;
+
 	void LoadSettings();
 
 	void OnDataLoaded();
@@ -46,29 +48,29 @@ public:
 	RE::BSEventNotifyControl ProcessEvent(const RE::MenuOpenCloseEvent& a_event, RE::BSTEventSource<RE::MenuOpenCloseEvent>*);
 
 	void UpdateRenderTarget(int index, float a_currentWidthRatio, float a_currentHeightRatio);
-	void UpdateRenderTargets(float a_currentWidthRatio, float a_currentHeightRatio);
 	void OverrideRenderTarget(int index);
 	void ResetRenderTarget(int index);
 
-	void UpdateDepthStencilRenderTarget(int index, float a_currentWidthRatio, float a_currentHeightRatio);
-	void OverrideDepthStencilRenderTarget(int index);
-	void ResetDepthStencilRenderTarget(int index);
+	void UpdateRenderTargets(float a_currentWidthRatio, float a_currentHeightRatio);
 
 	RE::BSGraphics::RenderTarget originalRenderTargets[101];
 	RE::BSGraphics::RenderTarget proxyRenderTargets[101];
-	
-	RE::BSGraphics::DepthStencilTarget originalDepthStencilTargets[13];
-	RE::BSGraphics::DepthStencilTarget proxyDepthStencilTargets[13];
-
 	RE::BSGraphics::RenderTargetProperties originalRenderTargetData[100];
+
+	Texture2D* depthOverrideTexture;
 
 	void OverrideRenderTargets();
 	void ResetRenderTargets();
+
+	void OverrideDepth();
+	void ResetDepth();
 
 	void UpdateSamplerStates(float a_currentMipBias);
 
 	void OverrideSamplerStates();
 	void ResetSamplerStates();
+
+	void OverrideLinearDepth();
 
 	UpscaleMethod GetUpscaleMethod(bool a_checkMenu);
 
@@ -83,6 +85,9 @@ public:
 	ID3D11ComputeShader* generateReactiveMaskCS;
 	ID3D11ComputeShader* GetGenerateReactiveMaskCS();
 
+	ID3D11ComputeShader* overrideLinearDepthCS;
+	ID3D11ComputeShader* GetOverrideLinearDepthCS();
+
 	void GenerateReactiveMask();
 
 	void UpdateJitter();
@@ -94,9 +99,9 @@ public:
 
 	struct UpscalingDataCB
 	{
-		float2 trueSamplingDim;  // BufferDim.xy * ResolutionScale
-		float2 pad0;
-		float4 cameraData;
+		uint ScreenSize[2];
+		uint RenderSize[2];
+		float4 CameraData;
 	};
 
 	ConstantBuffer* upscalingDataCB = nullptr;
@@ -152,8 +157,8 @@ public:
 		{
 			func(This, a_true);
 
-			auto upscaling = Upscaling::GetSingleton();
-			upscaling->Upscale();
+			//auto upscaling = Upscaling::GetSingleton();
+			//upscaling->Upscale();
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
@@ -206,9 +211,9 @@ public:
 			static auto renderTargetManager = RenderTargetManager_GetSingleton();
 			
 			upscaling->OverrideRenderTargets();
-
+			upscaling->OverrideDepth();
 			func(This, a2, a3);
-
+			upscaling->ResetDepth();
 			upscaling->ResetRenderTargets();
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
