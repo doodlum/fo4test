@@ -5,8 +5,8 @@ RWTexture2D<float2> MotionVectorOutput : register(u0);
 
 cbuffer UpscalingData : register(b0)
 {
-	float2 TrueSamplingDim;  // BufferDim.xy * ResolutionScale
-	float2 pad0;
+	uint2 ScreenSize;
+	uint2 RenderSize;
 	float4 CameraData;
 };
 
@@ -15,10 +15,9 @@ float GetScreenDepth(float depth)
 	return (CameraData.w / (-depth * CameraData.z + CameraData.x));
 }
 
-[numthreads(8, 8, 1)] void main(uint3 dispatchID
-								: SV_DispatchThreadID) {
-	// Early exit if dispatch thread is outside true sampling dimensions
-	if (any(dispatchID.xy >= uint2(TrueSamplingDim)))
+[numthreads(8, 8, 1)] void main(uint3 dispatchID : SV_DispatchThreadID) {
+	// Early exit if dispatch thread is outside texture dimensions
+	if (any(dispatchID.xy >= RenderSize))
 		return;
 
 	float depth = GetScreenDepth(DepthInput[dispatchID.xy]);
@@ -34,8 +33,8 @@ float GetScreenDepth(float depth)
 		for (int x = -2; x <= 2; x++) {
 			int2 samplePos = int2(dispatchID.xy) + int2(x, y);
 
-			// Skip samples outside true sampling dimensions
-			if (any(samplePos < 0) || any(samplePos >= int2(TrueSamplingDim)))
+			// Skip samples outside texture dimensions
+			if (any(samplePos < 0) || any(samplePos >= int2(RenderSize)))
 				continue;
 
 			float neighborDepth = GetScreenDepth(DepthInput[samplePos]);

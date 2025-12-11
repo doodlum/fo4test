@@ -5,15 +5,14 @@ RWTexture2D<float> ReactiveMaskOutput : register(u0);
 
 cbuffer UpscalingData : register(b0)
 {
-	float2 TrueSamplingDim; // BufferDim.xy * ResolutionScale
-	float2 pad0;
+	uint2 ScreenSize;
+	uint2 RenderSize;
 	float4 CameraData;
 };
 
-[numthreads(8, 8, 1)] void main(uint3 dispatchID
-								: SV_DispatchThreadID) {
-	// Early exit if dispatch thread is outside true sampling dimensions
-	if (any(dispatchID.xy >= uint2(TrueSamplingDim)))
+[numthreads(8, 8, 1)] void main(uint3 dispatchID : SV_DispatchThreadID) {
+	// Early exit if dispatch thread is outside texture dimensions
+	if (any(dispatchID.xy >= RenderSize))
 		return;
 
     float3 mainPreAlpha  = MainPreAlphaInput[dispatchID.xy];
