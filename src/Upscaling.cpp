@@ -88,10 +88,6 @@ void Upscaling::UpdateRenderTarget(int index, float a_currentWidthRatio, float a
 
 	textureDesc.Width = static_cast<uint>(static_cast<float>(textureDesc.Width) * a_currentWidthRatio);
 	textureDesc.Height = static_cast<uint>(static_cast<float>(textureDesc.Height) * a_currentHeightRatio);
-
-	textureDesc.MipLevels = 1;
-	srViewDesc.Texture2D.MostDetailedMip = 0;
-	srViewDesc.Texture2D.MipLevels = 1;
 	
 	if (originalRenderTarget.texture)
 		DX::ThrowIfFailed(device->CreateTexture2D(&textureDesc, nullptr, &proxyRenderTarget.texture));
@@ -106,27 +102,28 @@ void Upscaling::UpdateRenderTarget(int index, float a_currentWidthRatio, float a
 		if (originalRenderTarget.uaView)
 			DX::ThrowIfFailed(device->CreateUnorderedAccessView(texture, &uaViewDesc, &proxyRenderTarget.uaView));
 	}
-}
 
-void Upscaling::UpdateRenderTargets(float a_currentWidthRatio, float a_currentHeightRatio)
-{
-	static auto previousWidthRatio = 0.0f;
-	static auto previousHeightRatio = 0.0f;
+#ifndef NDEBUG
+	if (auto texture = proxyRenderTarget.texture) {
+		auto name = std::format("RT PROXY {}", index);
+		texture->SetPrivateData(WKPDID_D3DDebugObjectName, static_cast<UINT>(name.size()), name.data());
+	}
 
-	// Check for resolution update
-	if (previousWidthRatio == a_currentWidthRatio && previousHeightRatio == a_currentHeightRatio)
-		return;
+	if (auto srView = proxyRenderTarget.srView) {
+		auto name = std::format("SRV PROXY {}", index);
+		srView->SetPrivateData(WKPDID_D3DDebugObjectName, static_cast<UINT>(name.size()), name.data());
+	}
 
-	previousWidthRatio = a_currentWidthRatio;
-	previousHeightRatio = a_currentHeightRatio;
+	if (auto rtView = proxyRenderTarget.rtView) {
+		auto name = std::format("RTV PROXY {}", index);
+		rtView->SetPrivateData(WKPDID_D3DDebugObjectName, static_cast<UINT>(name.size()), name.data());
+	}
 
-	// Recreate render targets with new dimensions
-
-	for (int i = 0; i < ARRAYSIZE(renderTargetsPatch); i++)
-		UpdateRenderTarget(renderTargetsPatch[i], a_currentWidthRatio, a_currentHeightRatio);
-	
-	for (int i = 0; i < ARRAYSIZE(depthStencilTargetPatch); i++)
-		UpdateDepthStencilRenderTarget(depthStencilTargetPatch[i], a_currentWidthRatio, a_currentHeightRatio);
+	if (auto uaView = proxyRenderTarget.uaView) {
+		auto name = std::format("UAV PROXY {}", index);
+		uaView->SetPrivateData(WKPDID_D3DDebugObjectName, static_cast<UINT>(name.size()), name.data());
+	}
+#endif
 }
 
 void Upscaling::OverrideRenderTarget(int index)
@@ -179,176 +176,38 @@ void Upscaling::ResetRenderTarget(int index)
 	context->CopySubresourceRegion(originalRenderTargets[index].texture, 0, 0, 0, 0, proxyRenderTargets[index].texture, 0, &srcBox);
 }
 
-void Upscaling::UpdateDepthStencilRenderTarget(int index, float a_currentWidthRatio, float a_currentHeightRatio)
+void Upscaling::UpdateRenderTargets(float a_currentWidthRatio, float a_currentHeightRatio)
 {
-	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
-	originalDepthStencilTargets[index] = rendererData->depthStencilTargets[index];
+	static auto previousWidthRatio = 0.0f;
+	static auto previousHeightRatio = 0.0f;
 
-	auto& originalDepthTarget = originalDepthStencilTargets[index];
-	auto& proxyDepthTarget = proxyDepthStencilTargets[index];
-
-	// Release existing resources
-	if (proxyDepthTarget.srViewStencil) {
-		proxyDepthTarget.srViewStencil->Release();
-		proxyDepthTarget.srViewStencil = nullptr;
-	}
-	if (proxyDepthTarget.srViewDepth) {
-		proxyDepthTarget.srViewDepth->Release();
-		proxyDepthTarget.srViewDepth = nullptr;
-	}
-	for (int i = 0; i < 4; ++i) {
-		if (proxyDepthTarget.dsViewReadOnlyDepthStencil[i]) {
-			proxyDepthTarget.dsViewReadOnlyDepthStencil[i]->Release();
-			proxyDepthTarget.dsViewReadOnlyDepthStencil[i] = nullptr;
-		}
-		if (proxyDepthTarget.dsViewReadOnlyStencil[i]) {
-			proxyDepthTarget.dsViewReadOnlyStencil[i]->Release();
-			proxyDepthTarget.dsViewReadOnlyStencil[i] = nullptr;
-		}
-		if (proxyDepthTarget.dsViewReadOnlyDepth[i]) {
-			proxyDepthTarget.dsViewReadOnlyDepth[i]->Release();
-			proxyDepthTarget.dsViewReadOnlyDepth[i] = nullptr;
-		}
-		if (proxyDepthTarget.dsView[i]) {
-			proxyDepthTarget.dsView[i]->Release();
-			proxyDepthTarget.dsView[i] = nullptr;
-		}
-	}
-	if (proxyDepthTarget.texture) {
-		proxyDepthTarget.texture->Release();
-		proxyDepthTarget.texture = nullptr;
-	}
-
-	// Get original descriptions
-	D3D11_TEXTURE2D_DESC textureDesc{};
-	if (originalDepthTarget.texture)
-		originalDepthTarget.texture->GetDesc(&textureDesc);
-
-	D3D11_DEPTH_STENCIL_VIEW_DESC dsViewDesc[4]{};
-	D3D11_DEPTH_STENCIL_VIEW_DESC dsViewReadOnlyDepthDesc[4]{};
-	D3D11_DEPTH_STENCIL_VIEW_DESC dsViewReadOnlyStencilDesc[4]{};
-	D3D11_DEPTH_STENCIL_VIEW_DESC dsViewReadOnlyDepthStencilDesc[4]{};
-
-	for (int i = 0; i < 4; ++i) {
-		if (originalDepthTarget.dsView[i])
-			originalDepthTarget.dsView[i]->GetDesc(&dsViewDesc[i]);
-		if (originalDepthTarget.dsViewReadOnlyDepth[i])
-			originalDepthTarget.dsViewReadOnlyDepth[i]->GetDesc(&dsViewReadOnlyDepthDesc[i]);
-		if (originalDepthTarget.dsViewReadOnlyStencil[i])
-			originalDepthTarget.dsViewReadOnlyStencil[i]->GetDesc(&dsViewReadOnlyStencilDesc[i]);
-		if (originalDepthTarget.dsViewReadOnlyDepthStencil[i])
-			originalDepthTarget.dsViewReadOnlyDepthStencil[i]->GetDesc(&dsViewReadOnlyDepthStencilDesc[i]);
-	}
-
-	D3D11_SHADER_RESOURCE_VIEW_DESC srViewDepthDesc{};
-	if (originalDepthTarget.srViewDepth)
-		originalDepthTarget.srViewDepth->GetDesc(&srViewDepthDesc);
-
-	D3D11_SHADER_RESOURCE_VIEW_DESC srViewStencilDesc{};
-	if (originalDepthTarget.srViewStencil)
-		originalDepthTarget.srViewStencil->GetDesc(&srViewStencilDesc);
-
-	auto device = reinterpret_cast<ID3D11Device*>(rendererData->device);
-
-	// Update dimensions
-	textureDesc.Width = static_cast<uint>(static_cast<float>(textureDesc.Width) * a_currentWidthRatio);
-	textureDesc.Height = static_cast<uint>(static_cast<float>(textureDesc.Height) * a_currentHeightRatio);
-
-	// Create new texture
-	if (originalDepthTarget.texture)
-		DX::ThrowIfFailed(device->CreateTexture2D(&textureDesc, nullptr, &proxyDepthTarget.texture));
-
-	if (auto texture = proxyDepthTarget.texture) {
-
-		// Create depth stencil views
-		for (int i = 0; i < 4; ++i) {
-			if (originalDepthTarget.dsView[i])
-				DX::ThrowIfFailed(device->CreateDepthStencilView(texture, &dsViewDesc[i], &proxyDepthTarget.dsView[i]));
-			if (originalDepthTarget.dsViewReadOnlyDepth[i])
-				DX::ThrowIfFailed(device->CreateDepthStencilView(texture, &dsViewReadOnlyDepthDesc[i], &proxyDepthTarget.dsViewReadOnlyDepth[i]));
-			if (originalDepthTarget.dsViewReadOnlyStencil[i])
-				DX::ThrowIfFailed(device->CreateDepthStencilView(texture, &dsViewReadOnlyStencilDesc[i], &proxyDepthTarget.dsViewReadOnlyStencil[i]));
-			if (originalDepthTarget.dsViewReadOnlyDepthStencil[i])
-				DX::ThrowIfFailed(device->CreateDepthStencilView(texture, &dsViewReadOnlyDepthStencilDesc[i], &proxyDepthTarget.dsViewReadOnlyDepthStencil[i]));
-		}
-
-		// Create shader resource views
-		if (originalDepthTarget.srViewDepth)
-			DX::ThrowIfFailed(device->CreateShaderResourceView(texture, &srViewDepthDesc, &proxyDepthTarget.srViewDepth));
-		if (originalDepthTarget.srViewStencil)
-			DX::ThrowIfFailed(device->CreateShaderResourceView(texture, &srViewStencilDesc, &proxyDepthTarget.srViewStencil));
-	}
-}
-
-void Upscaling::OverrideDepthStencilRenderTarget(int index)
-{
-	if (!originalDepthStencilTargets[index].texture || !proxyDepthStencilTargets[index].texture)
+	// Check for resolution update
+	if (previousWidthRatio == a_currentWidthRatio && previousHeightRatio == a_currentHeightRatio)
 		return;
 
-	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
+	previousWidthRatio = a_currentWidthRatio;
+	previousHeightRatio = a_currentHeightRatio;
 
-	rendererData->depthStencilTargets[index] = proxyDepthStencilTargets[index];
-
-	D3D11_TEXTURE2D_DESC srcDesc, dstDesc;
-	originalDepthStencilTargets[index].texture->GetDesc(&srcDesc);
-	proxyDepthStencilTargets[index].texture->GetDesc(&dstDesc);
-
-	D3D11_BOX srcBox;
-	srcBox.left = 0;
-	srcBox.top = 0;
-	srcBox.front = 0;
-	srcBox.right = dstDesc.Width;
-	srcBox.bottom = dstDesc.Height;
-	srcBox.back = 1;
-
-	auto context = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
-	context->CopySubresourceRegion(proxyDepthStencilTargets[index].texture, 0, 0, 0, 0, originalDepthStencilTargets[index].texture, 0, &srcBox);
-}
-
-void Upscaling::ResetDepthStencilRenderTarget(int index)
-{
-	if (!originalDepthStencilTargets[index].texture || !proxyDepthStencilTargets[index].texture)
-		return;
-
-	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
-
-	rendererData->depthStencilTargets[index] = originalDepthStencilTargets[index];
-
-	D3D11_TEXTURE2D_DESC srcDesc, dstDesc;
-	proxyDepthStencilTargets[index].texture->GetDesc(&srcDesc);
-	originalDepthStencilTargets[index].texture->GetDesc(&dstDesc);
-
-	D3D11_BOX srcBox;
-	srcBox.left = 0;
-	srcBox.top = 0;
-	srcBox.front = 0;
-	srcBox.right = srcDesc.Width;
-	srcBox.bottom = srcDesc.Height;
-	srcBox.back = 1;
-
-	auto context = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
-	context->CopySubresourceRegion(originalDepthStencilTargets[index].texture, 0, 0, 0, 0, proxyDepthStencilTargets[index].texture, 0, &srcBox);
+	// Recreate render targets with new dimensions
+	for (int i = 0; i < ARRAYSIZE(renderTargetsPatch); i++)
+		UpdateRenderTarget(renderTargetsPatch[i], a_currentWidthRatio, a_currentHeightRatio);
 }
 
 void Upscaling::OverrideRenderTargets()
-{	
-	static auto renderTargetManager = RenderTargetManager_GetSingleton();
-
-	auto currentWidthRatio = renderTargetManager->dynamicWidthRatio;
-	auto currentHeightRatio = renderTargetManager->dynamicHeightRatio;
-
-	UpdateRenderTargets(currentWidthRatio, currentHeightRatio);
+{
+	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
+	auto context = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
+	context->OMSetRenderTargets(0, nullptr, nullptr);
 
 	for (int i = 0; i < ARRAYSIZE(renderTargetsPatch); i++)
 		OverrideRenderTarget(renderTargetsPatch[i]);
 
-	for (int i = 0; i < ARRAYSIZE(depthStencilTargetPatch); i++)
-		OverrideDepthStencilRenderTarget(depthStencilTargetPatch[i]);
+	static auto renderTargetManager = RenderTargetManager_GetSingleton();
 
 	for (int i = 0; i < 100; i++) {
 		originalRenderTargetData[i] = renderTargetManager->renderTargetData[i];
-		renderTargetManager->renderTargetData[i].width = static_cast<uint>(static_cast<float>(renderTargetManager->renderTargetData[i].width) * currentWidthRatio);
-		renderTargetManager->renderTargetData[i].height = static_cast<uint>(static_cast<float>(renderTargetManager->renderTargetData[i].height) * currentHeightRatio);
+		renderTargetManager->renderTargetData[i].width = static_cast<uint>(static_cast<float>(renderTargetManager->renderTargetData[i].width) * renderTargetManager->dynamicWidthRatio);
+		renderTargetManager->renderTargetData[i].height = static_cast<uint>(static_cast<float>(renderTargetManager->renderTargetData[i].height) * renderTargetManager->dynamicHeightRatio);
 	}
 
 	DrawWorld_Imagespace_SetUseDynamicResolutionViewportAsDefaultViewport::func(renderTargetManager, false);
@@ -357,12 +216,11 @@ void Upscaling::OverrideRenderTargets()
 void Upscaling::ResetRenderTargets()
 {
 	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
+	auto context = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
+	context->OMSetRenderTargets(0, nullptr, nullptr);
 
 	for(int i = 0; i < ARRAYSIZE(renderTargetsPatch); i++)
 		ResetRenderTarget(renderTargetsPatch[i]);
-
-	for (int i = 0; i < ARRAYSIZE(depthStencilTargetPatch); i++)
-		ResetDepthStencilRenderTarget(depthStencilTargetPatch[i]);
 
 	static auto renderTargetManager = RenderTargetManager_GetSingleton();
 
@@ -373,7 +231,24 @@ void Upscaling::ResetRenderTargets()
 	DrawWorld_Imagespace_SetUseDynamicResolutionViewportAsDefaultViewport::func(renderTargetManager, true);
 }
 
-// Hacky method of overriding sampler states
+void Upscaling::OverrideDepth()
+{
+	OverrideLinearDepth();
+
+	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
+
+	originalDepthView = rendererData->depthStencilTargets[(uint)Util::DepthStencilTarget::kMain].srViewDepth;
+
+	rendererData->depthStencilTargets[(uint)Util::DepthStencilTarget::kMain].srViewDepth = depthOverrideTexture->srv.get();
+}
+
+void Upscaling::ResetDepth()
+{
+	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
+
+	rendererData->depthStencilTargets[(uint)Util::DepthStencilTarget::kMain].srViewDepth = originalDepthView;
+}
+
 void Upscaling::UpdateSamplerStates(float a_currentMipBias)
 {
 	static auto samplerStates = SamplerStates::GetSingleton();
@@ -381,12 +256,9 @@ void Upscaling::UpdateSamplerStates(float a_currentMipBias)
 	auto device = reinterpret_cast<ID3D11Device*>(rendererData->device);
 
 	// Store original sampler states
-	static std::once_flag setup;
-	std::call_once(setup, [&]() {
-		for (int a = 0; a < 320; a++) {
-			originalSamplerStates[a] = samplerStates->a[a];
-		}
-	});
+	for (int a = 0; a < 320; a++) {
+		originalSamplerStates[a] = samplerStates->a[a];
+	}
 
 	static float previousMipBias = 1.0f;
 
@@ -436,6 +308,82 @@ void Upscaling::ResetSamplerStates()
 	static auto samplerStates = SamplerStates::GetSingleton();
 	for (int a = 0; a < 320; a++)
 		samplerStates->a[a] = originalSamplerStates[a];
+}
+
+void Upscaling::OverrideLinearDepth()
+{
+	auto upscaleMethod = GetUpscaleMethod(true);
+
+	if (upscaleMethod == UpscaleMethod::kDisabled)
+		return;
+
+	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
+	auto context = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
+	context->OMSetRenderTargets(0, nullptr, nullptr);
+
+	static auto gameViewport = State_GetSingleton();
+	static auto renderTargetManager = RenderTargetManager_GetSingleton();
+
+	auto screenSize = float2(float(gameViewport->screenWidth), float(gameViewport->screenHeight));
+	auto renderSize = float2(screenSize.x * renderTargetManager->dynamicWidthRatio, screenSize.y * renderTargetManager->dynamicHeightRatio);
+
+	auto depthSRV = reinterpret_cast<ID3D11ShaderResourceView*>(rendererData->depthStencilTargets[(uint)Util::DepthStencilTarget::kMain].srViewDepth);
+
+	auto depthUAV = depthOverrideTexture->uav.get();
+	auto linearDepthUAV = reinterpret_cast<ID3D11UnorderedAccessView*>(rendererData->renderTargets[(uint)Util::RenderTarget::kMainDepthMips].uaView);
+
+	{
+#if defined(FALLOUT_POST_NG)
+		float cameraNear = *(float*)REL::ID(2712882).address();
+		float cameraFar = *(float*)REL::ID(2712883).address();
+#else
+		float cameraNear = *(float*)REL::ID(57985).address();
+		float cameraFar = *(float*)REL::ID(958877).address();
+#endif
+
+		float4 cameraData{};
+		cameraData.x = cameraFar;
+		cameraData.y = cameraNear;
+		cameraData.z = cameraFar - cameraNear;
+		cameraData.w = cameraFar * cameraNear;
+
+		UpscalingDataCB upscalingData;
+		upscalingData.ScreenSize[0] = static_cast<uint>(screenSize.x);
+		upscalingData.ScreenSize[1] = static_cast<uint>(screenSize.y);
+
+		upscalingData.RenderSize[0] = static_cast<uint>(renderSize.x);
+		upscalingData.RenderSize[1] = static_cast<uint>(renderSize.y);
+
+		upscalingData.CameraData = cameraData;
+
+		upscalingDataCB->Update(upscalingData);
+
+		auto upscalingBuffer = upscalingDataCB->CB();
+		context->CSSetConstantBuffers(0, 1, &upscalingBuffer);
+
+		{
+			ID3D11ShaderResourceView* views[] = { depthSRV };
+			context->CSSetShaderResources(0, ARRAYSIZE(views), views);
+
+			ID3D11UnorderedAccessView* uavs[] = { depthUAV, linearDepthUAV };
+			context->CSSetUnorderedAccessViews(0, ARRAYSIZE(uavs), uavs, nullptr);
+
+			context->CSSetShader(GetOverrideLinearDepthCS(), nullptr, 0);
+
+			uint dispatchX = (uint)std::ceil(screenSize.x / 8.0f);
+			uint dispatchY = (uint)std::ceil(screenSize.y / 8.0f);
+			context->Dispatch(dispatchX, dispatchY, 1);
+		}
+
+		ID3D11ShaderResourceView* views[1] = { nullptr };
+		context->CSSetShaderResources(0, ARRAYSIZE(views), views);
+
+		ID3D11UnorderedAccessView* uavs[2] = { nullptr, nullptr };
+		context->CSSetUnorderedAccessViews(0, ARRAYSIZE(uavs), uavs, nullptr);
+
+		ID3D11ComputeShader* shader = nullptr;
+		context->CSSetShader(shader, nullptr, 0);
+	}
 }
 
 Upscaling::UpscaleMethod Upscaling::GetUpscaleMethod(bool )
@@ -523,6 +471,15 @@ ID3D11ComputeShader* Upscaling::GetGenerateReactiveMaskCS()
 	return generateReactiveMaskCS;
 }
 
+ID3D11ComputeShader* Upscaling::GetOverrideLinearDepthCS()
+{
+	if (!overrideLinearDepthCS) {
+		logger::debug("Compiling OverrideLinearDepthCS.hlsl");
+		overrideLinearDepthCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data/F4SE/Plugins/Upscaling/OverrideLinearDepthCS.hlsl", { }, "cs_5_0");
+	}
+	return overrideLinearDepthCS;
+}
+
 void Upscaling::GenerateReactiveMask()
 {
 	auto upscaleMethod = GetUpscaleMethod(true);
@@ -560,9 +517,13 @@ void Upscaling::GenerateReactiveMask()
 		cameraData.w = cameraFar * cameraNear;
 
 		UpscalingDataCB upscalingData;
-		upscalingData.trueSamplingDim = renderSize;
-		upscalingData.cameraData = cameraData;
+		upscalingData.ScreenSize[0] = static_cast<uint>(screenSize.x);
+		upscalingData.ScreenSize[1] = static_cast<uint>(screenSize.y);
 
+		upscalingData.RenderSize[0] = static_cast<uint>(renderSize.x);
+		upscalingData.RenderSize[1] = static_cast<uint>(renderSize.y);
+
+		upscalingData.CameraData = cameraData;
 		upscalingDataCB->Update(upscalingData);
 
 		auto upscalingBuffer = upscalingDataCB->CB();
@@ -629,6 +590,7 @@ void Upscaling::UpdateJitter()
 		currentMipBias -= 1.0f;
 
 	UpdateSamplerStates(currentMipBias);
+	UpdateRenderTargets(resolutionScaleBase, resolutionScaleBase);
 
 	CheckResources();
 }
@@ -675,8 +637,13 @@ void Upscaling::Upscale()
 			cameraData.w = cameraFar * cameraNear;
 
 			UpscalingDataCB upscalingData;
-			upscalingData.trueSamplingDim = renderSize;
-			upscalingData.cameraData = cameraData;
+			upscalingData.ScreenSize[0] = static_cast<uint>(screenSize.x);
+			upscalingData.ScreenSize[1] = static_cast<uint>(screenSize.y);
+
+			upscalingData.RenderSize[0] = static_cast<uint>(renderSize.x);
+			upscalingData.RenderSize[1] = static_cast<uint>(renderSize.y);
+
+			upscalingData.CameraData = cameraData;
 
 			upscalingDataCB->Update(upscalingData);
 
@@ -793,6 +760,14 @@ void Upscaling::CreateUpscalingResources()
 	reactiveMaskTexture = new Texture2D(texDesc);
 	reactiveMaskTexture->CreateSRV(srvDesc);
 	reactiveMaskTexture->CreateUAV(uavDesc);
+
+	texDesc.Format = DXGI_FORMAT_R32_FLOAT;
+	srvDesc.Format = texDesc.Format;
+	uavDesc.Format = texDesc.Format;
+
+	depthOverrideTexture = new Texture2D(texDesc);
+	depthOverrideTexture->CreateSRV(srvDesc);
+	depthOverrideTexture->CreateUAV(uavDesc);
 
 	upscalingDataCB = new ConstantBuffer(ConstantBufferDesc<UpscalingDataCB>());
 }
