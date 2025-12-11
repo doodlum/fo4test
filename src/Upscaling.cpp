@@ -368,7 +368,7 @@ void Upscaling::OverrideLinearDepth()
 			ID3D11UnorderedAccessView* uavs[] = { depthUAV, linearDepthUAV };
 			context->CSSetUnorderedAccessViews(0, ARRAYSIZE(uavs), uavs, nullptr);
 
-			context->CSSetShader(GetOverrideLinearDepthCS(), nullptr, 0);
+			context->CSSetShader(GetOverrideDepthCS(), nullptr, 0);
 
 			uint dispatchX = (uint)std::ceil(screenSize.x / 8.0f);
 			uint dispatchY = (uint)std::ceil(screenSize.y / 8.0f);
@@ -471,13 +471,13 @@ ID3D11ComputeShader* Upscaling::GetGenerateReactiveMaskCS()
 	return generateReactiveMaskCS;
 }
 
-ID3D11ComputeShader* Upscaling::GetOverrideLinearDepthCS()
+ID3D11ComputeShader* Upscaling::GetOverrideDepthCS()
 {
-	if (!overrideLinearDepthCS) {
-		logger::debug("Compiling OverrideLinearDepthCS.hlsl");
-		overrideLinearDepthCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data/F4SE/Plugins/Upscaling/OverrideLinearDepthCS.hlsl", { }, "cs_5_0");
+	if (!overrideDepthCS) {
+		logger::debug("Compiling OverrideDepthCS.hlsl");
+		overrideDepthCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data/F4SE/Plugins/Upscaling/OverrideDepthCS.hlsl", { }, "cs_5_0");
 	}
-	return overrideLinearDepthCS;
+	return overrideDepthCS;
 }
 
 void Upscaling::GenerateReactiveMask()
