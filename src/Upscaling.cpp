@@ -195,10 +195,6 @@ void Upscaling::UpdateRenderTargets(float a_currentWidthRatio, float a_currentHe
 
 void Upscaling::OverrideRenderTargets()
 {
-	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
-	auto context = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
-	context->OMSetRenderTargets(0, nullptr, nullptr);
-
 	for (int i = 0; i < ARRAYSIZE(renderTargetsPatch); i++)
 		OverrideRenderTarget(renderTargetsPatch[i]);
 
@@ -215,10 +211,6 @@ void Upscaling::OverrideRenderTargets()
 
 void Upscaling::ResetRenderTargets()
 {
-	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
-	auto context = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
-	context->OMSetRenderTargets(0, nullptr, nullptr);
-
 	for(int i = 0; i < ARRAYSIZE(renderTargetsPatch); i++)
 		ResetRenderTarget(renderTargetsPatch[i]);
 
@@ -233,7 +225,12 @@ void Upscaling::ResetRenderTargets()
 
 void Upscaling::OverrideDepth()
 {
-	OverrideLinearDepth();
+	static auto gameViewport = State_GetSingleton();
+
+	static auto previousFrame = gameViewport->frameCount;
+	if (previousFrame != gameViewport->frameCount)
+		CopyDepth();
+	previousFrame = gameViewport->frameCount;
 
 	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
 
@@ -310,13 +307,8 @@ void Upscaling::ResetSamplerStates()
 		samplerStates->a[a] = originalSamplerStates[a];
 }
 
-void Upscaling::OverrideLinearDepth()
+void Upscaling::CopyDepth()
 {
-	auto upscaleMethod = GetUpscaleMethod(true);
-
-	if (upscaleMethod == UpscaleMethod::kDisabled)
-		return;
-
 	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
 	auto context = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
 	context->OMSetRenderTargets(0, nullptr, nullptr);
@@ -478,6 +470,15 @@ ID3D11ComputeShader* Upscaling::GetOverrideDepthCS()
 		overrideDepthCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data/F4SE/Plugins/Upscaling/OverrideDepthCS.hlsl", { }, "cs_5_0");
 	}
 	return overrideDepthCS;
+}
+
+ID3D11PixelShader* Upscaling::GetBSImagespaceShaderSSLRRaytracing()
+{
+	if (!BSImagespaceShaderSSLRRaytracing) {
+		logger::debug("Compiling BSImagespaceShaderSSLRRaytracing.hlsl");
+		BSImagespaceShaderSSLRRaytracing = (ID3D11PixelShader*)Util::CompileShader(L"Data/F4SE/Plugins/Upscaling/BSImagespaceShaderSSLRRaytracing.hlsl", { }, "ps_5_0");
+	}
+	return BSImagespaceShaderSSLRRaytracing;
 }
 
 void Upscaling::GenerateReactiveMask()
@@ -792,4 +793,11 @@ void Upscaling::DestroyUpscalingResources()
 	upscalingDataCB = nullptr;
 
 	generateReactiveMaskCS = nullptr;
+}
+
+void Upscaling::PatchSSRShader()
+{
+	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
+	auto context = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
+	context->PSSetShader(GetBSImagespaceShaderSSLRRaytracing(), nullptr, 0);
 }

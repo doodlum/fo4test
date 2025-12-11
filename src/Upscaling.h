@@ -70,7 +70,10 @@ public:
 	void OverrideSamplerStates();
 	void ResetSamplerStates();
 
-	void OverrideLinearDepth();
+	void CopyDepth();
+
+	void PatchSSRShader();
+	void CopySSRRawToBlurred();
 
 	UpscaleMethod GetUpscaleMethod(bool a_checkMenu);
 
@@ -87,6 +90,9 @@ public:
 
 	ID3D11ComputeShader* overrideDepthCS;
 	ID3D11ComputeShader* GetOverrideDepthCS();
+
+	ID3D11PixelShader* BSImagespaceShaderSSLRRaytracing;
+	ID3D11PixelShader* GetBSImagespaceShaderSSLRRaytracing();
 
 	void GenerateReactiveMask();
 
@@ -157,8 +163,8 @@ public:
 		{
 			func(This, a_true);
 
-			//auto upscaling = Upscaling::GetSingleton();
-			//upscaling->Upscale();
+			auto upscaling = Upscaling::GetSingleton();
+			upscaling->Upscale();
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
@@ -192,6 +198,7 @@ public:
 		static void thunk(struct DrawWorld* This)
 		{
 			auto upscaling = Upscaling::GetSingleton();
+
 			upscaling->OverrideSamplerStates();
 			func(This);
 			upscaling->ResetSamplerStates();
@@ -208,13 +215,21 @@ public:
 		static void thunk(void* This, uint a2, bool a3)
 		{
 			auto upscaling = Upscaling::GetSingleton();
+
 			static auto renderTargetManager = RenderTargetManager_GetSingleton();
-			
-			upscaling->OverrideRenderTargets();
-			upscaling->OverrideDepth();
+			bool requiresOverride = renderTargetManager->dynamicHeightRatio != 1.0 || renderTargetManager->dynamicWidthRatio != 1.0;
+
+			if (requiresOverride) {
+				upscaling->OverrideRenderTargets();
+				upscaling->OverrideDepth();
+			}
+
 			func(This, a2, a3);
-			upscaling->ResetDepth();
-			upscaling->ResetRenderTargets();
+
+			if (requiresOverride) {
+				upscaling->ResetDepth();
+				upscaling->ResetRenderTargets();
+			}
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
@@ -224,9 +239,29 @@ public:
 		static void thunk(RE::NiCamera* a_camera)
 		{
 			auto upscaling = Upscaling::GetSingleton();
-			upscaling->OverrideDepth();
+
+			static auto renderTargetManager = RenderTargetManager_GetSingleton();
+			bool requiresOverride = renderTargetManager->dynamicHeightRatio != 1.0 || renderTargetManager->dynamicWidthRatio != 1.0;
+
+			if (requiresOverride) {
+				upscaling->OverrideDepth();
+			}
+
 			func(a_camera);
-			upscaling->ResetDepth();
+
+			if (requiresOverride) {
+				upscaling->ResetDepth();
+			}
+		}
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
+
+	struct BSImagespaceShaderSSLRRaytracing_SetupTechnique_BeginTechnique
+	{
+		static void thunk(RE::BSShader* This, uint a2, uint a3, uint a4, uint a5)
+		{
+			func(This, a2, a3, a4, a5);
+			Upscaling::GetSingleton()->PatchSSRShader();
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
@@ -254,8 +289,13 @@ public:
 		stl::write_thunk_call<DrawWorld_Render_PreUI_DeferredDecals>(REL::ID(984743).address() + 0x189);
 		stl::write_thunk_call<DrawWorld_Render_PreUI_Forward>(REL::ID(984743).address() + 0x1C9);
 
-		// Fix env map with dynamic resolution
+		// Fix dynamic resolution for BSDFComposite
 		stl::write_thunk_call<BSDFComposite_Envmap>(REL::ID(728427).address() + 0x8DC);
+
+		// Fix dynamic resolution for Lens Flare visibility
 		stl::detour_thunk<BSImagespaceShaderLensFlare_RenderLensFlare>(REL::ID(676108));
+
+		// Fix dynamic resolution for Screenspace Reflections
+		stl::write_thunk_call<BSImagespaceShaderSSLRRaytracing_SetupTechnique_BeginTechnique>(REL::ID(779077).address() + 0x1C);
 	}
 };
