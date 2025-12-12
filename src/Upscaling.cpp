@@ -536,7 +536,7 @@ void Upscaling::Upscale()
 	auto screenSize = float2(float(gameViewport->screenWidth), float(gameViewport->screenHeight));
 	auto renderSize = float2(screenSize.x * renderTargetManager->dynamicWidthRatio, screenSize.y * renderTargetManager->dynamicHeightRatio);
 
-	{
+	if (upscaleMethod == UpscaleMethod::kDLSS){
 		{
 #if defined(FALLOUT_POST_NG)
 			float cameraNear = *(float*)REL::ID(2712882).address();
@@ -659,12 +659,6 @@ void Upscaling::CreateUpscalingResources()
 
 	upscalingTexture = new Texture2D(texDesc);
 
-	texDesc.Format = DXGI_FORMAT_R16G16_FLOAT;
-	uavDesc.Format = texDesc.Format;
-
-	dilatedMotionVectorTexture = new Texture2D(texDesc);
-	dilatedMotionVectorTexture->CreateUAV(uavDesc);
-
 	texDesc.Format = DXGI_FORMAT_R32_FLOAT;
 	srvDesc.Format = texDesc.Format;
 	uavDesc.Format = texDesc.Format;
@@ -674,6 +668,14 @@ void Upscaling::CreateUpscalingResources()
 	depthOverrideTexture->CreateUAV(uavDesc);
 
 	upscalingDataCB = new ConstantBuffer(ConstantBufferDesc<UpscalingDataCB>());
+
+	if (Streamline::GetSingleton()->featureDLSS) {
+		texDesc.Format = DXGI_FORMAT_R16G16_FLOAT;
+		uavDesc.Format = texDesc.Format;
+
+		dilatedMotionVectorTexture = new Texture2D(texDesc);
+		dilatedMotionVectorTexture->CreateUAV(uavDesc);
+	}
 }
 
 void Upscaling::DestroyUpscalingResources()
@@ -681,11 +683,13 @@ void Upscaling::DestroyUpscalingResources()
 	upscalingTexture->resource = nullptr;
 	delete upscalingTexture;
 
-	dilatedMotionVectorTexture->uav = nullptr;
-	dilatedMotionVectorTexture->resource = nullptr;
-	delete dilatedMotionVectorTexture;
-
 	upscalingDataCB = nullptr;
+
+	if (Streamline::GetSingleton()->featureDLSS) {
+		dilatedMotionVectorTexture->uav = nullptr;
+		dilatedMotionVectorTexture->resource = nullptr;
+		delete dilatedMotionVectorTexture;
+	}
 }
 
 void Upscaling::PatchSSRShader()

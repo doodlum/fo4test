@@ -66,5 +66,7 @@ public:
 	void Upscale(Texture2D* a_color, Texture2D* a_dilatedMotionVectorTexture, float2 a_jitter, float2 a_renderSize, uint a_qualityMode);
 	void UpdateConstants(float2 a_jitter);
 
+	void CreateDLSSResources();
+
 	void DestroyDLSSResources();
 };
