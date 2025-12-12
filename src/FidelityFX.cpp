@@ -29,12 +29,6 @@ void FidelityFX::CreateFSRResources()
 	static auto device = reinterpret_cast<ID3D11Device*>(rendererData->device);
 	static auto context = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
 
-	// Prevent multiple allocations
-	if (fsrScratchBuffer) {
-		logger::warn("[FidelityFX] FSR resources already created, skipping allocation");
-		return;
-	}
-
 	auto fsrDevice = ffxGetDeviceDX11(device);
 
 	size_t scratchBufferSize = ffxGetScratchMemorySizeDX11(FFX_FSR3UPSCALER_CONTEXT_COUNT);
