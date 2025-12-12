@@ -724,10 +724,7 @@ void Upscaling::UpdateJitter()
 	auto upscaleMethod = GetUpscaleMethod(true);
 
 	float resolutionScale = upscaleMethodNoMenu == UpscaleMethod::kDisabled ? 1.0f : 1.0f / ffxFsr3GetUpscaleRatioFromQualityMode((FfxFsr3QualityMode)settings.qualityMode);
-	float currentMipBias = std::log2f(resolutionScale);
-
-	if (upscaleMethodNoMenu == UpscaleMethod::kDLSS)
-		currentMipBias -= 1.0f;
+	float currentMipBias = std::log2f(resolutionScale) - 1.0f;
 
 	UpdateSamplerStates(currentMipBias);
 	UpdateRenderTargets(resolutionScale, resolutionScale);
