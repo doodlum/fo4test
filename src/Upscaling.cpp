@@ -530,6 +530,11 @@ void Upscaling::UpdateSamplerStates(float a_currentMipBias)
 
 void Upscaling::OverrideSamplerStates()
 {
+	if (GetUpscaleMethod(true) == UpscaleMethod::kDisabled)
+		return;
+
+	static auto renderTargetManager = Util::RenderTargetManager_GetSingleton();
+
 	static auto samplerStates = SamplerStates::GetSingleton();
 	for (int a = 0; a < 320; a++)
 		samplerStates->a[a] = biasedSamplerStates[a].get();
@@ -537,6 +542,9 @@ void Upscaling::OverrideSamplerStates()
 
 void Upscaling::ResetSamplerStates()
 {
+	if (GetUpscaleMethod(true) == UpscaleMethod::kDisabled)
+		return;
+
 	static auto samplerStates = SamplerStates::GetSingleton();
 	for (int a = 0; a < 320; a++)
 		samplerStates->a[a] = originalSamplerStates[a].get();
