@@ -145,18 +145,17 @@ struct BSImagespaceShaderSSLRRaytracing_SetupTechnique_BeginTechnique
 };
 
 /** @brief Hook for forward alpha rendering with opaque texture copy for reactive mask */
-struct DrawWorld_Forward_ForwardAlphaImpl
+struct ForwardAlphaImpl_FinishAccumulating_Standard_PostResolveDepth
 {
-	static void thunk(struct DrawWorld* This)
+	static void thunk(RE::BSShaderAccumulator* This)
 	{
+		func(This);
 		auto upscaling = Upscaling::GetSingleton();
 		auto upscaleMethod = upscaling->GetUpscaleMethod(false);
 		auto fidelityFX = FidelityFX::GetSingleton();
 
 		if (upscaleMethod == Upscaling::UpscaleMethod::kFSR)
 			fidelityFX->CopyOpaqueTexture();
-
-		func(This);
 	}
 	static inline REL::Relocation<decltype(thunk)> func;
 };
@@ -181,8 +180,8 @@ void Upscaling::InstallHooks()
 	stl::write_thunk_call<DrawWorld_Render_PreUI_DeferredDecals>(REL::ID(984743).address() + 0x189);
 	stl::write_thunk_call<DrawWorld_Render_PreUI_Forward>(REL::ID(984743).address() + 0x1C9);
 	
-	// Generate reactive mask for FSR
-	stl::write_thunk_call<DrawWorld_Forward_ForwardAlphaImpl>(REL::ID(656535).address() + 0x2E8);
+	// Copy opaque texture for FSR reactive mask
+	stl::write_thunk_call<ForwardAlphaImpl_FinishAccumulating_Standard_PostResolveDepth>(REL::ID(338205).address() + 0x1DC);
 
 	if (enbLoaded) {
 		// Fix dynamic resolution for BSDFComposite
