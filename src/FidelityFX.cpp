@@ -70,10 +70,10 @@ void FidelityFX::CreateFSRResources()
 	main.texture->GetDesc(&texDesc);
 	texDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
 
-	colorOpaqueOnlyTexture = new Texture2D(texDesc);
-	
+	colorOpaqueOnlyTexture = std::make_unique<Texture2D>(texDesc);
+
 	texDesc.Format = DXGI_FORMAT_R8_UNORM;
-	reactiveMaskTexture = new Texture2D(texDesc);
+	reactiveMaskTexture = std::make_unique<Texture2D>(texDesc);
 
 
 	if (ffxFsr3ContextCreate(&fsrContext, &contextDescription) != FFX_OK) {
@@ -91,16 +91,9 @@ void FidelityFX::DestroyFSRResources()
 
 	free(fsrScratchBuffer);
 	fsrScratchBuffer = nullptr;
-	
-	colorOpaqueOnlyTexture->srv = nullptr;
-	colorOpaqueOnlyTexture->uav = nullptr;
-	colorOpaqueOnlyTexture->resource = nullptr;
-	delete colorOpaqueOnlyTexture;
 
-	reactiveMaskTexture->srv = nullptr;
-	reactiveMaskTexture->uav = nullptr;
-	reactiveMaskTexture->resource = nullptr;
-	delete reactiveMaskTexture;
+	colorOpaqueOnlyTexture.reset();
+	reactiveMaskTexture.reset();
 }
 
 void FidelityFX::CopyOpaqueTexture()
@@ -139,7 +132,7 @@ void FidelityFX::GenerateReactiveMask()
 	dispatchParameters.renderSize.width = static_cast<uint>(renderSize.x);
 	dispatchParameters.renderSize.height = static_cast<uint>(renderSize.y);
 
-	dispatchParameters.scale = 2.0f;
+	dispatchParameters.scale = 1.0f;
 	dispatchParameters.flags = 8;
 
 	if (ffxFsr3ContextGenerateReactiveMask(&fsrContext, &dispatchParameters) != FFX_OK)

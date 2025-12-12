@@ -1,6 +1,7 @@
 #include "Util.h"
 
 #include <d3dcompiler.h>
+#include <winrt/base.h>
 
 namespace Util
 {
@@ -21,8 +22,8 @@ namespace Util
 		// Compiler setup
 		uint32_t flags = D3DCOMPILE_ENABLE_STRICTNESS | D3DCOMPILE_OPTIMIZATION_LEVEL3;
 
-		ID3DBlob* shaderBlob;
-		ID3DBlob* shaderErrors;
+		winrt::com_ptr<ID3DBlob> shaderBlob;
+		winrt::com_ptr<ID3DBlob> shaderErrors;
 
 		std::string str;
 		std::wstring path{ FilePath };
@@ -33,15 +34,13 @@ namespace Util
 			logger::error("Failed to compile shader; {} does not exist", str);
 			return nullptr;
 		}
-		if (FAILED(D3DCompileFromFile(FilePath, macros.data(), D3D_COMPILE_STANDARD_FILE_INCLUDE, Program, ProgramType, flags, 0, &shaderBlob, &shaderErrors))) {
+		if (FAILED(D3DCompileFromFile(FilePath, macros.data(), D3D_COMPILE_STANDARD_FILE_INCLUDE, Program, ProgramType, flags, 0, shaderBlob.put(), shaderErrors.put()))) {
 			logger::warn("Shader compilation failed:\n\n{}", shaderErrors ? static_cast<char*>(shaderErrors->GetBufferPointer()) : "Unknown error");
 			return nullptr;
 		}
 		if (shaderErrors)
 			logger::debug("Shader logs:\n{}", static_cast<char*>(shaderErrors->GetBufferPointer()));
 
-		if (shaderErrors)
-			logger::debug("Shader logs:\n{}", static_cast<char*>(shaderErrors->GetBufferPointer()));
 		if (!_stricmp(ProgramType, "ps_5_0")) {
 			ID3D11PixelShader* regShader;
 			device->CreatePixelShader(shaderBlob->GetBufferPointer(), shaderBlob->GetBufferSize(), nullptr, &regShader);

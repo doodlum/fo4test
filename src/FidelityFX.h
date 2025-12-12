@@ -6,6 +6,8 @@
 
 #include "Buffer.h"
 
+#include <memory>
+
 class FidelityFX
 {
 public:
@@ -17,8 +19,8 @@ public:
 
 	FfxFsr3Context fsrContext;
 
-	Texture2D* colorOpaqueOnlyTexture;
-	Texture2D* reactiveMaskTexture;
+	std::unique_ptr<Texture2D> colorOpaqueOnlyTexture;
+	std::unique_ptr<Texture2D> reactiveMaskTexture;
 
 	void CreateFSRResources();
 	void DestroyFSRResources();

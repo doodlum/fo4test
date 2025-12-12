@@ -5,6 +5,9 @@
 #include "FidelityFX.h"
 #include "Streamline.h"
 
+#include <array>
+#include <winrt/base.h>
+
 const uint renderTargetsPatch[] = { 20, 57, 24, 25, 23, 58, 59, 28, 3, 9, 60, 61 };
 
 class Upscaling : public RE::BSTEventSink<RE::MenuOpenCloseEvent>
@@ -34,10 +37,10 @@ public:
 
 	Settings settings;
 
-	ID3D11SamplerState* originalSamplerStates[320];
-	ID3D11SamplerState* biasedSamplerStates[320];
+	std::array<winrt::com_ptr<ID3D11SamplerState>, 320> originalSamplerStates;
+	std::array<winrt::com_ptr<ID3D11SamplerState>, 320> biasedSamplerStates;
 
-	ID3D11ShaderResourceView* originalDepthView;
+	winrt::com_ptr<ID3D11ShaderResourceView> originalDepthView;
 
 	void LoadSettings();
 
@@ -76,16 +79,16 @@ public:
 
 	void CheckResources();
 
-	ID3D11ComputeShader* rcas;
+	winrt::com_ptr<ID3D11ComputeShader> rcas;
 	ID3D11ComputeShader* GetRCAS();
-	
-	ID3D11ComputeShader* dilateMotionVectorCS;
+
+	winrt::com_ptr<ID3D11ComputeShader> dilateMotionVectorCS;
 	ID3D11ComputeShader* GetDilateMotionVectorCS();
 
-	ID3D11ComputeShader* overrideDepthCS;
+	winrt::com_ptr<ID3D11ComputeShader> overrideDepthCS;
 	ID3D11ComputeShader* GetOverrideDepthCS();
 
-	ID3D11PixelShader* BSImagespaceShaderSSLRRaytracing;
+	winrt::com_ptr<ID3D11PixelShader> BSImagespaceShaderSSLRRaytracing;
 	ID3D11PixelShader* GetBSImagespaceShaderSSLRRaytracing();
 
 	ConstantBuffer* GetUpscalingCB();

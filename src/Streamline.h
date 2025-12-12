@@ -24,6 +24,14 @@ public:
 		return &singleton;
 	}
 
+	~Streamline()
+	{
+		if (interposer) {
+			FreeLibrary(interposer);
+			interposer = nullptr;
+		}
+	}
+
 	inline std::string GetShortName() { return "Streamline"; }
 
 	bool initialized = false;
@@ -65,8 +73,6 @@ public:
 
 	void Upscale(Texture2D* a_color, Texture2D* a_dilatedMotionVectorTexture, float2 a_jitter, float2 a_renderSize, uint a_qualityMode);
 	void UpdateConstants(float2 a_jitter);
-
-	void CreateDLSSResources();
 
 	void DestroyDLSSResources();
 };

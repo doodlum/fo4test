@@ -283,7 +283,7 @@ void Upscaling::OverrideDepth()
 
 	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
 
-	originalDepthView = rendererData->depthStencilTargets[(uint)Util::DepthStencilTarget::kMain].srViewDepth;
+	originalDepthView.copy_from(rendererData->depthStencilTargets[(uint)Util::DepthStencilTarget::kMain].srViewDepth);
 
 	rendererData->depthStencilTargets[(uint)Util::DepthStencilTarget::kMain].srViewDepth = depthOverrideTexture->srv.get();
 }
@@ -292,7 +292,7 @@ void Upscaling::ResetDepth()
 {
 	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
 
-	rendererData->depthStencilTargets[(uint)Util::DepthStencilTarget::kMain].srViewDepth = originalDepthView;
+	rendererData->depthStencilTargets[(uint)Util::DepthStencilTarget::kMain].srViewDepth = originalDepthView.get();
 }
 
 void Upscaling::UpdateSamplerStates(float a_currentMipBias)
@@ -303,7 +303,7 @@ void Upscaling::UpdateSamplerStates(float a_currentMipBias)
 
 	// Store original sampler states
 	for (int a = 0; a < 320; a++) {
-		originalSamplerStates[a] = samplerStates->a[a];
+		originalSamplerStates[a].copy_from(samplerStates->a[a]);
 	}
 
 	static float previousMipBias = 1.0f;
@@ -316,13 +316,10 @@ void Upscaling::UpdateSamplerStates(float a_currentMipBias)
 
 	for (int a = 0; a < 320; a++) {
 		// Delete any existing biased sampler state
-		if (biasedSamplerStates[a]){
-			biasedSamplerStates[a]->Release();
-			biasedSamplerStates[a] = nullptr;
-		}
-		
+		biasedSamplerStates[a] = nullptr;
+
 		// Replace sampler state with biased version
-		if (auto samplerState = originalSamplerStates[a]) {
+		if (auto samplerState = originalSamplerStates[a].get()) {
 			D3D11_SAMPLER_DESC samplerDesc;
 			samplerState->GetDesc(&samplerDesc);
 
@@ -332,13 +329,10 @@ void Upscaling::UpdateSamplerStates(float a_currentMipBias)
 				samplerDesc.MipLODBias = a_currentMipBias;
 			}
 
-			DX::ThrowIfFailed(device->CreateSamplerState(&samplerDesc, &biasedSamplerStates[a]));
-
-		} else {
-			biasedSamplerStates[a] = nullptr;
+			DX::ThrowIfFailed(device->CreateSamplerState(&samplerDesc, biasedSamplerStates[a].put()));
 		}
 
-		samplerStates->a[a] = biasedSamplerStates[a];
+		samplerStates->a[a] = biasedSamplerStates[a].get();
 	}
 }
 
@@ -346,14 +340,14 @@ void Upscaling::OverrideSamplerStates()
 {
 	static auto samplerStates = SamplerStates::GetSingleton();
 	for (int a = 0; a < 320; a++)
-		samplerStates->a[a] = biasedSamplerStates[a];
+		samplerStates->a[a] = biasedSamplerStates[a].get();
 }
 
 void Upscaling::ResetSamplerStates()
 {
 	static auto samplerStates = SamplerStates::GetSingleton();
 	for (int a = 0; a < 320; a++)
-		samplerStates->a[a] = originalSamplerStates[a];
+		samplerStates->a[a] = originalSamplerStates[a].get();
 }
 
 void Upscaling::CopyDepth()
@@ -481,45 +475,41 @@ ID3D11ComputeShader* Upscaling::GetRCAS()
 
 	if (previousSharpness != currentSharpness) {
 		previousSharpness = currentSharpness;
-
-		if (rcas) {
-			rcas->Release();
-			rcas = nullptr;
-		}
+		rcas = nullptr;
 	}
 
 	if (!rcas) {
 		logger::debug("Compiling RCAS.hlsl");
-		rcas = (ID3D11ComputeShader*)Util::CompileShader(L"Data/F4SE/Plugins/Upscaling/RCAS/RCAS.hlsl", { { "SHARPNESS", std::format("{}", currentSharpness).c_str() } }, "cs_5_0");
+		rcas.attach((ID3D11ComputeShader*)Util::CompileShader(L"Data/F4SE/Plugins/Upscaling/RCAS/RCAS.hlsl", { { "SHARPNESS", std::format("{}", currentSharpness).c_str() } }, "cs_5_0"));
 	}
-	return rcas;
+	return rcas.get();
 }
 
 ID3D11ComputeShader* Upscaling::GetDilateMotionVectorCS()
 {
 	if (!dilateMotionVectorCS) {
 		logger::debug("Compiling DilateMotionVectorCS.hlsl");
-		dilateMotionVectorCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data/F4SE/Plugins/Upscaling/DilateMotionVectorCS.hlsl", { }, "cs_5_0");
+		dilateMotionVectorCS.attach((ID3D11ComputeShader*)Util::CompileShader(L"Data/F4SE/Plugins/Upscaling/DilateMotionVectorCS.hlsl", {}, "cs_5_0"));
 	}
-	return dilateMotionVectorCS;
+	return dilateMotionVectorCS.get();
 }
 
 ID3D11ComputeShader* Upscaling::GetOverrideDepthCS()
 {
 	if (!overrideDepthCS) {
 		logger::debug("Compiling OverrideDepthCS.hlsl");
-		overrideDepthCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data/F4SE/Plugins/Upscaling/OverrideDepthCS.hlsl", { }, "cs_5_0");
+		overrideDepthCS.attach((ID3D11ComputeShader*)Util::CompileShader(L"Data/F4SE/Plugins/Upscaling/OverrideDepthCS.hlsl", {}, "cs_5_0"));
 	}
-	return overrideDepthCS;
+	return overrideDepthCS.get();
 }
 
 ID3D11PixelShader* Upscaling::GetBSImagespaceShaderSSLRRaytracing()
 {
 	if (!BSImagespaceShaderSSLRRaytracing) {
 		logger::debug("Compiling BSImagespaceShaderSSLRRaytracing.hlsl");
-		BSImagespaceShaderSSLRRaytracing = (ID3D11PixelShader*)Util::CompileShader(L"Data/F4SE/Plugins/Upscaling/BSImagespaceShaderSSLRRaytracing.hlsl", { }, "ps_5_0");
+		BSImagespaceShaderSSLRRaytracing.attach((ID3D11PixelShader*)Util::CompileShader(L"Data/F4SE/Plugins/Upscaling/BSImagespaceShaderSSLRRaytracing.hlsl", {}, "ps_5_0"));
 	}
-	return BSImagespaceShaderSSLRRaytracing;
+	return BSImagespaceShaderSSLRRaytracing.get();
 }
 
 ConstantBuffer* Upscaling::GetUpscalingCB()
