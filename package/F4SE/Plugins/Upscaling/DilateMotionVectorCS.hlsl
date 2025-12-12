@@ -27,7 +27,7 @@ float GetScreenDepth(float depth)
 	float2 longestMotionVector = motionVector;
 	float maxMotionLengthSq = dot(motionVector, motionVector);
 
-	if (GetScreenDepth(depth) > (4096 * 2.5)){
+	if (GetScreenDepth(depth) < (4096 * 2.5)){
 		[unroll]
 		for (int y = -2; y <= 2; y++) {
 			[unroll]
