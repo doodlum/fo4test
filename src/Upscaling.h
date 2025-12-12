@@ -6,6 +6,7 @@
 #include "Streamline.h"
 
 #include <array>
+#include <memory>
 #include <winrt/base.h>
 
 const uint renderTargetsPatch[] = { 20, 57, 24, 25, 23, 58, 59, 28, 3, 9, 60, 61 };
@@ -58,7 +59,7 @@ public:
 	RE::BSGraphics::RenderTarget proxyRenderTargets[101];
 	RE::BSGraphics::RenderTargetProperties originalRenderTargetData[100];
 
-	Texture2D* depthOverrideTexture;
+	std::unique_ptr<Texture2D> depthOverrideTexture;
 
 	void OverrideRenderTargets();
 	void ResetRenderTargets();
@@ -96,8 +97,8 @@ public:
 	void UpdateJitter();
 	void Upscale();
 
-	Texture2D* upscalingTexture;
-	Texture2D* dilatedMotionVectorTexture;
+	std::unique_ptr<Texture2D> upscalingTexture;
+	std::unique_ptr<Texture2D> dilatedMotionVectorTexture;
 
 	struct UpscalingCB
 	{
