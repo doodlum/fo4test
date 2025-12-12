@@ -405,6 +405,9 @@ void Upscaling::UpdateRenderTargets(float a_currentWidthRatio, float a_currentHe
 	D3D11_TEXTURE2D_DESC texDesc{};
 	static_cast<ID3D11Texture2D*>(frameBufferResource)->GetDesc(&texDesc);
 
+	// Release the resource acquired by GetResource
+	frameBufferResource->Release();
+
 	D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {
 		.Format = texDesc.Format,
 		.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D,
@@ -714,13 +717,13 @@ ID3D11PixelShader* Upscaling::GetBSImagespaceShaderSSLRRaytracing()
 
 ConstantBuffer* Upscaling::GetUpscalingCB()
 {
-	static ConstantBuffer* upscalingCB = nullptr;
+	static std::unique_ptr<ConstantBuffer> upscalingCB = nullptr;
 
 	if (!upscalingCB) {
 		logger::debug("Creating UpscalingCB");
-		upscalingCB = new ConstantBuffer(ConstantBufferDesc<UpscalingCB>());
+		upscalingCB = std::make_unique<ConstantBuffer>(ConstantBufferDesc<UpscalingCB>());
 	}
-	return upscalingCB;
+	return upscalingCB.get();
 }
 
 void Upscaling::UpdateJitter()
@@ -778,6 +781,9 @@ void Upscaling::Upscale()
 	frameBufferSRV->GetResource(&frameBufferResource);
 
 	context->CopyResource(upscalingTexture->resource.get(), frameBufferResource);
+
+	// Release the resource acquired by GetResource
+	frameBufferResource->Release();
 
 	static auto gameViewport = Util::State_GetSingleton();
 	static auto renderTargetManager = Util::RenderTargetManager_GetSingleton();
