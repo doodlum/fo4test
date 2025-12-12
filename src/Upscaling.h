@@ -1,13 +1,11 @@
 #pragma once
 
-#include <shared_mutex>
-
+#include "Util.h"
 #include "Buffer.h"
 #include "FidelityFX.h"
 #include "Streamline.h"
 
 const uint renderTargetsPatch[] = { 20, 57, 24, 25, 23, 58, 59, 28, 3, 9, 60, 61 };
-const uint depthStencilTargetPatch[] = { 2 };
 
 class Upscaling : public RE::BSTEventSink<RE::MenuOpenCloseEvent>
 {
@@ -73,7 +71,6 @@ public:
 	void CopyDepth();
 
 	void PatchSSRShader();
-	void CopySSRRawToBlurred();
 
 	UpscaleMethod GetUpscaleMethod(bool a_checkMenu);
 
@@ -84,9 +81,6 @@ public:
 	
 	ID3D11ComputeShader* dilateMotionVectorCS;
 	ID3D11ComputeShader* GetDilateMotionVectorCS();
-	
-	ID3D11ComputeShader* generateReactiveMaskCS;
-	ID3D11ComputeShader* GetGenerateReactiveMaskCS();
 
 	ID3D11ComputeShader* overrideDepthCS;
 	ID3D11ComputeShader* GetOverrideDepthCS();
@@ -94,14 +88,11 @@ public:
 	ID3D11PixelShader* BSImagespaceShaderSSLRRaytracing;
 	ID3D11PixelShader* GetBSImagespaceShaderSSLRRaytracing();
 
-	void GenerateReactiveMask();
-
 	void UpdateJitter();
 	void Upscale();
 
 	Texture2D* upscalingTexture;
 	Texture2D* dilatedMotionVectorTexture;
-	Texture2D* reactiveMaskTexture;
 
 	struct UpscalingDataCB
 	{
@@ -114,18 +105,6 @@ public:
 
 	void CreateUpscalingResources();
 	void DestroyUpscalingResources();
-
-	[[nodiscard]] static RE::BSGraphics::State* State_GetSingleton()
-	{
-		REL::Relocation<RE::BSGraphics::State*> singleton{ REL::ID(600795) };
-		return singleton.get();
-	}
-
-	[[nodiscard]] static RE::BSGraphics::RenderTargetManager* RenderTargetManager_GetSingleton()
-	{
-		REL::Relocation<RE::BSGraphics::RenderTargetManager*> singleton{ REL::ID(1508457) };
-		return singleton.get();
-	}
 
 	struct BSGraphics_State_UpdateTemporalData
 	{
@@ -203,9 +182,11 @@ public:
 			func(This);
 			upscaling->ResetSamplerStates();
 
-			static auto renderTargetManager = RenderTargetManager_GetSingleton();
+			auto upscaleMethod = upscaling->GetUpscaleMethod(false);
+			auto fidelityFX = FidelityFX::GetSingleton();
 
-			upscaling->GenerateReactiveMask();
+			if (upscaleMethod == UpscaleMethod::kFSR)
+				fidelityFX->GenerateReactiveMask();
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
@@ -216,7 +197,7 @@ public:
 		{
 			auto upscaling = Upscaling::GetSingleton();
 
-			static auto renderTargetManager = RenderTargetManager_GetSingleton();
+			static auto renderTargetManager = Util::RenderTargetManager_GetSingleton();
 			bool requiresOverride = renderTargetManager->dynamicHeightRatio != 1.0 || renderTargetManager->dynamicWidthRatio != 1.0;
 
 			if (requiresOverride) {
@@ -240,7 +221,7 @@ public:
 		{
 			auto upscaling = Upscaling::GetSingleton();
 
-			static auto renderTargetManager = RenderTargetManager_GetSingleton();
+			static auto renderTargetManager = Util::RenderTargetManager_GetSingleton();
 			bool requiresOverride = renderTargetManager->dynamicHeightRatio != 1.0 || renderTargetManager->dynamicWidthRatio != 1.0;
 
 			if (requiresOverride) {
@@ -266,25 +247,41 @@ public:
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
 
+	struct DrawWorld_Forward_ForwardAlphaImpl
+	{
+		static void thunk(struct DrawWorld* This)
+		{
+			auto upscaling = Upscaling::GetSingleton();
+			auto upscaleMethod = upscaling->GetUpscaleMethod(false);
+			auto fidelityFX = FidelityFX::GetSingleton();
+
+			if (upscaleMethod == UpscaleMethod::kFSR)
+				fidelityFX->CopyOpaqueTexture();
+
+			func(This);
+		}
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
+
 	static void InstallHooks()
 	{
 		// Control jitters, dynamic resolution, and sampler states
 		stl::write_thunk_call<BSGraphics_State_UpdateTemporalData>(REL::ID(502840).address() + 0x3C1);
 		
-		// Disable TAA shader
+		// Disable TAA shader if using alternative scaling method
 		stl::write_vfunc<0x8, ImageSpaceEffectTemporalAA_IsActive>(RE::VTABLE::ImageSpaceEffectTemporalAA[0]);
 		
-		// Enable dynamic resolution shader if TAA is enabled
+		// Disable dynamic resolution shader if using alternative scaling method
 		stl::write_vfunc<0x8, ImageSpaceEffectUpsampleDynamicResolution_IsActive>(RE::VTABLE::ImageSpaceEffectUpsampleDynamicResolution[0]);
 
-		// Upscaling pass
+		// Replace original upscaling pass
 		stl::write_thunk_call<DrawWorld_Imagespace_SetUseDynamicResolutionViewportAsDefaultViewport>(REL::ID(587723).address() + 0xE1);
 		
 		// Disable BSGraphics::RenderTargetManager::UpdateDynamicResolution
 		REL::Relocation<std::uintptr_t> target{ REL::ID(984743), 0x14B };
 		REL::safe_fill(target.address(), 0x90, 5);
 
-		// Control sampler states
+		// Control sampler states for mipmap bias
 		stl::write_thunk_call<DrawWorld_Render_PreUI_DeferredPrePass>(REL::ID(984743).address() + 0x17F);
 		stl::write_thunk_call<DrawWorld_Render_PreUI_DeferredDecals>(REL::ID(984743).address() + 0x189);
 		stl::write_thunk_call<DrawWorld_Render_PreUI_Forward>(REL::ID(984743).address() + 0x1C9);
@@ -297,5 +294,8 @@ public:
 
 		// Fix dynamic resolution for Screenspace Reflections
 		stl::write_thunk_call<BSImagespaceShaderSSLRRaytracing_SetupTechnique_BeginTechnique>(REL::ID(779077).address() + 0x1C);
+
+		// Generate reactive mask for FSR
+		stl::write_thunk_call<DrawWorld_Forward_ForwardAlphaImpl>(REL::ID(656535).address() + 0x2E8);
 	}
 };
