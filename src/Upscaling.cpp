@@ -189,6 +189,57 @@ void Upscaling::UpdateRenderTargets(float a_currentWidthRatio, float a_currentHe
 	// Recreate render targets with new dimensions
 	for (int i = 0; i < ARRAYSIZE(renderTargetsPatch); i++)
 		UpdateRenderTarget(renderTargetsPatch[i], a_currentWidthRatio, a_currentHeightRatio);
+
+	if (upscalingTexture) {
+		upscalingTexture->uav = nullptr;
+		upscalingTexture->srv = nullptr;
+		upscalingTexture->resource = nullptr;
+		upscalingTexture = nullptr;
+	}
+
+	if (depthOverrideTexture){
+		depthOverrideTexture->uav = nullptr;
+		depthOverrideTexture->srv = nullptr;
+		depthOverrideTexture->resource = nullptr;
+		depthOverrideTexture = nullptr;
+	}
+
+	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
+	auto frameBufferSRV = reinterpret_cast<ID3D11ShaderResourceView*>(rendererData->renderTargets[(uint)Util::RenderTarget::kFrameBuffer].srView);
+
+	ID3D11Resource* frameBufferResource;
+	frameBufferSRV->GetResource(&frameBufferResource);
+
+	D3D11_TEXTURE2D_DESC texDesc{};
+	static_cast<ID3D11Texture2D*>(frameBufferResource)->GetDesc(&texDesc);
+
+	D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {
+		.Format = texDesc.Format,
+		.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D,
+		.Texture2D = {
+			.MostDetailedMip = 0,
+			.MipLevels = 1 }
+	};
+
+	D3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc = {
+		.Format = texDesc.Format,
+		.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D,
+		.Texture2D = {.MipSlice = 0 }
+	};
+
+	texDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
+
+	upscalingTexture = new Texture2D(texDesc);
+	upscalingTexture->CreateSRV(srvDesc);
+	upscalingTexture->CreateUAV(uavDesc);
+
+	texDesc.Format = DXGI_FORMAT_R32_FLOAT;
+	srvDesc.Format = texDesc.Format;
+	uavDesc.Format = texDesc.Format;
+
+	depthOverrideTexture = new Texture2D(texDesc);
+	depthOverrideTexture->CreateSRV(srvDesc);
+	depthOverrideTexture->CreateUAV(uavDesc);
 }
 
 void Upscaling::OverrideRenderTargets()
@@ -337,7 +388,7 @@ void Upscaling::CopyDepth()
 		cameraData.z = cameraFar - cameraNear;
 		cameraData.w = cameraFar * cameraNear;
 
-		UpscalingDataCB upscalingData;
+		UpscalingCB upscalingData;
 		upscalingData.ScreenSize[0] = static_cast<uint>(screenSize.x);
 		upscalingData.ScreenSize[1] = static_cast<uint>(screenSize.y);
 
@@ -346,9 +397,10 @@ void Upscaling::CopyDepth()
 
 		upscalingData.CameraData = cameraData;
 
-		upscalingDataCB->Update(upscalingData);
+		auto upscalingCB = GetUpscalingCB();
+		upscalingCB->Update(upscalingData);
 
-		auto upscalingBuffer = upscalingDataCB->CB();
+		auto upscalingBuffer = upscalingCB->CB();
 		context->CSSetConstantBuffers(0, 1, &upscalingBuffer);
 
 		{
@@ -376,17 +428,17 @@ void Upscaling::CopyDepth()
 	}
 }
 
-Upscaling::UpscaleMethod Upscaling::GetUpscaleMethod(bool )
+Upscaling::UpscaleMethod Upscaling::GetUpscaleMethod(bool a_checkMenu)
 {
 	auto streamline = Streamline::GetSingleton();
 	
 	static auto ui = RE::UI::GetSingleton();
 	
 	// Disable the upscaling method when certain menus are open
-	//if (a_checkMenu){
-	//	if (ui->GetMenuOpen("ExamineMenu") || ui->GetMenuOpen("PipboyMenu") || ui->GetMenuOpen("LoadingMenu"))
-	//		return UpscaleMethod::kDisabled;
-	//}
+	if (a_checkMenu){
+		if (ui->GetMenuOpen("ExamineMenu") || ui->GetMenuOpen("PipboyMenu") || ui->GetMenuOpen("LoadingMenu"))
+			return UpscaleMethod::kDisabled;
+	}
 		
 	// If DLSS is not available, default to FSR
 	if (!streamline->featureDLSS && settings.upscaleMethodPreference == (uint)UpscaleMethod::kDLSS)
@@ -397,26 +449,26 @@ Upscaling::UpscaleMethod Upscaling::GetUpscaleMethod(bool )
 
 void Upscaling::CheckResources()
 {
-	static auto previousUpscaleMode = UpscaleMethod::kDisabled;
-	auto currentUpscaleMode = GetUpscaleMethod(false);
+	static auto previousUpscaleMethodNoMenu = UpscaleMethod::kDisabled;
+	auto upscaleMethodNoMenu = GetUpscaleMethod(false);
 
 	auto streamline = Streamline::GetSingleton();
 	auto fidelityFX = FidelityFX::GetSingleton();
 
-	if (previousUpscaleMode != currentUpscaleMode) {
-		if (previousUpscaleMode == UpscaleMethod::kDisabled)
+	if (previousUpscaleMethodNoMenu != upscaleMethodNoMenu) {
+		if (previousUpscaleMethodNoMenu == UpscaleMethod::kDisabled)
 			CreateUpscalingResources();
-		else if (previousUpscaleMode == UpscaleMethod::kFSR)
+		else if (previousUpscaleMethodNoMenu == UpscaleMethod::kFSR)
 			fidelityFX->DestroyFSRResources();
-		else if (previousUpscaleMode == UpscaleMethod::kDLSS)
+		else if (previousUpscaleMethodNoMenu == UpscaleMethod::kDLSS)
 			streamline->DestroyDLSSResources();
 
-		if (currentUpscaleMode == UpscaleMethod::kDisabled)
+		if (upscaleMethodNoMenu == UpscaleMethod::kDisabled)
 			DestroyUpscalingResources();
-		else if (currentUpscaleMode == UpscaleMethod::kFSR)
+		else if (upscaleMethodNoMenu == UpscaleMethod::kFSR)
 			fidelityFX->CreateFSRResources();
 
-		previousUpscaleMode = currentUpscaleMode;
+		previousUpscaleMethodNoMenu = upscaleMethodNoMenu;
 	}
 }
 
@@ -470,24 +522,45 @@ ID3D11PixelShader* Upscaling::GetBSImagespaceShaderSSLRRaytracing()
 	return BSImagespaceShaderSSLRRaytracing;
 }
 
+ConstantBuffer* Upscaling::GetUpscalingCB()
+{
+	static ConstantBuffer* upscalingCB = nullptr;
+
+	if (!upscalingCB) {
+		logger::debug("Creating UpscalingCB");
+		upscalingCB = new ConstantBuffer(ConstantBufferDesc<UpscalingCB>());
+	}
+	return upscalingCB;
+}
+
 void Upscaling::UpdateJitter()
 {
 	static auto gameViewport = Util::State_GetSingleton();
 	static auto renderTargetManager = Util::RenderTargetManager_GetSingleton();
 
-	auto upscaleMethod = GetUpscaleMethod(false);
-	auto upscaleMethodMenu = GetUpscaleMethod(true);
+	auto upscaleMethodNoMenu = GetUpscaleMethod(false);
+	auto upscaleMethod = GetUpscaleMethod(true);
 
-	float resolutionScaleBase = upscaleMethod == UpscaleMethod::kDisabled ? 1.0f : 1.0f / ffxFsr3GetUpscaleRatioFromQualityMode((FfxFsr3QualityMode)settings.qualityMode);
-	
+	float resolutionScale = upscaleMethodNoMenu == UpscaleMethod::kDisabled ? 1.0f : 1.0f / ffxFsr3GetUpscaleRatioFromQualityMode((FfxFsr3QualityMode)settings.qualityMode);
+	float currentMipBias = std::log2f(resolutionScale);
+
+	if (upscaleMethodNoMenu == UpscaleMethod::kDLSS)
+		currentMipBias -= 1.0f;
+
+	UpdateSamplerStates(currentMipBias);
+	UpdateRenderTargets(resolutionScale, resolutionScale);
+
+	if (upscaleMethod == UpscaleMethod::kDisabled)
+		resolutionScale = 1.0f;
+
 	renderTargetManager->lowestWidthRatio = renderTargetManager->dynamicWidthRatio;
 	renderTargetManager->lowestHeightRatio = renderTargetManager->dynamicHeightRatio;
 
-	if (upscaleMethodMenu != UpscaleMethod::kDisabled) {
+	if (upscaleMethod != UpscaleMethod::kDisabled) {
 		auto screenWidth = gameViewport->screenWidth;
 		auto screenHeight = gameViewport->screenHeight;
 
-		auto renderWidth = static_cast<uint>(static_cast<float>(screenWidth) * resolutionScaleBase);
+		auto renderWidth = static_cast<uint>(static_cast<float>(screenWidth) * resolutionScale);
 
 		auto phaseCount = ffxFsr3GetJitterPhaseCount(renderWidth, screenWidth);
 
@@ -497,26 +570,15 @@ void Upscaling::UpdateJitter()
 		gameViewport->offsetY = 2.0f * jitter.y / static_cast<float>(screenHeight);
 	}
 
-	renderTargetManager->dynamicWidthRatio = resolutionScaleBase;
-	renderTargetManager->dynamicHeightRatio = resolutionScaleBase;
-		
-	float currentMipBias = std::log2f(resolutionScaleBase);
+	renderTargetManager->dynamicWidthRatio = resolutionScale;
+	renderTargetManager->dynamicHeightRatio = resolutionScale;
 	
-	if (upscaleMethod == UpscaleMethod::kDLSS)
-		currentMipBias -= 1.0f;
-
-	UpdateSamplerStates(currentMipBias);
-	UpdateRenderTargets(resolutionScaleBase, resolutionScaleBase);
-
 	CheckResources();
 }
 
 void Upscaling::Upscale()
 {
 	auto upscaleMethod = GetUpscaleMethod(true);
-
-	if (upscaleMethod == UpscaleMethod::kDisabled)
-		return;
 
 	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
 	static auto context = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
@@ -552,7 +614,7 @@ void Upscaling::Upscale()
 			cameraData.z = cameraFar - cameraNear;
 			cameraData.w = cameraFar * cameraNear;
 
-			UpscalingDataCB upscalingData;
+			UpscalingCB upscalingData;
 			upscalingData.ScreenSize[0] = static_cast<uint>(screenSize.x);
 			upscalingData.ScreenSize[1] = static_cast<uint>(screenSize.y);
 
@@ -561,9 +623,10 @@ void Upscaling::Upscale()
 
 			upscalingData.CameraData = cameraData;
 
-			upscalingDataCB->Update(upscalingData);
+			auto upscalingCB = GetUpscalingCB();
+			upscalingCB->Update(upscalingData);
 
-			auto upscalingBuffer = upscalingDataCB->CB();
+			auto upscalingBuffer = upscalingCB->CB();
 			context->CSSetConstantBuffers(0, 1, &upscalingBuffer);
 
 			auto motionVectorSRV = reinterpret_cast<ID3D11ShaderResourceView*>(rendererData->renderTargets[(uint)Util::RenderTarget::kMotionVectors].srView);
@@ -597,7 +660,7 @@ void Upscaling::Upscale()
 
 	if (upscaleMethod == UpscaleMethod::kDLSS)
 		Streamline::GetSingleton()->Upscale(upscalingTexture, dilatedMotionVectorTexture, jitter, renderSize, settings.qualityMode);
-	else
+	else if (upscaleMethod == UpscaleMethod::kFSR)
 		FidelityFX::GetSingleton()->Upscale(upscalingTexture, jitter, renderSize, settings.sharpness);
 
 	if (upscaleMethod != UpscaleMethod::kFSR) {
@@ -634,42 +697,29 @@ void Upscaling::Upscale()
 
 void Upscaling::CreateUpscalingResources()
 {
-	auto renderer = RE::BSGraphics::RendererData::GetSingleton();
-	auto& main = renderer->renderTargets[(uint)Util::RenderTarget::kMain];
-
-	D3D11_TEXTURE2D_DESC texDesc{};
-	main.texture->GetDesc(&texDesc);
-	texDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-
-	D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {
-		.Format = texDesc.Format,
-		.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D,
-		.Texture2D = {
-			.MostDetailedMip = 0,
-			.MipLevels = 1 }
-	};
-
-	D3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc = {
-		.Format = texDesc.Format,
-		.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D,
-		.Texture2D = { .MipSlice = 0 }
-	};
-
-	texDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
-
-	upscalingTexture = new Texture2D(texDesc);
-
-	texDesc.Format = DXGI_FORMAT_R32_FLOAT;
-	srvDesc.Format = texDesc.Format;
-	uavDesc.Format = texDesc.Format;
-
-	depthOverrideTexture = new Texture2D(texDesc);
-	depthOverrideTexture->CreateSRV(srvDesc);
-	depthOverrideTexture->CreateUAV(uavDesc);
-
-	upscalingDataCB = new ConstantBuffer(ConstantBufferDesc<UpscalingDataCB>());
-
 	if (Streamline::GetSingleton()->featureDLSS) {
+		auto renderer = RE::BSGraphics::RendererData::GetSingleton();
+		auto& main = renderer->renderTargets[(uint)Util::RenderTarget::kMain];
+
+		D3D11_TEXTURE2D_DESC texDesc{};
+		main.texture->GetDesc(&texDesc);
+		texDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+
+		D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {
+			.Format = texDesc.Format,
+			.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D,
+			.Texture2D = {
+				.MostDetailedMip = 0,
+				.MipLevels = 1 }
+		};
+
+		D3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc = {
+			.Format = texDesc.Format,
+			.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D,
+			.Texture2D = {.MipSlice = 0 }
+		};
+
+		texDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
 		texDesc.Format = DXGI_FORMAT_R16G16_FLOAT;
 		uavDesc.Format = texDesc.Format;
 
@@ -680,11 +730,6 @@ void Upscaling::CreateUpscalingResources()
 
 void Upscaling::DestroyUpscalingResources()
 {
-	upscalingTexture->resource = nullptr;
-	delete upscalingTexture;
-
-	upscalingDataCB = nullptr;
-
 	if (Streamline::GetSingleton()->featureDLSS) {
 		dilatedMotionVectorTexture->uav = nullptr;
 		dilatedMotionVectorTexture->resource = nullptr;

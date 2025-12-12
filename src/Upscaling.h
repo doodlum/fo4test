@@ -88,20 +88,20 @@ public:
 	ID3D11PixelShader* BSImagespaceShaderSSLRRaytracing;
 	ID3D11PixelShader* GetBSImagespaceShaderSSLRRaytracing();
 
+	ConstantBuffer* GetUpscalingCB();
+
 	void UpdateJitter();
 	void Upscale();
 
 	Texture2D* upscalingTexture;
 	Texture2D* dilatedMotionVectorTexture;
 
-	struct UpscalingDataCB
+	struct UpscalingCB
 	{
 		uint ScreenSize[2];
 		uint RenderSize[2];
 		float4 CameraData;
 	};
-
-	ConstantBuffer* upscalingDataCB = nullptr;
 
 	void CreateUpscalingResources();
 	void DestroyUpscalingResources();
