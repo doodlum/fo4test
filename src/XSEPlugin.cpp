@@ -1,17 +1,9 @@
-
-#include <d3d11.h>
-#include <d3dcompiler.h>
-#include <fstream>
-#include <wrl/client.h>
-
-#pragma comment(lib, "d3dcompiler.lib")
-
-#ifndef NDEBUG
-#pragma comment(lib, "dxguid.lib")
-#endif
-
 #include "DX11Hooks.h"
 #include "Upscaling.h"
+
+#include "ENB/ENBSeriesAPI.h"
+
+bool enbLoaded = false;
 
 void InitializeLog()
 {
@@ -147,6 +139,13 @@ extern "C" DLLEXPORT bool F4SEAPI F4SEPlugin_Load(const F4SE::LoadInterface* a_f
 
 	const auto messaging = F4SE::GetMessagingInterface();
 	messaging->RegisterListener(OnInit);
+
+	if (ENB_API::RequestENBAPI()) {
+		logger::info("ENB detected");
+		enbLoaded = true;
+	} else {
+		logger::info("ENB not detected");
+	}
 
 	return true;
 }

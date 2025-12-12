@@ -2,6 +2,8 @@
 
 #include <SimpleIni.h>
 
+extern bool enbLoaded;
+
 /** @brief Hook for updating jitter, dynamic resolution, and resources */
 struct BSGraphics_State_UpdateTemporalData
 {
@@ -178,18 +180,20 @@ void Upscaling::InstallHooks()
 	stl::write_thunk_call<DrawWorld_Render_PreUI_DeferredPrePass>(REL::ID(984743).address() + 0x17F);
 	stl::write_thunk_call<DrawWorld_Render_PreUI_DeferredDecals>(REL::ID(984743).address() + 0x189);
 	stl::write_thunk_call<DrawWorld_Render_PreUI_Forward>(REL::ID(984743).address() + 0x1C9);
-
-	// Fix dynamic resolution for BSDFComposite
-	stl::write_thunk_call<BSDFComposite_Envmap>(REL::ID(728427).address() + 0x8DC);
-
-	// Fix dynamic resolution for Lens Flare visibility
-	stl::detour_thunk<BSImagespaceShaderLensFlare_RenderLensFlare>(REL::ID(676108));
-
-	// Fix dynamic resolution for Screenspace Reflections
-	stl::write_thunk_call<BSImagespaceShaderSSLRRaytracing_SetupTechnique_BeginTechnique>(REL::ID(779077).address() + 0x1C);
-
+	
 	// Generate reactive mask for FSR
 	stl::write_thunk_call<DrawWorld_Forward_ForwardAlphaImpl>(REL::ID(656535).address() + 0x2E8);
+
+	if (enbLoaded) {
+		// Fix dynamic resolution for BSDFComposite
+		stl::write_thunk_call<BSDFComposite_Envmap>(REL::ID(728427).address() + 0x8DC);
+
+		// Fix dynamic resolution for Lens Flare visibility
+		stl::detour_thunk<BSImagespaceShaderLensFlare_RenderLensFlare>(REL::ID(676108));
+
+		// Fix dynamic resolution for Screenspace Reflections
+		stl::write_thunk_call<BSImagespaceShaderSSLRRaytracing_SetupTechnique_BeginTechnique>(REL::ID(779077).address() + 0x1C);
+	}
 }
 
 struct SamplerStates
@@ -766,7 +770,7 @@ void Upscaling::UpdateJitter()
 
 	// Calculate render resolution scale from quality mode
 	// Example: Quality mode returns upscale ratio of ~1.5x, so resolutionScale = 1/1.5 = 0.67
-	float resolutionScale = upscaleMethodNoMenu == UpscaleMethod::kDisabled ? 1.0f : 1.0f / ffxFsr3GetUpscaleRatioFromQualityMode((FfxFsr3QualityMode)settings.qualityMode);
+	float resolutionScale = enbLoaded || upscaleMethodNoMenu == UpscaleMethod::kDisabled ? 1.0f : 1.0f / ffxFsr3GetUpscaleRatioFromQualityMode((FfxFsr3QualityMode)settings.qualityMode);
 
 	// Calculate mipmap LOD bias
 	// Example: 0.67 scale -> log2(0.67) - 1.0 = -1.58
