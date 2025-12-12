@@ -11,295 +11,326 @@
 
 const uint renderTargetsPatch[] = { 20, 57, 24, 25, 23, 58, 59, 28, 3, 9, 60, 61 };
 
+/**
+ * @class Upscaling
+ * @brief Main upscaling manager that handles FSR3 and DLSS upscaling for Fallout 4
+ *
+ * This class manages all aspects of upscaling including:
+ * - Dynamic render target scaling
+ * - Sampler state mipmap bias adjustment
+ * - Depth buffer management
+ * - Integration with FSR3 and DLSS backends
+ */
 class Upscaling : public RE::BSTEventSink<RE::MenuOpenCloseEvent>
 {
 public:
+	// ========================================
+	// Singleton & Initialization
+	// ========================================
+
+	/**
+	 * @brief Get the singleton instance
+	 * @return Pointer to the global Upscaling instance
+	 */
 	static Upscaling* GetSingleton()
 	{
 		static Upscaling singleton;
 		return &singleton;
 	}
 
-	float2 jitter = { 0, 0 };
+	/**
+	 * @brief Initialize the upscaling system after game data is loaded
+	 *
+	 * Registers event sinks and loads initial settings from INI file
+	 */
+	void OnDataLoaded();
 
+	/**
+	 * @brief Install all game engine hooks required for upscaling
+	 *
+	 * Patches render pipeline, TAA shaders, dynamic resolution, and other
+	 * game systems to integrate upscaling functionality
+	 */
+	static void InstallHooks();
+
+	// ========================================
+	// Settings & Configuration
+	// ========================================
+
+	/**
+	 * @enum UpscaleMethod
+	 * @brief Available upscaling methods
+	 */
 	enum class UpscaleMethod
 	{
-		kDisabled,
-		kFSR,
-		kDLSS
+		kDisabled,  ///< No upscaling, native TAA
+		kFSR,       ///< AMD FidelityFX Super Resolution 3
+		kDLSS       ///< NVIDIA Deep Learning Super Sampling
 	};
 
+	/**
+	 * @struct Settings
+	 * @brief User-configurable upscaling settings
+	 */
 	struct Settings
 	{
-		uint upscaleMethodPreference = (uint)UpscaleMethod::kDLSS;
-		float sharpness = 0.0f;
-		uint qualityMode = 1;  // Default to Quality (1=Quality, 2=Balanced, 3=Performance, 4=Ultra Performance, 0=Native AA)
+		uint upscaleMethodPreference = (uint)UpscaleMethod::kDLSS;  ///< Preferred upscaling method
+		float sharpness = 0.0f;                                      ///< Sharpening amount (0.0-1.0)
+		uint qualityMode = 1;  ///< Quality mode: 0=Native AA, 1=Quality, 2=Balanced, 3=Performance, 4=Ultra Performance
 	};
 
 	Settings settings;
 
-	std::array<winrt::com_ptr<ID3D11SamplerState>, 320> originalSamplerStates;
-	std::array<winrt::com_ptr<ID3D11SamplerState>, 320> biasedSamplerStates;
-
-	winrt::com_ptr<ID3D11ShaderResourceView> originalDepthView;
-
+	/**
+	 * @brief Load settings from MCM configuration file
+	 *
+	 * Reads Data/MCM/Settings/Upscaling.ini and updates the settings struct
+	 */
 	void LoadSettings();
 
-	void OnDataLoaded();
-
-	RE::BSEventNotifyControl ProcessEvent(const RE::MenuOpenCloseEvent& a_event, RE::BSTEventSource<RE::MenuOpenCloseEvent>*);
-
-	void UpdateRenderTarget(int index, float a_currentWidthRatio, float a_currentHeightRatio);
-	void OverrideRenderTarget(int index);
-	void ResetRenderTarget(int index);
-
-	void UpdateRenderTargets(float a_currentWidthRatio, float a_currentHeightRatio);
-
-	RE::BSGraphics::RenderTarget originalRenderTargets[101];
-	RE::BSGraphics::RenderTarget proxyRenderTargets[101];
-	RE::BSGraphics::RenderTargetProperties originalRenderTargetData[100];
-
-	std::unique_ptr<Texture2D> depthOverrideTexture;
-
-	void OverrideRenderTargets();
-	void ResetRenderTargets();
-
-	void OverrideDepth();
-	void ResetDepth();
-
-	void UpdateSamplerStates(float a_currentMipBias);
-
-	void OverrideSamplerStates();
-	void ResetSamplerStates();
-
-	void CopyDepth();
-
-	void PatchSSRShader();
-
+	/**
+	 * @brief Determine which upscaling method should be used
+	 * @param a_checkMenu If true, disable upscaling when certain menus are open
+	 * @return The active upscaling method
+	 *
+	 * Falls back to FSR if DLSS is not available but preferred
+	 */
 	UpscaleMethod GetUpscaleMethod(bool a_checkMenu);
 
-	void CheckResources();
+	/**
+	 * @brief Process menu open/close events
+	 * @param a_event The menu event
+	 * @param a_source Event source (unused)
+	 * @return Event control flag
+	 *
+	 * Reloads settings when pause menu is closed
+	 */
+	RE::BSEventNotifyControl ProcessEvent(const RE::MenuOpenCloseEvent& a_event, RE::BSTEventSource<RE::MenuOpenCloseEvent>*);
 
-	winrt::com_ptr<ID3D11ComputeShader> rcas;
-	ID3D11ComputeShader* GetRCAS();
+	// ========================================
+	// Main Upscaling Operations
+	// ========================================
 
-	winrt::com_ptr<ID3D11ComputeShader> dilateMotionVectorCS;
-	ID3D11ComputeShader* GetDilateMotionVectorCS();
-
-	winrt::com_ptr<ID3D11ComputeShader> overrideDepthCS;
-	ID3D11ComputeShader* GetOverrideDepthCS();
-
-	winrt::com_ptr<ID3D11PixelShader> BSImagespaceShaderSSLRRaytracing;
-	ID3D11PixelShader* GetBSImagespaceShaderSSLRRaytracing();
-
-	ConstantBuffer* GetUpscalingCB();
-
+	/**
+	 * @brief Update camera jitter for temporal anti-aliasing
+	 *
+	 * Calculates per-frame jitter offsets, updates sampler states, render targets,
+	 * and manages resource creation/destruction based on active upscaling method
+	 */
 	void UpdateJitter();
+
+	/**
+	 * @brief Perform upscaling operation
+	 *
+	 * Executes the active upscaling method (FSR3 or DLSS) to upscale the
+	 * rendered image from render resolution to display resolution
+	 */
 	void Upscale();
 
-	std::unique_ptr<Texture2D> upscalingTexture;
-	std::unique_ptr<Texture2D> dilatedMotionVectorTexture;
+	/**
+	 * @brief Check and manage upscaling resources
+	 *
+	 * Creates or destroys upscaling resources when switching between
+	 * different upscaling methods
+	 */
+	void CheckResources();
 
-	struct UpscalingCB
-	{
-		uint ScreenSize[2];
-		uint RenderSize[2];
-		float4 CameraData;
-	};
+	float2 jitter = { 0, 0 };  ///< Current frame's camera jitter offset
 
+	// ========================================
+	// Render Target Management
+	// ========================================
+
+	/**
+	 * @brief Update all render targets for new resolution scaling
+	 * @param a_currentWidthRatio Width scale factor (e.g., 0.67 for balanced mode)
+	 * @param a_currentHeightRatio Height scale factor
+	 *
+	 * Recreates proxy render targets when resolution changes
+	 */
+	void UpdateRenderTargets(float a_currentWidthRatio, float a_currentHeightRatio);
+
+	/**
+	 * @brief Override game render targets with scaled proxy targets
+	 *
+	 * Temporarily replaces game render targets with lower resolution proxies
+	 * during main rendering pass
+	 */
+	void OverrideRenderTargets();
+
+	/**
+	 * @brief Restore original render targets
+	 *
+	 * Restores full resolution render targets after scaled rendering is complete
+	 */
+	void ResetRenderTargets();
+
+	/**
+	 * @brief Update a single render target
+	 * @param index Render target index
+	 * @param a_currentWidthRatio Width scale factor
+	 * @param a_currentHeightRatio Height scale factor
+	 */
+	void UpdateRenderTarget(int index, float a_currentWidthRatio, float a_currentHeightRatio);
+
+	/**
+	 * @brief Override a single render target
+	 * @param index Render target index
+	 */
+	void OverrideRenderTarget(int index);
+
+	/**
+	 * @brief Reset a single render target
+	 * @param index Render target index
+	 */
+	void ResetRenderTarget(int index);
+
+	RE::BSGraphics::RenderTarget originalRenderTargets[101];      ///< Original full-resolution render targets
+	RE::BSGraphics::RenderTarget proxyRenderTargets[101];         ///< Scaled proxy render targets
+	RE::BSGraphics::RenderTargetProperties originalRenderTargetData[100];  ///< Original RT properties
+
+	// ========================================
+	// Sampler State Management
+	// ========================================
+
+	/**
+	 * @brief Update sampler states with mipmap LOD bias
+	 * @param a_currentMipBias Mipmap bias to apply (negative = sharper textures)
+	 *
+	 * Creates modified sampler states with adjusted mip bias to compensate
+	 * for lower render resolution
+	 */
+	void UpdateSamplerStates(float a_currentMipBias);
+
+	/**
+	 * @brief Override game sampler states with biased versions
+	 *
+	 * Applies sampler states with negative LOD bias during rendering
+	 */
+	void OverrideSamplerStates();
+
+	/**
+	 * @brief Restore original sampler states
+	 */
+	void ResetSamplerStates();
+
+	std::array<winrt::com_ptr<ID3D11SamplerState>, 320> originalSamplerStates;  ///< Original game sampler states
+	std::array<winrt::com_ptr<ID3D11SamplerState>, 320> biasedSamplerStates;    ///< Modified sampler states with LOD bias
+
+	// ========================================
+	// Depth Management
+	// ========================================
+
+	/**
+	 * @brief Override depth buffer with upscaled version
+	 *
+	 * Replaces depth buffer SRV with full-resolution depth for correct
+	 * depth testing in post-processing effects
+	 */
+	void OverrideDepth();
+
+	/**
+	 * @brief Restore original depth buffer
+	 */
+	void ResetDepth();
+
+	/**
+	 * @brief Copy and upscale depth buffer
+	 *
+	 * Copies depth from render resolution to display resolution using
+	 * a compute shader for effects that need full-resolution depth
+	 */
+	void CopyDepth();
+
+	winrt::com_ptr<ID3D11ShaderResourceView> originalDepthView;  ///< Original depth buffer SRV
+	std::unique_ptr<Texture2D> depthOverrideTexture;             ///< Full-resolution depth override texture
+
+	// ========================================
+	// Shader Management
+	// ========================================
+
+	/**
+	 * @brief Patch screen-space reflections shader
+	 *
+	 * Injects custom SSR shader that properly handles scaled render targets
+	 */
+	void PatchSSRShader();
+
+	/**
+	 * @brief Get or compile RCAS (Robust Contrast Adaptive Sharpening) shader
+	 * @return Compiled compute shader
+	 *
+	 * RCAS is used for post-upscaling sharpening
+	 */
+	ID3D11ComputeShader* GetRCAS();
+
+	/**
+	 * @brief Get or compile motion vector dilation shader
+	 * @return Compiled compute shader
+	 *
+	 * Dilates motion vectors for better temporal stability in DLSS
+	 */
+	ID3D11ComputeShader* GetDilateMotionVectorCS();
+
+	/**
+	 * @brief Get or compile depth override shader
+	 * @return Compiled compute shader
+	 *
+	 * Copies depth buffer from render to display resolution
+	 */
+	ID3D11ComputeShader* GetOverrideDepthCS();
+
+	/**
+	 * @brief Get or compile custom SSR raytracing pixel shader
+	 * @return Compiled pixel shader
+	 */
+	ID3D11PixelShader* GetBSImagespaceShaderSSLRRaytracing();
+
+	/**
+	 * @brief Get constant buffer for upscaling parameters
+	 * @return Pointer to constant buffer
+	 *
+	 * Contains screen size, render size, and camera data
+	 */
+	ConstantBuffer* GetUpscalingCB();
+
+	// ========================================
+	// Resource Management
+	// ========================================
+
+	/**
+	 * @brief Create upscaling-specific resources
+	 *
+	 * Creates textures needed for DLSS (dilated motion vectors)
+	 */
 	void CreateUpscalingResources();
+
+	/**
+	 * @brief Destroy upscaling-specific resources
+	 */
 	void DestroyUpscalingResources();
 
-	struct BSGraphics_State_UpdateTemporalData
+	std::unique_ptr<Texture2D> upscalingTexture;           ///< Intermediate upscaling texture
+	std::unique_ptr<Texture2D> dilatedMotionVectorTexture; ///< Dilated motion vectors for DLSS
+
+	/**
+	 * @struct UpscalingCB
+	 * @brief Constant buffer structure for upscaling shaders
+	 */
+	struct UpscalingCB
 	{
-		static void thunk(RE::BSGraphics::State* a_state)
-		{
-			func(a_state);
-			GetSingleton()->UpdateJitter();
-		}
-		static inline REL::Relocation<decltype(thunk)> func;
+		uint ScreenSize[2];    ///< Display resolution (width, height)
+		uint RenderSize[2];    ///< Render resolution (width, height)
+		float4 CameraData;     ///< Camera parameters (far, near, far-near, far*near)
 	};
 
-	struct ImageSpaceEffectTemporalAA_IsActive
-	{
-		static bool thunk(struct ImageSpaceEffectTemporalAA* This)
-		{
-			auto upscaleMethod = GetSingleton()->GetUpscaleMethod(true);
-			return upscaleMethod == UpscaleMethod::kDisabled && func(This);
-		}
-		static inline REL::Relocation<decltype(thunk)> func;
-	};
+private:
+	// ========================================
+	// Shader Resources (Private)
+	// ========================================
 
-	struct ImageSpaceEffectUpsampleDynamicResolution_IsActive
-	{
-		static bool thunk(struct ImageSpaceEffectUpsampleDynamicResolution*)
-		{
-			auto upscaleMethod = GetSingleton()->GetUpscaleMethod(true);
-			return upscaleMethod == UpscaleMethod::kDisabled;
-		}
-		static inline REL::Relocation<decltype(thunk)> func;
-	};
-
-	struct DrawWorld_Imagespace_SetUseDynamicResolutionViewportAsDefaultViewport
-	{
-		static void thunk(RE::BSGraphics::RenderTargetManager* This, bool a_true)
-		{
-			func(This, a_true);
-
-			auto upscaling = Upscaling::GetSingleton();
-			upscaling->Upscale();
-		}
-		static inline REL::Relocation<decltype(thunk)> func;
-	};
-
-	struct DrawWorld_Render_PreUI_DeferredPrePass
-	{
-		static void thunk(struct DrawWorld* This)
-		{
-			auto upscaling = Upscaling::GetSingleton();
-			upscaling->OverrideSamplerStates();
-			func(This);
-			upscaling->ResetSamplerStates();
-		}
-		static inline REL::Relocation<decltype(thunk)> func;
-	};
-
-	struct DrawWorld_Render_PreUI_DeferredDecals
-	{
-		static void thunk(struct DrawWorld* This)
-		{
-			auto upscaling = Upscaling::GetSingleton();
-			upscaling->OverrideSamplerStates();
-			func(This);
-			upscaling->ResetSamplerStates();
-		}
-		static inline REL::Relocation<decltype(thunk)> func;
-	};
-
-	struct DrawWorld_Render_PreUI_Forward
-	{
-		static void thunk(struct DrawWorld* This)
-		{
-			auto upscaling = Upscaling::GetSingleton();
-
-			upscaling->OverrideSamplerStates();
-			func(This);
-			upscaling->ResetSamplerStates();
-
-			auto upscaleMethod = upscaling->GetUpscaleMethod(false);
-			auto fidelityFX = FidelityFX::GetSingleton();
-
-			if (upscaleMethod == UpscaleMethod::kFSR)
-				fidelityFX->GenerateReactiveMask();
-		}
-		static inline REL::Relocation<decltype(thunk)> func;
-	};
-
-	struct BSDFComposite_Envmap
-	{
-		static void thunk(void* This, uint a2, bool a3)
-		{
-			auto upscaling = Upscaling::GetSingleton();
-
-			static auto renderTargetManager = Util::RenderTargetManager_GetSingleton();
-			bool requiresOverride = renderTargetManager->dynamicHeightRatio != 1.0 || renderTargetManager->dynamicWidthRatio != 1.0;
-
-			if (requiresOverride) {
-				upscaling->OverrideRenderTargets();
-				upscaling->OverrideDepth();
-			}
-
-			func(This, a2, a3);
-
-			if (requiresOverride) {
-				upscaling->ResetDepth();
-				upscaling->ResetRenderTargets();
-			}
-		}
-		static inline REL::Relocation<decltype(thunk)> func;
-	};
-
-	struct BSImagespaceShaderLensFlare_RenderLensFlare
-	{
-		static void thunk(RE::NiCamera* a_camera)
-		{
-			auto upscaling = Upscaling::GetSingleton();
-
-			static auto renderTargetManager = Util::RenderTargetManager_GetSingleton();
-			bool requiresOverride = renderTargetManager->dynamicHeightRatio != 1.0 || renderTargetManager->dynamicWidthRatio != 1.0;
-
-			if (requiresOverride) {
-				upscaling->OverrideDepth();
-			}
-
-			func(a_camera);
-
-			if (requiresOverride) {
-				upscaling->ResetDepth();
-			}
-		}
-		static inline REL::Relocation<decltype(thunk)> func;
-	};
-
-	struct BSImagespaceShaderSSLRRaytracing_SetupTechnique_BeginTechnique
-	{
-		static void thunk(RE::BSShader* This, uint a2, uint a3, uint a4, uint a5)
-		{
-			func(This, a2, a3, a4, a5);
-			Upscaling::GetSingleton()->PatchSSRShader();
-		}
-		static inline REL::Relocation<decltype(thunk)> func;
-	};
-
-	struct DrawWorld_Forward_ForwardAlphaImpl
-	{
-		static void thunk(struct DrawWorld* This)
-		{
-			auto upscaling = Upscaling::GetSingleton();
-			auto upscaleMethod = upscaling->GetUpscaleMethod(false);
-			auto fidelityFX = FidelityFX::GetSingleton();
-
-			if (upscaleMethod == UpscaleMethod::kFSR)
-				fidelityFX->CopyOpaqueTexture();
-
-			func(This);
-		}
-		static inline REL::Relocation<decltype(thunk)> func;
-	};
-
-	static void InstallHooks()
-	{
-		// Control jitters, dynamic resolution, and sampler states
-		stl::write_thunk_call<BSGraphics_State_UpdateTemporalData>(REL::ID(502840).address() + 0x3C1);
-		
-		// Disable TAA shader if using alternative scaling method
-		stl::write_vfunc<0x8, ImageSpaceEffectTemporalAA_IsActive>(RE::VTABLE::ImageSpaceEffectTemporalAA[0]);
-		
-		// Disable dynamic resolution shader if using alternative scaling method
-		stl::write_vfunc<0x8, ImageSpaceEffectUpsampleDynamicResolution_IsActive>(RE::VTABLE::ImageSpaceEffectUpsampleDynamicResolution[0]);
-
-		// Replace original upscaling pass
-		stl::write_thunk_call<DrawWorld_Imagespace_SetUseDynamicResolutionViewportAsDefaultViewport>(REL::ID(587723).address() + 0xE1);
-		
-		// Disable BSGraphics::RenderTargetManager::UpdateDynamicResolution
-		REL::Relocation<std::uintptr_t> target{ REL::ID(984743), 0x14B };
-		REL::safe_fill(target.address(), 0x90, 5);
-
-		// Control sampler states for mipmap bias
-		stl::write_thunk_call<DrawWorld_Render_PreUI_DeferredPrePass>(REL::ID(984743).address() + 0x17F);
-		stl::write_thunk_call<DrawWorld_Render_PreUI_DeferredDecals>(REL::ID(984743).address() + 0x189);
-		stl::write_thunk_call<DrawWorld_Render_PreUI_Forward>(REL::ID(984743).address() + 0x1C9);
-
-		// Fix dynamic resolution for BSDFComposite
-		stl::write_thunk_call<BSDFComposite_Envmap>(REL::ID(728427).address() + 0x8DC);
-
-		// Fix dynamic resolution for Lens Flare visibility
-		stl::detour_thunk<BSImagespaceShaderLensFlare_RenderLensFlare>(REL::ID(676108));
-
-		// Fix dynamic resolution for Screenspace Reflections
-		stl::write_thunk_call<BSImagespaceShaderSSLRRaytracing_SetupTechnique_BeginTechnique>(REL::ID(779077).address() + 0x1C);
-
-		// Generate reactive mask for FSR
-		stl::write_thunk_call<DrawWorld_Forward_ForwardAlphaImpl>(REL::ID(656535).address() + 0x2E8);
-	}
+	winrt::com_ptr<ID3D11ComputeShader> rcas;                        ///< RCAS sharpening shader
+	winrt::com_ptr<ID3D11ComputeShader> dilateMotionVectorCS;        ///< Motion vector dilation shader
+	winrt::com_ptr<ID3D11ComputeShader> overrideDepthCS;             ///< Depth upscaling shader
+	winrt::com_ptr<ID3D11PixelShader> BSImagespaceShaderSSLRRaytracing;  ///< Custom SSR shader
 };

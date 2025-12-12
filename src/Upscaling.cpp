@@ -1,7 +1,210 @@
 #include "Upscaling.h"
 
-#include <unordered_set>
 #include <SimpleIni.h>
+
+/** @brief Hook for updating temporal data and jitter */
+struct BSGraphics_State_UpdateTemporalData
+{
+	static void thunk(RE::BSGraphics::State* a_state)
+	{
+		func(a_state);
+		Upscaling::GetSingleton()->UpdateJitter();
+	}
+	static inline REL::Relocation<decltype(thunk)> func;
+};
+
+/** @brief Hook to disable TAA when upscaling is active */
+struct ImageSpaceEffectTemporalAA_IsActive
+{
+	static bool thunk(struct ImageSpaceEffectTemporalAA* This)
+	{
+		auto upscaleMethod = Upscaling::GetSingleton()->GetUpscaleMethod(true);
+		return upscaleMethod == Upscaling::UpscaleMethod::kDisabled && func(This);
+	}
+	static inline REL::Relocation<decltype(thunk)> func;
+};
+
+/** @brief Hook to disable dynamic resolution upsampling when using FSR/DLSS */
+struct ImageSpaceEffectUpsampleDynamicResolution_IsActive
+{
+	static bool thunk(struct ImageSpaceEffectUpsampleDynamicResolution*)
+	{
+		auto upscaleMethod = Upscaling::GetSingleton()->GetUpscaleMethod(true);
+		return upscaleMethod == Upscaling::UpscaleMethod::kDisabled;
+	}
+	static inline REL::Relocation<decltype(thunk)> func;
+};
+
+/** @brief Hook to replace dynamic resolution viewport with upscaling pass */
+struct DrawWorld_Imagespace_SetUseDynamicResolutionViewportAsDefaultViewport
+{
+	static void thunk(RE::BSGraphics::RenderTargetManager* This, bool a_true)
+	{
+		func(This, a_true);
+
+		auto upscaling = Upscaling::GetSingleton();
+		upscaling->Upscale();
+	}
+	static inline REL::Relocation<decltype(thunk)> func;
+};
+
+/** @brief Hook for deferred pre-pass rendering with sampler state override */
+struct DrawWorld_Render_PreUI_DeferredPrePass
+{
+	static void thunk(struct DrawWorld* This)
+	{
+		auto upscaling = Upscaling::GetSingleton();
+		upscaling->OverrideSamplerStates();
+		func(This);
+		upscaling->ResetSamplerStates();
+	}
+	static inline REL::Relocation<decltype(thunk)> func;
+};
+
+/** @brief Hook for deferred decals rendering with sampler state override */
+struct DrawWorld_Render_PreUI_DeferredDecals
+{
+	static void thunk(struct DrawWorld* This)
+	{
+		auto upscaling = Upscaling::GetSingleton();
+		upscaling->OverrideSamplerStates();
+		func(This);
+		upscaling->ResetSamplerStates();
+	}
+	static inline REL::Relocation<decltype(thunk)> func;
+};
+
+/** @brief Hook for forward rendering pass with reactive mask generation */
+struct DrawWorld_Render_PreUI_Forward
+{
+	static void thunk(struct DrawWorld* This)
+	{
+		auto upscaling = Upscaling::GetSingleton();
+
+		upscaling->OverrideSamplerStates();
+		func(This);
+		upscaling->ResetSamplerStates();
+
+		auto upscaleMethod = upscaling->GetUpscaleMethod(false);
+		auto fidelityFX = FidelityFX::GetSingleton();
+
+		if (upscaleMethod == Upscaling::UpscaleMethod::kFSR)
+			fidelityFX->GenerateReactiveMask();
+	}
+	static inline REL::Relocation<decltype(thunk)> func;
+};
+
+/** @brief Hook for environment mapping with render target override */
+struct BSDFComposite_Envmap
+{
+	static void thunk(void* This, uint a2, bool a3)
+	{
+		auto upscaling = Upscaling::GetSingleton();
+
+		static auto renderTargetManager = Util::RenderTargetManager_GetSingleton();
+		bool requiresOverride = renderTargetManager->dynamicHeightRatio != 1.0 || renderTargetManager->dynamicWidthRatio != 1.0;
+
+		if (requiresOverride) {
+			upscaling->OverrideRenderTargets();
+			upscaling->OverrideDepth();
+		}
+
+		func(This, a2, a3);
+
+		if (requiresOverride) {
+			upscaling->ResetDepth();
+			upscaling->ResetRenderTargets();
+		}
+	}
+	static inline REL::Relocation<decltype(thunk)> func;
+};
+
+/** @brief Hook for lens flare rendering with depth override */
+struct BSImagespaceShaderLensFlare_RenderLensFlare
+{
+	static void thunk(RE::NiCamera* a_camera)
+	{
+		auto upscaling = Upscaling::GetSingleton();
+
+		static auto renderTargetManager = Util::RenderTargetManager_GetSingleton();
+		bool requiresOverride = renderTargetManager->dynamicHeightRatio != 1.0 || renderTargetManager->dynamicWidthRatio != 1.0;
+
+		if (requiresOverride) {
+			upscaling->OverrideDepth();
+		}
+
+		func(a_camera);
+
+		if (requiresOverride) {
+			upscaling->ResetDepth();
+		}
+	}
+	static inline REL::Relocation<decltype(thunk)> func;
+};
+
+/** @brief Hook for SSR shader with custom raytracing implementation */
+struct BSImagespaceShaderSSLRRaytracing_SetupTechnique_BeginTechnique
+{
+	static void thunk(RE::BSShader* This, uint a2, uint a3, uint a4, uint a5)
+	{
+		func(This, a2, a3, a4, a5);
+		Upscaling::GetSingleton()->PatchSSRShader();
+	}
+	static inline REL::Relocation<decltype(thunk)> func;
+};
+
+/** @brief Hook for forward alpha rendering with opaque texture copy for FSR */
+struct DrawWorld_Forward_ForwardAlphaImpl
+{
+	static void thunk(struct DrawWorld* This)
+	{
+		auto upscaling = Upscaling::GetSingleton();
+		auto upscaleMethod = upscaling->GetUpscaleMethod(false);
+		auto fidelityFX = FidelityFX::GetSingleton();
+
+		if (upscaleMethod == Upscaling::UpscaleMethod::kFSR)
+			fidelityFX->CopyOpaqueTexture();
+
+		func(This);
+	}
+	static inline REL::Relocation<decltype(thunk)> func;
+};
+
+void Upscaling::InstallHooks()
+{
+	// Control jitters, dynamic resolution, and sampler states
+	stl::write_thunk_call<BSGraphics_State_UpdateTemporalData>(REL::ID(502840).address() + 0x3C1);
+
+	// Disable TAA shader if using alternative scaling method
+	stl::write_vfunc<0x8, ImageSpaceEffectTemporalAA_IsActive>(RE::VTABLE::ImageSpaceEffectTemporalAA[0]);
+
+	// Disable dynamic resolution shader if using alternative scaling method
+	stl::write_vfunc<0x8, ImageSpaceEffectUpsampleDynamicResolution_IsActive>(RE::VTABLE::ImageSpaceEffectUpsampleDynamicResolution[0]);
+
+	// Replace original upscaling pass
+	stl::write_thunk_call<DrawWorld_Imagespace_SetUseDynamicResolutionViewportAsDefaultViewport>(REL::ID(587723).address() + 0xE1);
+
+	// Disable BSGraphics::RenderTargetManager::UpdateDynamicResolution
+	REL::Relocation<std::uintptr_t> target{ REL::ID(984743), 0x14B };
+	REL::safe_fill(target.address(), 0x90, 5);
+
+	// Control sampler states for mipmap bias
+	stl::write_thunk_call<DrawWorld_Render_PreUI_DeferredPrePass>(REL::ID(984743).address() + 0x17F);
+	stl::write_thunk_call<DrawWorld_Render_PreUI_DeferredDecals>(REL::ID(984743).address() + 0x189);
+	stl::write_thunk_call<DrawWorld_Render_PreUI_Forward>(REL::ID(984743).address() + 0x1C9);
+
+	// Fix dynamic resolution for BSDFComposite
+	stl::write_thunk_call<BSDFComposite_Envmap>(REL::ID(728427).address() + 0x8DC);
+
+	// Fix dynamic resolution for Lens Flare visibility
+	stl::detour_thunk<BSImagespaceShaderLensFlare_RenderLensFlare>(REL::ID(676108));
+
+	// Fix dynamic resolution for Screenspace Reflections
+	stl::write_thunk_call<BSImagespaceShaderSSLRRaytracing_SetupTechnique_BeginTechnique>(REL::ID(779077).address() + 0x1C);
+
+	// Generate reactive mask for FSR
+	stl::write_thunk_call<DrawWorld_Forward_ForwardAlphaImpl>(REL::ID(656535).address() + 0x2E8);
+}
 
 struct SamplerStates
 {
