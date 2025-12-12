@@ -3,7 +3,7 @@ Texture2D<float> DepthInput : register(t1);
 
 RWTexture2D<float2> MotionVectorOutput : register(u0);
 
-cbuffer UpscalingData : register(b0)
+cbuffer Upscaling : register(b0)
 {
 	uint2 ScreenSize;
 	uint2 RenderSize;

@@ -139,7 +139,7 @@ void FidelityFX::GenerateReactiveMask()
 	dispatchParameters.renderSize.width = static_cast<uint>(renderSize.x);
 	dispatchParameters.renderSize.height = static_cast<uint>(renderSize.y);
 
-	dispatchParameters.scale = 1.0f;
+	dispatchParameters.scale = 2.0f;
 	dispatchParameters.flags = 8;
 
 	if (ffxFsr3ContextGenerateReactiveMask(&fsrContext, &dispatchParameters) != FFX_OK)
