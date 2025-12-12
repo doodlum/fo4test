@@ -4,8 +4,11 @@
 #include <fstream>
 #include <wrl/client.h>
 
-#pragma comment(lib, "dxguid.lib")
 #pragma comment(lib, "d3dcompiler.lib")
+
+#ifndef NDEBUG
+#pragma comment(lib, "dxguid.lib")
+#endif
 
 #include "DX11Hooks.h"
 #include "Upscaling.h"
