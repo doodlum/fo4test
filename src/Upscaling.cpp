@@ -190,19 +190,8 @@ void Upscaling::UpdateRenderTargets(float a_currentWidthRatio, float a_currentHe
 	for (int i = 0; i < ARRAYSIZE(renderTargetsPatch); i++)
 		UpdateRenderTarget(renderTargetsPatch[i], a_currentWidthRatio, a_currentHeightRatio);
 
-	if (upscalingTexture) {
-		upscalingTexture->uav = nullptr;
-		upscalingTexture->srv = nullptr;
-		upscalingTexture->resource = nullptr;
-		upscalingTexture = nullptr;
-	}
-
-	if (depthOverrideTexture){
-		depthOverrideTexture->uav = nullptr;
-		depthOverrideTexture->srv = nullptr;
-		depthOverrideTexture->resource = nullptr;
-		depthOverrideTexture = nullptr;
-	}
+	upscalingTexture = nullptr;
+	depthOverrideTexture = nullptr;
 
 	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
 	auto frameBufferSRV = reinterpret_cast<ID3D11ShaderResourceView*>(rendererData->renderTargets[(uint)Util::RenderTarget::kFrameBuffer].srView);
@@ -229,7 +218,7 @@ void Upscaling::UpdateRenderTargets(float a_currentWidthRatio, float a_currentHe
 
 	texDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
 
-	upscalingTexture = new Texture2D(texDesc);
+	upscalingTexture = std::make_unique<Texture2D>(texDesc);
 	upscalingTexture->CreateSRV(srvDesc);
 	upscalingTexture->CreateUAV(uavDesc);
 
@@ -237,7 +226,7 @@ void Upscaling::UpdateRenderTargets(float a_currentWidthRatio, float a_currentHe
 	srvDesc.Format = texDesc.Format;
 	uavDesc.Format = texDesc.Format;
 
-	depthOverrideTexture = new Texture2D(texDesc);
+	depthOverrideTexture = std::make_unique<Texture2D>(texDesc);
 	depthOverrideTexture->CreateSRV(srvDesc);
 	depthOverrideTexture->CreateUAV(uavDesc);
 }
@@ -649,9 +638,9 @@ void Upscaling::Upscale()
 	}
 
 	if (upscaleMethod == UpscaleMethod::kDLSS)
-		Streamline::GetSingleton()->Upscale(upscalingTexture, dilatedMotionVectorTexture, jitter, renderSize, settings.qualityMode);
+		Streamline::GetSingleton()->Upscale(upscalingTexture.get(), dilatedMotionVectorTexture.get(), jitter, renderSize, settings.qualityMode);
 	else if (upscaleMethod == UpscaleMethod::kFSR)
-		FidelityFX::GetSingleton()->Upscale(upscalingTexture, jitter, renderSize, settings.sharpness);
+		FidelityFX::GetSingleton()->Upscale(upscalingTexture.get(), jitter, renderSize, settings.sharpness);
 
 	if (upscaleMethod != UpscaleMethod::kFSR) {
 		context->CopyResource(frameBufferResource, upscalingTexture->resource.get());
@@ -713,7 +702,7 @@ void Upscaling::CreateUpscalingResources()
 		texDesc.Format = DXGI_FORMAT_R16G16_FLOAT;
 		uavDesc.Format = texDesc.Format;
 
-		dilatedMotionVectorTexture = new Texture2D(texDesc);
+		dilatedMotionVectorTexture = std::make_unique<Texture2D>(texDesc);
 		dilatedMotionVectorTexture->CreateUAV(uavDesc);
 	}
 }
@@ -721,9 +710,7 @@ void Upscaling::CreateUpscalingResources()
 void Upscaling::DestroyUpscalingResources()
 {
 	if (Streamline::GetSingleton()->featureDLSS) {
-		dilatedMotionVectorTexture->uav = nullptr;
-		dilatedMotionVectorTexture->resource = nullptr;
-		delete dilatedMotionVectorTexture;
+		dilatedMotionVectorTexture = nullptr;
 	}
 }
 

@@ -180,6 +180,14 @@ public:
 		DX::ThrowIfFailed(device->CreateUnorderedAccessView(resource.get(), &a_desc, uav.put()));
 	}
 
+	// Explicitly release all resources
+	void Reset()
+	{
+		uav = nullptr;
+		srv = nullptr;
+		resource = nullptr;
+	}
+
 	D3D11_BUFFER_DESC desc;
 	winrt::com_ptr<ID3D11Buffer> resource;
 	winrt::com_ptr<ID3D11ShaderResourceView> srv;
@@ -211,6 +219,15 @@ public:
 	{
 		ID3D11Device* device = reinterpret_cast<ID3D11Device*>(RE::BSGraphics::RendererData::GetSingleton()->device);
 		DX::ThrowIfFailed(device->CreateRenderTargetView(resource.get(), &a_desc, rtv.put()));
+	}
+
+	// Explicitly release all resources
+	void Reset()
+	{
+		rtv = nullptr;
+		uav = nullptr;
+		srv = nullptr;
+		resource = nullptr;
 	}
 
 	D3D11_TEXTURE1D_DESC desc;
@@ -259,6 +276,16 @@ public:
 		DX::ThrowIfFailed(device->CreateDepthStencilView(resource.get(), &a_desc, dsv.put()));
 	}
 
+	// Explicitly release all resources
+	void Reset()
+	{
+		dsv = nullptr;
+		rtv = nullptr;
+		uav = nullptr;
+		srv = nullptr;
+		resource = nullptr;
+	}
+
 	D3D11_TEXTURE2D_DESC desc;
 	winrt::com_ptr<ID3D11Texture2D> resource;
 	winrt::com_ptr<ID3D11ShaderResourceView> srv;
@@ -292,6 +319,16 @@ public:
 		ID3D11Device* device = reinterpret_cast<ID3D11Device*>(RE::BSGraphics::RendererData::GetSingleton()->device);
 		DX::ThrowIfFailed(device->CreateRenderTargetView(resource.get(), &a_desc, rtv.put()));
 	}
+
+	// Explicitly release all resources
+	void Reset()
+	{
+		rtv = nullptr;
+		uav = nullptr;
+		srv = nullptr;
+		resource = nullptr;
+	}
+
 	D3D11_TEXTURE3D_DESC desc;
 	winrt::com_ptr<ID3D11Texture3D> resource;
 	winrt::com_ptr<ID3D11ShaderResourceView> srv;
