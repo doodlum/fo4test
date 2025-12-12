@@ -66,6 +66,7 @@ extern "C" DLLEXPORT bool F4SEAPI F4SEPlugin_Query(const F4SE::QueryInterface*, 
 }
 #endif
 
+#ifndef NDEBUG
 void AddDebugInformation()
 {
 	auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
@@ -108,6 +109,7 @@ void AddDebugInformation()
 		}
 	}
 }
+#endif
 
 void OnInit(F4SE::MessagingInterface::Message* a_msg)
 {
