@@ -79,5 +79,17 @@ namespace Util
 		kCount = 13
 	};
 
+	[[nodiscard]] static RE::BSGraphics::State* State_GetSingleton()
+	{
+		REL::Relocation<RE::BSGraphics::State*> singleton{ REL::ID(600795) };
+		return singleton.get();
+	}
+
+	[[nodiscard]] static RE::BSGraphics::RenderTargetManager* RenderTargetManager_GetSingleton()
+	{
+		REL::Relocation<RE::BSGraphics::RenderTargetManager*> singleton{ REL::ID(1508457) };
+		return singleton.get();
+	}
+
 	ID3D11DeviceChild* CompileShader(const wchar_t* FilePath, const std::vector<std::pair<const char*, const char*>>& Defines, const char* ProgramType, const char* Program = "main");
 }
