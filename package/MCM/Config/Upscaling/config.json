@@ -59,32 +59,13 @@
 			"id": "fSharpness:Settings",
 			"text": "Sharpness",
 			"type": "slider",
-			"help": "Boosts image clarity using AMD Robust Contrast Adaptive Sharpening. (Default: 0.5)",
+			"help": "Boosts image clarity using AMD Robust Contrast Adaptive Sharpening. (Default: 0.0)",
 			"valueOptions": {
 				"min": 0.0,
 				"max": 1.0,
 				"step": 0.1,
 				"sourceType": "ModSettingFloat"
 			}
-		},
-		{
-			"text": "",
-			"type": "section"
-		},
-		{
-			"text": "Reset Settings",
-			"type": "button",
-			"help": "Resets all Upscaling settings to their default values.",
-			"action": {
-				"type": "CallGlobalFunction",
-				"script": "Upscaling:MCM",
-				"function": "ResetSettings",
-				"params": []
-			}
-		},
-		{
-			"text": "",
-			"type": "section"
 		}
 	]
 }
