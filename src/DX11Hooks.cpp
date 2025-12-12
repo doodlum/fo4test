@@ -11,8 +11,8 @@ HRESULT WINAPI hk_D3D11CreateDeviceAndSwapChainNoStreamline(
 	D3D_DRIVER_TYPE DriverType,
 	HMODULE Software,
 	UINT Flags,
-	[[maybe_unused]] const D3D_FEATURE_LEVEL* pFeatureLevels,
-	[[maybe_unused]] UINT FeatureLevels,
+	const D3D_FEATURE_LEVEL* pFeatureLevels,
+	UINT FeatureLevels,
 	UINT SDKVersion,
 	const DXGI_SWAP_CHAIN_DESC* pSwapChainDesc,
 	IDXGISwapChain** ppSwapChain,
@@ -20,13 +20,16 @@ HRESULT WINAPI hk_D3D11CreateDeviceAndSwapChainNoStreamline(
 	D3D_FEATURE_LEVEL* pFeatureLevel,
 	ID3D11DeviceContext** ppImmediateContext)
 {
-	const D3D_FEATURE_LEVEL featureLevel = D3D_FEATURE_LEVEL_11_1;  // Create a device with only the latest feature level
+	const D3D_FEATURE_LEVEL featureLevel = D3D_FEATURE_LEVEL_11_1;
+	pFeatureLevels = &featureLevel;
+	FeatureLevels = 1;
+
 	return ptrD3D11CreateDeviceAndSwapChain(pAdapter,
 		DriverType,
 		Software,
 		Flags,
-		&featureLevel,
-		1,
+		pFeatureLevels,
+		FeatureLevels,
 		SDKVersion,
 		pSwapChainDesc,
 		ppSwapChain,
@@ -40,8 +43,8 @@ HRESULT WINAPI hk_D3D11CreateDeviceAndSwapChain(
 	D3D_DRIVER_TYPE DriverType,
 	HMODULE Software,
 	UINT Flags,
-	[[maybe_unused]] const D3D_FEATURE_LEVEL* pFeatureLevels,
-	[[maybe_unused]] UINT FeatureLevels,
+	const D3D_FEATURE_LEVEL* pFeatureLevels,
+	UINT FeatureLevels,
 	UINT SDKVersion,
 	const DXGI_SWAP_CHAIN_DESC* pSwapChainDesc,
 	IDXGISwapChain** ppSwapChain,
@@ -49,15 +52,17 @@ HRESULT WINAPI hk_D3D11CreateDeviceAndSwapChain(
 	D3D_FEATURE_LEVEL* pFeatureLevel,
 	ID3D11DeviceContext** ppImmediateContext)
 {
-	const D3D_FEATURE_LEVEL featureLevel = D3D_FEATURE_LEVEL_11_1;  // Create a device with only the latest feature level
+	const D3D_FEATURE_LEVEL featureLevel = D3D_FEATURE_LEVEL_11_1;
+	pFeatureLevels = &featureLevel;
+	FeatureLevels = 1;
 
 	auto result = Streamline::GetSingleton()->CreateDeviceAndSwapChain(
 		pAdapter,
 		DriverType,
 		Software,
 		Flags,
-		&featureLevel,
-		1,
+		pFeatureLevels,
+		FeatureLevels,
 		SDKVersion,
 		pSwapChainDesc,
 		ppSwapChain,
@@ -71,8 +76,8 @@ HRESULT WINAPI hk_D3D11CreateDeviceAndSwapChain(
 		DriverType,
 		Software,
 		Flags,
-		&featureLevel,
-		1,
+		pFeatureLevels,
+		FeatureLevels,
 		SDKVersion,
 		pSwapChainDesc,
 		ppSwapChain,
