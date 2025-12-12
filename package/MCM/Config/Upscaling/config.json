@@ -5,25 +5,25 @@
 	"pluginRequirements": [],
 	"content": [
 		{
-		"text": "<font size='30'><p align='center'>Upscaling</p></font>",
-		"html": true,
-		"type": "text"
+			"text": "<font size='30'><p align='center'>Upscaling</p></font>",
+			"html": true,
+			"type": "text"
 		},
 		{
-		"text": "About",
-		"type": "section"
+			"text": "About",
+			"type": "section"
 		},
 		{
-		"text": "Upscaling reconstructs lower resolutions to the native resolution using advanced algorithms, improving image quality and performance.",
-		"type": "text"
+			"text": "Upscaling reconstructs lower resolutions to the native resolution using advanced algorithms, improving image quality and performance.",
+			"type": "text"
 		},
 		{
-		"text": "When ENBSeries is active, the Quality Mode is locked to Native AA for compatibility.",
-		"type": "text"
+			"text": "When ENBSeries is active, the Quality Mode is locked to Native AA for compatibility.",
+			"type": "text"
 		},
 		{
-		"text": "Options",
-		"type": "section"
+			"text": "Options",
+			"type": "section"
 		},
 		{
 			"id": "iUpscaleMethodPreference:Settings",
@@ -33,7 +33,7 @@
 			"valueOptions": {
 				"sourceType": "ModSettingInt",
 				"options": [
-					"TAA",
+					"Disabled",
 					"AMD FSR 3.1",
 					"NVIDIA DLSS"
 				]
@@ -59,13 +59,32 @@
 			"id": "fSharpness:Settings",
 			"text": "Sharpness",
 			"type": "slider",
-			"help": "Adjusts image clarity using AMD Robust Contrast Adaptive Sharpening. (Default: 0.5)",
+			"help": "Boosts image clarity using AMD Robust Contrast Adaptive Sharpening. (Default: 0.5)",
 			"valueOptions": {
 				"min": 0.0,
 				"max": 1.0,
 				"step": 0.1,
 				"sourceType": "ModSettingFloat"
 			}
+		},
+		{
+			"text": "",
+			"type": "section"
+		},
+		{
+			"text": "Reset Settings",
+			"type": "button",
+			"help": "Resets all Upscaling settings to their default values.",
+			"action": {
+				"type": "CallGlobalFunction",
+				"script": "Upscaling:MCM",
+				"function": "ResetSettings",
+				"params": []
+			}
+		},
+		{
+			"text": "",
+			"type": "section"
 		}
 	]
 }
