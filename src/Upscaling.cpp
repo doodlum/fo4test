@@ -589,37 +589,7 @@ void Upscaling::CopyDepth()
 	auto linearDepthUAV = reinterpret_cast<ID3D11UnorderedAccessView*>(rendererData->renderTargets[(uint)Util::RenderTarget::kMainDepthMips].uaView);
 
 	{
-#if defined(FALLOUT_POST_NG)
-		float cameraNear = *(float*)REL::ID(2712882).address();
-		float cameraFar = *(float*)REL::ID(2712883).address();
-#else
-		float cameraNear = *(float*)REL::ID(57985).address();
-		float cameraFar = *(float*)REL::ID(958877).address();
-#endif
-
-		// Pack camera parameters for depth reconstruction in shader
-		float4 cameraData{};
-		cameraData.x = cameraFar;
-		cameraData.y = cameraNear;
-		cameraData.z = cameraFar - cameraNear;
-		cameraData.w = cameraFar * cameraNear;
-
-		// Fill constant buffer with screen/render sizes and camera data
-		UpscalingCB upscalingData;
-		upscalingData.ScreenSize[0] = static_cast<uint>(screenSize.x);
-		upscalingData.ScreenSize[1] = static_cast<uint>(screenSize.y);
-
-		upscalingData.RenderSize[0] = static_cast<uint>(renderSize.x);
-		upscalingData.RenderSize[1] = static_cast<uint>(renderSize.y);
-
-		upscalingData.CameraData = cameraData;
-
-		// Update and bind constant buffer
-		auto upscalingCB = GetUpscalingCB();
-		upscalingCB->Update(upscalingData);
-
-		auto upscalingBuffer = upscalingCB->CB();
-		context->CSSetConstantBuffers(0, 1, &upscalingBuffer);
+		UpdateAndBindUpscalingCB(context, screenSize, renderSize);
 
 		{
 			// Bind scaled depth as input (SRV)
@@ -756,6 +726,36 @@ ConstantBuffer* Upscaling::GetUpscalingCB()
 	return upscalingCB.get();
 }
 
+void Upscaling::UpdateAndBindUpscalingCB(ID3D11DeviceContext* a_context, float2 a_screenSize, float2 a_renderSize)
+{
+#if defined(FALLOUT_POST_NG)
+	static auto cameraNear = (float*)REL::ID(2712882).address();
+	static auto cameraFar = (float*)REL::ID(2712883).address();
+#else
+	static auto cameraNear = (float*)REL::ID(57985).address();
+	static auto cameraFar = (float*)REL::ID(958877).address();
+#endif
+
+	float4 cameraData{};
+	cameraData.x = *cameraFar;
+	cameraData.y = *cameraNear;
+	cameraData.z = cameraData.x - cameraData.y;
+	cameraData.w = cameraData.x * cameraData.y;
+
+	UpscalingCB upscalingData;
+	upscalingData.ScreenSize[0] = static_cast<uint>(a_screenSize.x);
+	upscalingData.ScreenSize[1] = static_cast<uint>(a_screenSize.y);
+	upscalingData.RenderSize[0] = static_cast<uint>(a_renderSize.x);
+	upscalingData.RenderSize[1] = static_cast<uint>(a_renderSize.y);
+	upscalingData.CameraData = cameraData;
+
+	auto upscalingCB = GetUpscalingCB();
+	upscalingCB->Update(upscalingData);
+
+	auto upscalingBuffer = upscalingCB->CB();
+	a_context->CSSetConstantBuffers(0, 1, &upscalingBuffer);
+}
+
 void Upscaling::UpdateJitter()
 {
 	static auto gameViewport = Util::State_GetSingleton();
@@ -831,31 +831,7 @@ void Upscaling::Upscale()
 	// DLSS: Dilate motion vectors for better temporal stability
 	if (upscaleMethod == UpscaleMethod::kDLSS){
 		{
-#if defined(FALLOUT_POST_NG)
-			float cameraNear = *(float*)REL::ID(2712882).address();
-			float cameraFar = *(float*)REL::ID(2712883).address();
-#else
-			float cameraNear = *(float*)REL::ID(57985).address();
-			float cameraFar = *(float*)REL::ID(958877).address();
-#endif
-
-			float4 cameraData{};
-			cameraData.x = cameraFar;
-			cameraData.y = cameraNear;
-			cameraData.z = cameraFar - cameraNear;
-			cameraData.w = cameraFar * cameraNear;
-
-			UpscalingCB upscalingData;
-			upscalingData.ScreenSize[0] = static_cast<uint>(screenSize.x);
-			upscalingData.ScreenSize[1] = static_cast<uint>(screenSize.y);
-			upscalingData.RenderSize[0] = static_cast<uint>(renderSize.x);
-			upscalingData.RenderSize[1] = static_cast<uint>(renderSize.y);
-			upscalingData.CameraData = cameraData;
-
-			auto upscalingCB = GetUpscalingCB();
-			upscalingCB->Update(upscalingData);
-			auto upscalingBuffer = upscalingCB->CB();
-			context->CSSetConstantBuffers(0, 1, &upscalingBuffer);
+			UpdateAndBindUpscalingCB(context, screenSize, renderSize);
 
 			auto motionVectorSRV = reinterpret_cast<ID3D11ShaderResourceView*>(rendererData->renderTargets[(uint)Util::RenderTarget::kMotionVectors].srView);
 			auto depthTextureSRV = reinterpret_cast<ID3D11ShaderResourceView*>(rendererData->depthStencilTargets[(uint)Util::DepthStencilTarget::kMain].srViewDepth);

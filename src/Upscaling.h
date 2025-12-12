@@ -294,6 +294,17 @@ public:
 	 */
 	ConstantBuffer* GetUpscalingCB();
 
+	/**
+	 * @brief Update and bind upscaling constant buffer
+	 * @param a_context D3D11 device context
+	 * @param a_screenSize Display resolution
+	 * @param a_renderSize Render resolution
+	 *
+	 * Helper function to fill and bind the upscaling CB to slot 0
+	 * Automatically reads camera parameters from the game engine
+	 */
+	void UpdateAndBindUpscalingCB(ID3D11DeviceContext* a_context, float2 a_screenSize, float2 a_renderSize);
+
 	// ========================================
 	// Resource Management
 	// ========================================
