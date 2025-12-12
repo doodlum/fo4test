@@ -247,12 +247,15 @@ RE::BSEventNotifyControl Upscaling::ProcessEvent(const RE::MenuOpenCloseEvent& a
 
 void Upscaling::UpdateRenderTarget(int index, float a_currentWidthRatio, float a_currentHeightRatio)
 {
+	// Get the game's renderer and save the original render target
 	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
 	originalRenderTargets[index] = rendererData->renderTargets[index];
 
 	auto& originalRenderTarget = originalRenderTargets[index];
 	auto& proxyRenderTarget = proxyRenderTargets[index];
 
+	// Clean up existing proxy render target resources
+	// We manually Release() these because they're game engine structures, not our smart pointers
 	if (proxyRenderTarget.uaView)
 		proxyRenderTarget.uaView->Release();
 	proxyRenderTarget.uaView = nullptr;
@@ -269,10 +272,12 @@ void Upscaling::UpdateRenderTarget(int index, float a_currentWidthRatio, float a
 		proxyRenderTarget.texture->Release();
 	proxyRenderTarget.texture = nullptr;
 
+	// Get the original render target properties to create a scaled version
 	D3D11_TEXTURE2D_DESC textureDesc{};
 	if (originalRenderTarget.texture)
 		originalRenderTarget.texture->GetDesc(&textureDesc);
 
+	// Get all view descriptions from the original render target
 	D3D11_RENDER_TARGET_VIEW_DESC rtViewDesc{};
 	if (originalRenderTarget.rtView)
 		originalRenderTarget.rtView->GetDesc(&rtViewDesc);
@@ -285,14 +290,18 @@ void Upscaling::UpdateRenderTarget(int index, float a_currentWidthRatio, float a
 	if (originalRenderTarget.uaView)
 		originalRenderTarget.uaView->GetDesc(&uaViewDesc);
 
+	// Scale the texture dimensions based on the current render resolution
+	// For example, 1920x1080 at 0.67 ratio becomes 1280x720
 	textureDesc.Width = static_cast<uint>(static_cast<float>(textureDesc.Width) * a_currentWidthRatio);
 	textureDesc.Height = static_cast<uint>(static_cast<float>(textureDesc.Height) * a_currentHeightRatio);
-	
+
 	auto device = reinterpret_cast<ID3D11Device*>(rendererData->device);
-	
+
+	// Create the scaled texture
 	if (originalRenderTarget.texture)
 		DX::ThrowIfFailed(device->CreateTexture2D(&textureDesc, nullptr, &proxyRenderTarget.texture));
-	
+
+	// Create all views (RTV, SRV, UAV) for the proxy texture if the original had them
 	if (auto texture = proxyRenderTarget.texture) {
 		if (originalRenderTarget.rtView)
 			DX::ThrowIfFailed(device->CreateRenderTargetView(texture, &rtViewDesc, &proxyRenderTarget.rtView));
@@ -305,6 +314,7 @@ void Upscaling::UpdateRenderTarget(int index, float a_currentWidthRatio, float a
 	}
 
 #ifndef NDEBUG
+	// Set debug names for easier identification in graphics debuggers (PIX, RenderDoc, etc.)
 	if (auto texture = proxyRenderTarget.texture) {
 		auto name = std::format("RT PROXY {}", index);
 		texture->SetPrivateData(WKPDID_D3DDebugObjectName, static_cast<UINT>(name.size()), name.data());
@@ -496,37 +506,43 @@ void Upscaling::UpdateSamplerStates(float a_currentMipBias)
 	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
 	auto device = reinterpret_cast<ID3D11Device*>(rendererData->device);
 
-	// Store original sampler states
+	// Store original sampler states from the game
+	// These will be used to restore the original states later
 	for (int a = 0; a < 320; a++) {
 		originalSamplerStates[a].copy_from(samplerStates->a[a]);
 	}
 
 	static float previousMipBias = 1.0f;
 
-	// Check for mipbias update
+	// Check if mip bias has changed - only recreate sampler states if needed
+	// This optimization avoids recreating 320 sampler states every frame
 	if (previousMipBias == a_currentMipBias)
 		return;
 
 	previousMipBias = a_currentMipBias;
 
+	// Create new sampler states with negative LOD bias
+	// Negative bias = sharper textures, compensates for lower render resolution
 	for (int a = 0; a < 320; a++) {
-		// Delete any existing biased sampler state
+		// Release existing biased sampler state
 		biasedSamplerStates[a] = nullptr;
 
-		// Replace sampler state with biased version
+		// Create modified version with LOD bias applied
 		if (auto samplerState = originalSamplerStates[a].get()) {
 			D3D11_SAMPLER_DESC samplerDesc;
 			samplerState->GetDesc(&samplerDesc);
 
-			// Apply mip bias
+			// Only modify 16x anisotropic samplers (the high-quality ones)
+			// Reduce to 8x aniso and apply negative MipLODBias to sharpen textures
 			if (samplerDesc.Filter == D3D11_FILTER_ANISOTROPIC && samplerDesc.MaxAnisotropy == 16) {
 				samplerDesc.MaxAnisotropy = 8;
-				samplerDesc.MipLODBias = a_currentMipBias;
+				samplerDesc.MipLODBias = a_currentMipBias;  // Usually negative (e.g., -0.5)
 			}
 
 			DX::ThrowIfFailed(device->CreateSamplerState(&samplerDesc, biasedSamplerStates[a].put()));
 		}
 
+		// Update the game's sampler state pointer to our biased version
 		samplerStates->a[a] = biasedSamplerStates[a].get();
 	}
 }
@@ -773,26 +789,36 @@ void Upscaling::Upscale()
 	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
 	static auto context = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
 
+	// Unbind all render targets before we start manipulating textures
+	// This ensures we don't have any resource hazards during the copy
 	context->OMSetRenderTargets(0, nullptr, nullptr);
 
+	// Get the frame buffer (the rendered image at render resolution)
 	auto frameBufferSRV = reinterpret_cast<ID3D11ShaderResourceView*>(rendererData->renderTargets[(uint)Util::RenderTarget::kFrameBuffer].srView);
 
 	ID3D11Resource* frameBufferResource;
 	frameBufferSRV->GetResource(&frameBufferResource);
 
+	// Copy the frame buffer to our intermediate upscaling texture
+	// This is the input for DLSS/FSR upscaling
 	context->CopyResource(upscalingTexture->resource.get(), frameBufferResource);
 
-	// Release the resource acquired by GetResource
+	// Release the resource acquired by GetResource (prevents memory leak)
 	frameBufferResource->Release();
 
 	static auto gameViewport = Util::State_GetSingleton();
 	static auto renderTargetManager = Util::RenderTargetManager_GetSingleton();
-	
+
+	// Calculate the screen dimensions (display resolution) and render dimensions (scaled resolution)
 	auto screenSize = float2(float(gameViewport->screenWidth), float(gameViewport->screenHeight));
 	auto renderSize = float2(screenSize.x * renderTargetManager->dynamicWidthRatio, screenSize.y * renderTargetManager->dynamicHeightRatio);
 
+	// DLSS upscaling path
 	if (upscaleMethod == UpscaleMethod::kDLSS){
+		// Step 1: Dilate motion vectors for better temporal stability
+		// DLSS needs high-quality motion vectors, so we dilate them using a compute shader
 		{
+			// Get camera near/far plane values from the game engine
 #if defined(FALLOUT_POST_NG)
 			float cameraNear = *(float*)REL::ID(2712882).address();
 			float cameraFar = *(float*)REL::ID(2712883).address();
@@ -801,43 +827,48 @@ void Upscaling::Upscale()
 			float cameraFar = *(float*)REL::ID(958877).address();
 #endif
 
+			// Pack camera data for the compute shader
 			float4 cameraData{};
 			cameraData.x = cameraFar;
 			cameraData.y = cameraNear;
-			cameraData.z = cameraFar - cameraNear;
-			cameraData.w = cameraFar * cameraNear;
+			cameraData.z = cameraFar - cameraNear;    // Range
+			cameraData.w = cameraFar * cameraNear;     // Product (used for depth linearization)
 
+			// Prepare constant buffer with screen/render dimensions and camera data
 			UpscalingCB upscalingData;
 			upscalingData.ScreenSize[0] = static_cast<uint>(screenSize.x);
 			upscalingData.ScreenSize[1] = static_cast<uint>(screenSize.y);
-
 			upscalingData.RenderSize[0] = static_cast<uint>(renderSize.x);
 			upscalingData.RenderSize[1] = static_cast<uint>(renderSize.y);
-
 			upscalingData.CameraData = cameraData;
 
+			// Update and bind the constant buffer
 			auto upscalingCB = GetUpscalingCB();
 			upscalingCB->Update(upscalingData);
-
 			auto upscalingBuffer = upscalingCB->CB();
 			context->CSSetConstantBuffers(0, 1, &upscalingBuffer);
 
+			// Bind input resources: motion vectors and depth
 			auto motionVectorSRV = reinterpret_cast<ID3D11ShaderResourceView*>(rendererData->renderTargets[(uint)Util::RenderTarget::kMotionVectors].srView);
 			auto depthTextureSRV = reinterpret_cast<ID3D11ShaderResourceView*>(rendererData->depthStencilTargets[(uint)Util::DepthStencilTarget::kMain].srViewDepth);
 
 			ID3D11ShaderResourceView* views[2] = { motionVectorSRV, depthTextureSRV };
 			context->CSSetShaderResources(0, ARRAYSIZE(views), views);
 
+			// Bind output: dilated motion vector texture
 			ID3D11UnorderedAccessView* uavs[1] = { dilatedMotionVectorTexture->uav.get() };
 			context->CSSetUnorderedAccessViews(0, ARRAYSIZE(uavs), uavs, nullptr);
 
+			// Run the motion vector dilation compute shader
 			context->CSSetShader(GetDilateMotionVectorCS(), nullptr, 0);
-			
+
+			// Dispatch compute shader (8x8 thread groups)
 			uint dispatchX = (uint)std::ceil(renderSize.x / 8.0f);
 			uint dispatchY = (uint)std::ceil(renderSize.y / 8.0f);
 			context->Dispatch(dispatchX, dispatchY, 1);
 		}
 
+		// Clean up compute shader bindings to avoid resource hazards
 		ID3D11Buffer* nullBuffer = nullptr;
 		context->CSSetConstantBuffers(0, 1, &nullBuffer);
 
@@ -851,15 +882,22 @@ void Upscaling::Upscale()
 		context->CSSetShader(shader, nullptr, 0);
 	}
 
+	// Step 2: Execute the upscaling algorithm
 	if (upscaleMethod == UpscaleMethod::kDLSS)
+		// DLSS upscaling using NVIDIA Streamline
 		Streamline::GetSingleton()->Upscale(upscalingTexture.get(), dilatedMotionVectorTexture.get(), jitter, renderSize, settings.qualityMode);
 	else if (upscaleMethod == UpscaleMethod::kFSR)
+		// FSR3 upscaling using AMD FidelityFX
 		FidelityFX::GetSingleton()->Upscale(upscalingTexture.get(), jitter, renderSize, settings.sharpness);
 
+	// Step 3: Apply sharpening (RCAS) for DLSS and disabled modes
+	// FSR has built-in sharpening, so we skip this step for FSR
 	if (upscaleMethod != UpscaleMethod::kFSR) {
+		// Copy upscaled result back to frame buffer
 		context->CopyResource(frameBufferResource, upscalingTexture->resource.get());
 
 		{
+			// Apply RCAS (Robust Contrast Adaptive Sharpening)
 			{
 				ID3D11ShaderResourceView* views[1] = { frameBufferSRV };
 				context->CSSetShaderResources(0, ARRAYSIZE(views), views);
@@ -869,11 +907,13 @@ void Upscaling::Upscale()
 
 				context->CSSetShader(GetRCAS(), nullptr, 0);
 
+				// Dispatch RCAS compute shader (8x8 thread groups)
 				uint dispatchX = (uint)std::ceil(screenSize.x / 8.0f);
 				uint dispatchY = (uint)std::ceil(screenSize.y / 8.0f);
 				context->Dispatch(dispatchX, dispatchY, 1);
 			}
 
+			// Clean up compute shader bindings
 			ID3D11ShaderResourceView* views[1] = { nullptr };
 			context->CSSetShaderResources(0, ARRAYSIZE(views), views);
 
@@ -885,6 +925,7 @@ void Upscaling::Upscale()
 		}
 	}
 
+	// Copy final upscaled result back to the frame buffer for display
 	context->CopyResource(frameBufferResource, upscalingTexture->resource.get());
 }
 
