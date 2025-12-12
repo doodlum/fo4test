@@ -27,7 +27,7 @@ float GetScreenDepth(float depth)
 	float2 longestMotionVector = motionVector;
 	float maxMotionLengthSq = dot(motionVector, motionVector);
 
-	if (GetScreenDepth(depth) < (4096 * 2.5)){
+	if (GetScreenDepth(depth) > (4096 * 2.5)){
 		[unroll]
 		for (int y = -2; y <= 2; y++) {
 			[unroll]
@@ -38,7 +38,7 @@ float GetScreenDepth(float depth)
 				if (any(samplePos < 0) || any(samplePos >= int2(RenderSize)))
 					continue;
 
-				float neighborDepth = GetScreenDepth(DepthInput[samplePos]);
+				float neighborDepth = DepthInput[samplePos];
 
 				// Take neighbor if it's longer AND closer
 				if (neighborDepth < depth){
