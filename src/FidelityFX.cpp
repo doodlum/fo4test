@@ -24,10 +24,9 @@ FfxResource ffxGetResource(ID3D11Resource* dx11Resource,
 void FidelityFX::CreateFSRResources()
 {
 	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
-	static auto gameViewport = RE::BSGraphics::State::GetSingleton();
+	static auto gameViewport = Util::State_GetSingleton();
 	
-	static auto device = reinterpret_cast<ID3D11Device*>(rendererData->device);
-	static auto context = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
+	auto device = reinterpret_cast<ID3D11Device*>(rendererData->device);
 
 	auto fsrDevice = ffxGetDeviceDX11(device);
 
@@ -48,13 +47,13 @@ void FidelityFX::CreateFSRResources()
 	}
 
 	FfxFsr3ContextDescription contextDescription;
-	contextDescription.maxRenderSize.width = gameViewport.screenWidth;
-	contextDescription.maxRenderSize.height = gameViewport.screenHeight;
-	contextDescription.maxUpscaleSize.width = gameViewport.screenWidth;
-	contextDescription.maxUpscaleSize.height = gameViewport.screenHeight;
-	contextDescription.displaySize.width = gameViewport.screenWidth;
-	contextDescription.displaySize.height = gameViewport.screenHeight;
-	contextDescription.flags = FFX_FSR3_ENABLE_UPSCALING_ONLY | FFX_FSR3_ENABLE_AUTO_EXPOSURE;
+	contextDescription.maxRenderSize.width = gameViewport->screenWidth;
+	contextDescription.maxRenderSize.height = gameViewport->screenHeight;
+	contextDescription.maxUpscaleSize.width = gameViewport->screenWidth;
+	contextDescription.maxUpscaleSize.height = gameViewport->screenHeight;
+	contextDescription.displaySize.width = gameViewport->screenWidth;
+	contextDescription.displaySize.height = gameViewport->screenHeight;
+	contextDescription.flags = FFX_FSR3_ENABLE_UPSCALING_ONLY;
 	contextDescription.backendInterfaceUpscaling = fsrInterface;
 
 	auto renderer = RE::BSGraphics::RendererData::GetSingleton();
@@ -68,7 +67,6 @@ void FidelityFX::CreateFSRResources()
 
 	texDesc.Format = DXGI_FORMAT_R8_UNORM;
 	reactiveMaskTexture = std::make_unique<Texture2D>(texDesc);
-
 
 	if (ffxFsr3ContextCreate(&fsrContext, &contextDescription) != FFX_OK) {
 		logger::critical("[FidelityFX] Failed to initialize FSR3 context!");
@@ -134,7 +132,7 @@ void FidelityFX::GenerateReactiveMask()
 	dispatchParameters.scale = 1.0f;
 	dispatchParameters.cutoffThreshold = 0.2f;
 	dispatchParameters.binaryValue = 0.9f;
-	dispatchParameters.flags = FFX_FSR3UPSCALER_AUTOREACTIVEFLAGS_APPLY_THRESHOLD | FFX_FSR3UPSCALER_AUTOREACTIVEFLAGS_USE_COMPONENTS_MAX;
+	dispatchParameters.flags = FFX_FSR3UPSCALER_AUTOREACTIVEFLAGS_APPLY_TONEMAP | FFX_FSR3UPSCALER_AUTOREACTIVEFLAGS_APPLY_THRESHOLD | FFX_FSR3UPSCALER_AUTOREACTIVEFLAGS_USE_COMPONENTS_MAX;
 
 	if (ffxFsr3ContextGenerateReactiveMask(&fsrContext, &dispatchParameters) != FFX_OK)
 		logger::critical("[FidelityFX] Failed to dispatch reactive mask!");
