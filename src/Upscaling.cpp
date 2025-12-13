@@ -860,7 +860,7 @@ void Upscaling::Upscale()
 	auto upscaleMethod = GetUpscaleMethod(true);
 
 	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
-	static auto context = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
+	auto context = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
 
 	// Unbind render targets to avoid resource hazards
 	context->OMSetRenderTargets(0, nullptr, nullptr);
