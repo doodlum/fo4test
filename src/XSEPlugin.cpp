@@ -141,11 +141,6 @@ extern "C" DLLEXPORT bool F4SEAPI F4SEPlugin_Load(const F4SE::LoadInterface* a_f
 		logger::info("ENB not detected");
 	}
 
-	if (enbLoaded){
-		logger::info("Disabling mod due to incompatibility with ENB");
-		return true;
-	}
-
 	DX11Hooks::Install();
 	Upscaling::InstallHooks();
 

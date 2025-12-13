@@ -18,7 +18,19 @@
 			"type": "text"
 		},
 		{
-			"text": "When ENBSeries is active, this mod is disabled.",
+			"text": "",
+			"type": "text"
+		},
+		{
+			"text": "AMD Robust Contrast Adaptive Sharpening improves image clarity, even when upscaling is disabled or in 3D menus.",
+			"type": "text"
+		},
+		{
+			"text": "",
+			"type": "text"
+		},
+		{
+			"text": "When ENBSeries is active, only DLAA is available.",
 			"type": "text"
 		},
 		{
@@ -57,9 +69,9 @@
 		},
 		{
 			"id": "fSharpness:Settings",
-			"text": "Sharpness",
+			"text": "Sharpness Boost",
 			"type": "slider",
-			"help": "Boosts image clarity using AMD Robust Contrast Adaptive Sharpening. (Default: 0.0)",
+			"help": "Boosts image clarity. (Default: 0)",
 			"valueOptions": {
 				"min": 0.0,
 				"max": 1.0,

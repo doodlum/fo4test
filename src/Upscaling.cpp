@@ -52,19 +52,6 @@ struct DrawWorld_Render_PreUI_DeferredPrePass
 	static inline REL::Relocation<decltype(thunk)> func;
 };
 
-/** @brief Hook for deferred decals rendering with sampler state override */
-struct DrawWorld_Render_PreUI_DeferredDecals
-{
-	static void thunk(struct DrawWorld* This)
-	{
-		auto upscaling = Upscaling::GetSingleton();
-		upscaling->OverrideSamplerStates();
-		func(This);
-		upscaling->ResetSamplerStates();
-	}
-	static inline REL::Relocation<decltype(thunk)> func;
-};
-
 /** @brief Hook for forward rendering pass with sampler state override and reactive mask generation */
 struct DrawWorld_Render_PreUI_Forward
 {
@@ -177,7 +164,6 @@ void Upscaling::InstallHooks()
 
 	// Control sampler states for mipmap bias
 	stl::write_thunk_call<DrawWorld_Render_PreUI_DeferredPrePass>(REL::ID(984743).address() + 0x17F);
-	stl::write_thunk_call<DrawWorld_Render_PreUI_DeferredDecals>(REL::ID(984743).address() + 0x189);
 	stl::write_thunk_call<DrawWorld_Render_PreUI_Forward>(REL::ID(984743).address() + 0x1C9);
 	
 	// Copy opaque texture for FSR reactive mask
@@ -635,12 +621,18 @@ Upscaling::UpscaleMethod Upscaling::GetUpscaleMethod(bool a_checkMenu)
 		if (ui->GetMenuOpen("ExamineMenu") || ui->GetMenuOpen("PipboyMenu") || ui->GetMenuOpen("LoadingMenu"))
 			return UpscaleMethod::kDisabled;
 	}
+
+	UpscaleMethod upscaleMethod = (UpscaleMethod)settings.upscaleMethodPreference;
 		
 	// If DLSS is not available, default to FSR
-	if (!streamline->featureDLSS && settings.upscaleMethodPreference == (uint)UpscaleMethod::kDLSS)
-		return UpscaleMethod::kFSR;
+	if (!streamline->featureDLSS && upscaleMethod == UpscaleMethod::kDLSS)
+		upscaleMethod = UpscaleMethod::kFSR;
 
-	return (UpscaleMethod)settings.upscaleMethodPreference;
+	// ENB is loaded, disable FSR
+	if (enbLoaded && upscaleMethod == UpscaleMethod::kFSR)
+		upscaleMethod = UpscaleMethod::kDisabled;
+
+	return upscaleMethod;
 }
 
 void Upscaling::CheckResources()
