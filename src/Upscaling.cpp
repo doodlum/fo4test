@@ -72,7 +72,7 @@ struct DrawWorld_Render_PreUI_Forward
 	static inline REL::Relocation<decltype(thunk)> func;
 };
 
-/** @brief Hook for BSDFComposite with render target override */
+/** @brief Hook for BSDFComposite with render target and depth override */
 struct BSDFComposite_Envmap
 {
 	static void thunk(void* This, uint a2, bool a3)
@@ -155,12 +155,8 @@ void Upscaling::InstallHooks()
 	// Disable TAA shader if using alternative scaling method
 	stl::write_vfunc<0x8, ImageSpaceEffectTemporalAA_IsActive>(RE::VTABLE::ImageSpaceEffectTemporalAA[0]);
 
-	// Replace original upscaling pass
+	// Add alternative scaling method
 	stl::write_thunk_call<DrawWorld_Imagespace_SetUseDynamicResolutionViewportAsDefaultViewport>(REL::ID(587723).address() + 0xE1);
-
-	// Disable BSGraphics::RenderTargetManager::UpdateDynamicResolution
-	REL::Relocation<std::uintptr_t> target{ REL::ID(984743), 0x14B };
-	REL::safe_fill(target.address(), 0x90, 5);
 
 	// Control sampler states for mipmap bias
 	stl::write_thunk_call<DrawWorld_Render_PreUI_DeferredPrePass>(REL::ID(984743).address() + 0x17F);
@@ -169,7 +165,12 @@ void Upscaling::InstallHooks()
 	// Copy opaque texture for FSR reactive mask
 	stl::write_thunk_call<ForwardAlphaImpl_FinishAccumulating_Standard_PostResolveDepth>(REL::ID(338205).address() + 0x1DC);
 
+	// These hooks are not needed when using ENB because dynamic resolution is not supported
 	if (enbLoaded) {
+		// Disable BSGraphics::RenderTargetManager::UpdateDynamicResolution
+		REL::Relocation<std::uintptr_t> target{ REL::ID(984743), 0x14B };
+		REL::safe_fill(target.address(), 0x90, 5);
+
 		// Fix dynamic resolution for BSDFComposite
 		stl::write_thunk_call<BSDFComposite_Envmap>(REL::ID(728427).address() + 0x8DC);
 
@@ -247,6 +248,10 @@ void Upscaling::UpdateRenderTarget(int index, float a_currentWidthRatio, float a
 	if (proxyRenderTarget.texture)
 		proxyRenderTarget.texture->Release();
 	proxyRenderTarget.texture = nullptr;
+
+	// Do not need to replace render targets at native resolution
+	if (a_currentWidthRatio == 1.0f && a_currentHeightRatio == 1.0f)
+		return;
 
 	D3D11_TEXTURE2D_DESC textureDesc{};
 	if (originalRenderTarget.texture)
@@ -411,6 +416,10 @@ void Upscaling::UpdateRenderTargets(float a_currentWidthRatio, float a_currentHe
 	upscalingTexture = std::make_unique<Texture2D>(texDesc);
 	upscalingTexture->CreateSRV(srvDesc);
 	upscalingTexture->CreateUAV(uavDesc);
+
+	// Do not need to replace render targets at native resolution
+	if (a_currentWidthRatio == 1.0f && a_currentHeightRatio == 1.0f)
+		return;
 
 	// Full-resolution depth texture (R32 float)
 	texDesc.Format = DXGI_FORMAT_R32_FLOAT;
