@@ -82,9 +82,14 @@ struct DrawWorld_DeferredComposite_RenderPassImmediately
 		static auto renderTargetManager = Util::RenderTargetManager_GetSingleton();
 		bool requiresOverride = renderTargetManager->dynamicHeightRatio != 1.0 || renderTargetManager->dynamicWidthRatio != 1.0;
 
+		float originalDynamicHeightRatio = renderTargetManager->dynamicHeightRatio;
+		float originalDynamicWidthRatio = renderTargetManager->dynamicWidthRatio;
+
 		if (requiresOverride) {
 			upscaling->OverrideRenderTargets();
 			upscaling->OverrideDepth();
+			renderTargetManager->dynamicHeightRatio = 1.0f;
+			renderTargetManager->dynamicWidthRatio = 1.0f;
 		}
 
 		func(This, a2, a3);
@@ -92,6 +97,8 @@ struct DrawWorld_DeferredComposite_RenderPassImmediately
 		if (requiresOverride) {
 			upscaling->ResetDepth();
 			upscaling->ResetRenderTargets();
+			renderTargetManager->dynamicHeightRatio = originalDynamicHeightRatio;
+			renderTargetManager->dynamicWidthRatio = originalDynamicWidthRatio;
 		}
 	}
 	static inline REL::Relocation<decltype(thunk)> func;
@@ -329,22 +336,22 @@ void Upscaling::UpdateRenderTarget(int index, float a_currentWidthRatio, float a
 
 #ifndef NDEBUG
 	if (auto texture = reinterpret_cast<ID3D11Texture2D*>(proxyRenderTarget.texture)) {
-		auto name = std::format("RT PROXY {}", index));
+		auto name = std::format("RT PROXY {}", index);
 		texture->SetPrivateData(WKPDID_D3DDebugObjectName, static_cast<UINT>(name.size()), name.data());
 	}
 
-	if (auto rtView = reinterpret_cast<ID3D11RenderTargetView*>(proxyRenderTarget.rtView) {
-		auto name = std::format("RTV PROXY {}", index));
-	rtView->SetPrivateData(WKPDID_D3DDebugObjectName, static_cast<UINT>(name.size()), name.data());
+	if (auto rtView = reinterpret_cast<ID3D11RenderTargetView*>(proxyRenderTarget.rtView)) {
+		auto name = std::format("RTV PROXY {}", index);
+		rtView->SetPrivateData(WKPDID_D3DDebugObjectName, static_cast<UINT>(name.size()), name.data());
 	}
 
-	if (auto srView = reinterpret_cast<ID3D11ShaderResourceView*>(proxyRenderTarget.srView) {
-		auto name = std::format("SRV PROXY {}", index));
+	if (auto srView = reinterpret_cast<ID3D11ShaderResourceView*>(proxyRenderTarget.srView)) {
+		auto name = std::format("SRV PROXY {}", index);
 		srView->SetPrivateData(WKPDID_D3DDebugObjectName, static_cast<UINT>(name.size()), name.data());
 	}
 
-	if (auto uaView = reinterpret_cast<ID3D11UnorderedAccessView*>(proxyRenderTarget.uaView) {
-		auto name = std::format("UAV PROXY {}", index));
+	if (auto uaView = reinterpret_cast<ID3D11UnorderedAccessView*>(proxyRenderTarget.uaView)) {
+		auto name = std::format("UAV PROXY {}", index);
 		uaView->SetPrivateData(WKPDID_D3DDebugObjectName, static_cast<UINT>(name.size()), name.data());
 	}
 #endif

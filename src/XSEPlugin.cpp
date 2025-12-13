@@ -64,38 +64,38 @@ void AddDebugInformation()
 	auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
 
 	for (uint32_t i = 0; i < 101; i++) {
-		if (auto texture = rendererData->renderTargets[i].texture) {
+		if (auto texture = reinterpret_cast<ID3D11Texture2D*>(rendererData->renderTargets[i].texture)) {
 			auto name = std::format("RT {}", i);
 			texture->SetPrivateData(WKPDID_D3DDebugObjectName, static_cast<UINT>(name.size()), name.data());
 		}
-		if (auto texture = rendererData->renderTargets[i].copyTexture) {
+		if (auto texture = reinterpret_cast<ID3D11Texture2D*>(rendererData->renderTargets[i].copyTexture)) {
 			auto name = std::format("COPY RT {}", i);
 			texture->SetPrivateData(WKPDID_D3DDebugObjectName, static_cast<UINT>(name.size()), name.data());
 		}
-		if (auto srView = rendererData->renderTargets[i].srView) {
+		if (auto srView = reinterpret_cast<ID3D11ShaderResourceView*>(rendererData->renderTargets[i].srView)) {
 			auto name = std::format("SRV {}", i);
 			srView->SetPrivateData(WKPDID_D3DDebugObjectName, static_cast<UINT>(name.size()), name.data());
 		}
-		if (auto copySRView = rendererData->renderTargets[i].copySRView) {
+		if (auto copySRView = reinterpret_cast<ID3D11ShaderResourceView*>(rendererData->renderTargets[i].copySRView)) {
 			auto name = std::format("COPY SRV {}", i);
 			copySRView->SetPrivateData(WKPDID_D3DDebugObjectName, static_cast<UINT>(name.size()), name.data());
 		}
-		if (auto rtView = rendererData->renderTargets[i].rtView) {
+		if (auto rtView = reinterpret_cast<ID3D11RenderTargetView*>(rendererData->renderTargets[i].rtView)) {
 			auto name = std::format("RTV {}", i);
 			rtView->SetPrivateData(WKPDID_D3DDebugObjectName, static_cast<UINT>(name.size()), name.data());
 		}
-		if (auto uaView = rendererData->renderTargets[i].uaView) {
+		if (auto uaView = reinterpret_cast<ID3D11UnorderedAccessView*>(rendererData->renderTargets[i].uaView)) {
 			auto name = std::format("UAV {}", i);
 			uaView->SetPrivateData(WKPDID_D3DDebugObjectName, static_cast<UINT>(name.size()), name.data());
 		}
 	}
 
 	for (uint32_t i = 0; i < 13; i++) {
-		if (auto texture = rendererData->depthStencilTargets[i].texture) {
+		if (auto texture = reinterpret_cast<ID3D11Texture2D*>(rendererData->depthStencilTargets[i].texture)) {
 			auto name = std::format("DEPTH RT {}", i);
 			texture->SetPrivateData(WKPDID_D3DDebugObjectName, static_cast<UINT>(name.size()), name.data());
 		}
-		if (auto srViewDepth = rendererData->depthStencilTargets[i].srViewDepth) {
+		if (auto srViewDepth = reinterpret_cast<ID3D11ShaderResourceView*>(rendererData->depthStencilTargets[i].srViewDepth)) {
 			auto name = std::format("DS VIEW {}", i);
 			srViewDepth->SetPrivateData(WKPDID_D3DDebugObjectName, static_cast<UINT>(name.size()), name.data());
 		}
