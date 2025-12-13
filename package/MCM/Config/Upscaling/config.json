@@ -5,12 +5,12 @@
 	"pluginRequirements": [],
 	"content": [
 		{
-			"text": "<font size='30'><p align='center'>Upscaling</p></font>",
+			"text": "<font size='30'><p align='center'>UPSCALING</p></font>",
 			"html": true,
 			"type": "text"
 		},
 		{
-			"text": "About",
+			"text": "ABOUT",
 			"type": "section"
 		},
 		{
@@ -34,7 +34,7 @@
 			"type": "text"
 		},
 		{
-			"text": "Options",
+			"text": "SETTINGS",
 			"type": "section"
 		},
 		{
@@ -47,7 +47,7 @@
 				"options": [
 					"Disabled",
 					"AMD FSR 3.1",
-					"NVIDIA DLSS"
+					"NVIDIA DLSS 4"
 				]
 			}
 		},
