@@ -73,9 +73,9 @@ struct DrawWorld_Render_PreUI_Forward
 };
 
 /** @brief Hook for BSDFComposite with render target and depth override */
-struct BSDFComposite_Envmap
+struct DrawWorld_DeferredComposite_RenderPassImmediately
 {
-	static void thunk(void* This, uint a2, bool a3)
+	static void thunk(RE::BSRenderPass* This, uint a2, bool a3)
 	{
 		auto upscaling = Upscaling::GetSingleton();
 
@@ -167,16 +167,16 @@ void Upscaling::InstallHooks()
 	stl::write_thunk_call<ForwardAlphaImpl_FinishAccumulating_Standard_PostResolveDepth>(REL::ID(2318315).address() + 0x4C6);
 
 	// These hooks are not needed when using ENB because dynamic resolution is not supported
-	if (enbLoaded) {
+	if (!enbLoaded) {
 		// Disable BSGraphics::RenderTargetManager::UpdateDynamicResolution
 		REL::Relocation<std::uintptr_t> target{ REL::ID(2318321), 0x29F };
 		REL::safe_fill(target.address(), 0x90, 5);
 
 		// Fix dynamic resolution for BSDFComposite
-		stl::write_thunk_call<BSDFComposite_Envmap>(REL::ID(2318313).address() + 0x915);
+		stl::write_thunk_call<DrawWorld_DeferredComposite_RenderPassImmediately>(REL::ID(2318313).address() + 0x915);
 
 		// Fix dynamic resolution for Lens Flare visibility
-		stl::detour_thunk<BSImagespaceShaderLensFlare_RenderLensFlare>(REL::ID(676108));
+		stl::detour_thunk<BSImagespaceShaderLensFlare_RenderLensFlare>(REL::ID(2317547));
 
 		// Fix dynamic resolution for Screenspace Reflections
 		stl::write_thunk_call<BSImagespaceShaderSSLRRaytracing_SetupTechnique_BeginTechnique>(REL::ID(2317302).address() + 0x1C);
@@ -199,13 +199,13 @@ void Upscaling::InstallHooks()
 	stl::write_thunk_call<ForwardAlphaImpl_FinishAccumulating_Standard_PostResolveDepth>(REL::ID(338205).address() + 0x1DC);
 
 	// These hooks are not needed when using ENB because dynamic resolution is not supported
-	if (enbLoaded) {
+	if (!enbLoaded) {
 		// Disable BSGraphics::RenderTargetManager::UpdateDynamicResolution
 		REL::Relocation<std::uintptr_t> target{ REL::ID(984743), 0x14B };
 		REL::safe_fill(target.address(), 0x90, 5);
 
 		// Fix dynamic resolution for BSDFComposite
-		stl::write_thunk_call<BSDFComposite_Envmap>(REL::ID(728427).address() + 0x8DC);
+		stl::write_thunk_call<DrawWorld_DeferredComposite_RenderPassImmediately>(REL::ID(728427).address() + 0x8DC);
 
 		// Fix dynamic resolution for Lens Flare visibility
 		stl::detour_thunk<BSImagespaceShaderLensFlare_RenderLensFlare>(REL::ID(676108));
