@@ -59,7 +59,7 @@ void Streamline::Initialize()
 		logger::critical("[Streamline] Failed to initialize Streamline");
 	} else {
 		initialized = true;
-		logger::info("[Streamline] Sucessfully initialized Streamline");
+		logger::info("[Streamline] Successfully initialized Streamline");
 	}
 }
 
@@ -133,10 +133,10 @@ void Streamline::Upscale(Texture2D* a_upscaleTexture, Texture2D* a_dilatedMotion
 	UpdateConstants(a_jitter);
 
 	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
-	static auto& depthTexture = rendererData->depthStencilTargets[(uint)Util::DepthStencilTarget::kMain];
+	auto& depthTexture = rendererData->depthStencilTargets[(uint)Util::DepthStencilTarget::kMain];
 
-	static auto gameViewport = RE::BSGraphics::State::GetSingleton();
-	static auto context = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
+	static auto gameViewport = Util::State_GetSingleton();
+	auto context = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
 
 	{
 		sl::DLSSMode dlssMode;
@@ -160,8 +160,8 @@ void Streamline::Upscale(Texture2D* a_upscaleTexture, Texture2D* a_dilatedMotion
 
 		sl::DLSSOptions dlssOptions{};
 		dlssOptions.mode = dlssMode;
-		dlssOptions.outputWidth = gameViewport.screenWidth;
-		dlssOptions.outputHeight = gameViewport.screenHeight;
+		dlssOptions.outputWidth = gameViewport->screenWidth;
+		dlssOptions.outputHeight = gameViewport->screenHeight;
 		dlssOptions.colorBuffersHDR = sl::Boolean::eFalse;
 
 		if (SL_FAILED(result, slDLSSSetOptions(viewport, dlssOptions))) {
@@ -171,11 +171,11 @@ void Streamline::Upscale(Texture2D* a_upscaleTexture, Texture2D* a_dilatedMotion
 
 	{
 		sl::Extent lowResExtent{ 0, 0, (uint)a_renderSize.x, (uint)a_renderSize.y };
-		sl::Extent fullExtent{ 0, 0, gameViewport.screenWidth, gameViewport.screenHeight };
+		sl::Extent fullExtent{ 0, 0, gameViewport->screenWidth, gameViewport->screenHeight };
 
 		sl::Resource colorIn = { sl::ResourceType::eTex2d, a_upscaleTexture->resource.get(), 0 };
 		sl::Resource colorOut = { sl::ResourceType::eTex2d, a_upscaleTexture->resource.get(), 0 };
-		sl::Resource depth = { sl::ResourceType::eTex2d, depthTexture.texture, 0 };
+		sl::Resource depth = { sl::ResourceType::eTex2d, reinterpret_cast<ID3D11Texture2D*>(depthTexture.texture), 0 };
 		sl::Resource mvec = { sl::ResourceType::eTex2d, a_dilatedMotionVectorTexture->resource.get(), 0};
 
 		sl::ResourceTag colorInTag = sl::ResourceTag{ &colorIn, sl::kBufferTypeScalingInputColor, sl::ResourceLifecycle::eOnlyValidNow, &lowResExtent };

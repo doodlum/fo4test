@@ -149,7 +149,40 @@ struct ForwardAlphaImpl_FinishAccumulating_Standard_PostResolveDepth
 
 void Upscaling::InstallHooks()
 {
-	// Control jitters, dynamic resolution, and sampler states
+#if defined(FALLOUT_POST_NG)
+	// Control jitters, dynamic resolution, sampler states, and render targets
+	stl::write_thunk_call<BSGraphics_State_UpdateTemporalData>(REL::ID(2318286).address() + 0x38C);
+
+	// Disable TAA shader if using alternative scaling method
+	stl::write_vfunc<0x8, ImageSpaceEffectTemporalAA_IsActive>(RE::VTABLE::ImageSpaceEffectTemporalAA[0]);
+
+	// Add alternative scaling method
+	stl::write_thunk_call<DrawWorld_Imagespace_SetUseDynamicResolutionViewportAsDefaultViewport>(REL::ID(2318322).address() + 0xC5);
+
+	// Control sampler states for mipmap bias
+	stl::write_thunk_call<DrawWorld_Render_PreUI_DeferredPrePass>(REL::ID(2318321).address() + 0x2E3);
+	stl::write_thunk_call<DrawWorld_Render_PreUI_Forward>(REL::ID(2318321).address() + 0x3A6);
+
+	// Copy opaque texture for FSR reactive mask
+	stl::write_thunk_call<ForwardAlphaImpl_FinishAccumulating_Standard_PostResolveDepth>(REL::ID(2318315).address() + 0x4C6);
+
+	// These hooks are not needed when using ENB because dynamic resolution is not supported
+	if (enbLoaded) {
+		// Disable BSGraphics::RenderTargetManager::UpdateDynamicResolution
+		REL::Relocation<std::uintptr_t> target{ REL::ID(2318321), 0x29F };
+		REL::safe_fill(target.address(), 0x90, 5);
+
+		// Fix dynamic resolution for BSDFComposite
+		stl::write_thunk_call<BSDFComposite_Envmap>(REL::ID(2318313).address() + 0x915);
+
+		// Fix dynamic resolution for Lens Flare visibility
+		stl::detour_thunk<BSImagespaceShaderLensFlare_RenderLensFlare>(REL::ID(676108));
+
+		// Fix dynamic resolution for Screenspace Reflections
+		stl::write_thunk_call<BSImagespaceShaderSSLRRaytracing_SetupTechnique_BeginTechnique>(REL::ID(2317302).address() + 0x1C);
+	}
+#else
+	// Control jitters, dynamic resolution, sampler states, and render targets
 	stl::write_thunk_call<BSGraphics_State_UpdateTemporalData>(REL::ID(502840).address() + 0x3C1);
 
 	// Disable TAA shader if using alternative scaling method
@@ -180,6 +213,7 @@ void Upscaling::InstallHooks()
 		// Fix dynamic resolution for Screenspace Reflections
 		stl::write_thunk_call<BSImagespaceShaderSSLRRaytracing_SetupTechnique_BeginTechnique>(REL::ID(779077).address() + 0x1C);
 	}
+#endif
 }
 
 struct SamplerStates
@@ -188,7 +222,11 @@ struct SamplerStates
 
 	static SamplerStates* GetSingleton()
 	{
+#if defined(FALLOUT_POST_NG)
+		static auto samplerStates = reinterpret_cast<SamplerStates*>(REL::ID(2704455).address());
+#else
 		static auto samplerStates = reinterpret_cast<SamplerStates*>(REL::ID(44312).address());
+#endif
 		return samplerStates;
 	}
 };
@@ -255,19 +293,19 @@ void Upscaling::UpdateRenderTarget(int index, float a_currentWidthRatio, float a
 
 	D3D11_TEXTURE2D_DESC textureDesc{};
 	if (originalRenderTarget.texture)
-		originalRenderTarget.texture->GetDesc(&textureDesc);
+		reinterpret_cast<ID3D11Texture2D*>(originalRenderTarget.texture)->GetDesc(&textureDesc);
 
 	D3D11_RENDER_TARGET_VIEW_DESC rtViewDesc{};
 	if (originalRenderTarget.rtView)
-		originalRenderTarget.rtView->GetDesc(&rtViewDesc);
+		reinterpret_cast<ID3D11RenderTargetView*>(originalRenderTarget.rtView)->GetDesc(&rtViewDesc);
 
 	D3D11_SHADER_RESOURCE_VIEW_DESC srViewDesc{};
 	if (originalRenderTarget.srView)
-		originalRenderTarget.srView->GetDesc(&srViewDesc);
+		reinterpret_cast<ID3D11ShaderResourceView*>(originalRenderTarget.srView)->GetDesc(&srViewDesc);
 
 	D3D11_UNORDERED_ACCESS_VIEW_DESC uaViewDesc;
 	if (originalRenderTarget.uaView)
-		originalRenderTarget.uaView->GetDesc(&uaViewDesc);
+		reinterpret_cast<ID3D11UnorderedAccessView*>(originalRenderTarget.uaView)->GetDesc(&uaViewDesc);
 
 	// Scale texture dimensions (e.g., 1920x1080 @ 0.67 = 1280x720)
 	textureDesc.Width = static_cast<uint>(static_cast<float>(textureDesc.Width) * a_currentWidthRatio);
@@ -276,37 +314,37 @@ void Upscaling::UpdateRenderTarget(int index, float a_currentWidthRatio, float a
 	auto device = reinterpret_cast<ID3D11Device*>(rendererData->device);
 
 	if (originalRenderTarget.texture)
-		DX::ThrowIfFailed(device->CreateTexture2D(&textureDesc, nullptr, &proxyRenderTarget.texture));
+		DX::ThrowIfFailed(device->CreateTexture2D(&textureDesc, nullptr, reinterpret_cast<ID3D11Texture2D**>(&proxyRenderTarget.texture)));
 
-	if (auto texture = proxyRenderTarget.texture) {
+	if (auto texture = reinterpret_cast<ID3D11Texture2D*>(proxyRenderTarget.texture)) {
 		if (originalRenderTarget.rtView)
-			DX::ThrowIfFailed(device->CreateRenderTargetView(texture, &rtViewDesc, &proxyRenderTarget.rtView));
+			DX::ThrowIfFailed(device->CreateRenderTargetView(texture, &rtViewDesc, reinterpret_cast<ID3D11RenderTargetView**>(proxyRenderTarget.rtView)));
 
 		if (originalRenderTarget.srView)
-			DX::ThrowIfFailed(device->CreateShaderResourceView(texture, &srViewDesc, &proxyRenderTarget.srView));
+			DX::ThrowIfFailed(device->CreateShaderResourceView(texture, &srViewDesc, reinterpret_cast<ID3D11ShaderResourceView**>(&proxyRenderTarget.srView)));
 
 		if (originalRenderTarget.uaView)
-			DX::ThrowIfFailed(device->CreateUnorderedAccessView(texture, &uaViewDesc, &proxyRenderTarget.uaView));
+			DX::ThrowIfFailed(device->CreateUnorderedAccessView(texture, &uaViewDesc, reinterpret_cast<ID3D11UnorderedAccessView**>(&proxyRenderTarget.uaView)));
 	}
 
 #ifndef NDEBUG
-	if (auto texture = proxyRenderTarget.texture) {
-		auto name = std::format("RT PROXY {}", index);
+	if (auto texture = reinterpret_cast<ID3D11Texture2D*>(proxyRenderTarget.texture)) {
+		auto name = std::format("RT PROXY {}", index));
 		texture->SetPrivateData(WKPDID_D3DDebugObjectName, static_cast<UINT>(name.size()), name.data());
 	}
 
-	if (auto srView = proxyRenderTarget.srView) {
-		auto name = std::format("SRV PROXY {}", index);
+	if (auto rtView = reinterpret_cast<ID3D11RenderTargetView*>(proxyRenderTarget.rtView) {
+		auto name = std::format("RTV PROXY {}", index));
+	rtView->SetPrivateData(WKPDID_D3DDebugObjectName, static_cast<UINT>(name.size()), name.data());
+	}
+
+	if (auto srView = reinterpret_cast<ID3D11ShaderResourceView*>(proxyRenderTarget.srView) {
+		auto name = std::format("SRV PROXY {}", index));
 		srView->SetPrivateData(WKPDID_D3DDebugObjectName, static_cast<UINT>(name.size()), name.data());
 	}
 
-	if (auto rtView = proxyRenderTarget.rtView) {
-		auto name = std::format("RTV PROXY {}", index);
-		rtView->SetPrivateData(WKPDID_D3DDebugObjectName, static_cast<UINT>(name.size()), name.data());
-	}
-
-	if (auto uaView = proxyRenderTarget.uaView) {
-		auto name = std::format("UAV PROXY {}", index);
+	if (auto uaView = reinterpret_cast<ID3D11UnorderedAccessView*>(proxyRenderTarget.uaView) {
+		auto name = std::format("UAV PROXY {}", index));
 		uaView->SetPrivateData(WKPDID_D3DDebugObjectName, static_cast<UINT>(name.size()), name.data());
 	}
 #endif
@@ -324,8 +362,8 @@ void Upscaling::OverrideRenderTarget(int index)
 
 	// Get dimensions of both textures
 	D3D11_TEXTURE2D_DESC srcDesc, dstDesc;
-	originalRenderTargets[index].texture->GetDesc(&srcDesc);
-	proxyRenderTargets[index].texture->GetDesc(&dstDesc);
+	reinterpret_cast<ID3D11Texture2D*>(originalRenderTargets[index].texture)->GetDesc(&srcDesc);
+	reinterpret_cast<ID3D11Texture2D*>(proxyRenderTargets[index].texture)->GetDesc(&dstDesc);
 
 	D3D11_BOX srcBox;
 	srcBox.left = 0;
@@ -336,7 +374,7 @@ void Upscaling::OverrideRenderTarget(int index)
 	srcBox.back = 1;
 
 	auto context = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
-	context->CopySubresourceRegion(proxyRenderTargets[index].texture, 0, 0, 0, 0, originalRenderTargets[index].texture, 0, &srcBox);
+	context->CopySubresourceRegion(reinterpret_cast<ID3D11Texture2D*>(proxyRenderTargets[index].texture), 0, 0, 0, 0, reinterpret_cast<ID3D11Texture2D*>(originalRenderTargets[index].texture), 0, &srcBox);
 }
 
 void Upscaling::ResetRenderTarget(int index)
@@ -349,8 +387,8 @@ void Upscaling::ResetRenderTarget(int index)
 	rendererData->renderTargets[index] = originalRenderTargets[index];
 
 	D3D11_TEXTURE2D_DESC srcDesc, dstDesc;
-	proxyRenderTargets[index].texture->GetDesc(&srcDesc);
-	originalRenderTargets[index].texture->GetDesc(&dstDesc);
+	reinterpret_cast<ID3D11Texture2D*>(proxyRenderTargets[index].texture)->GetDesc(&srcDesc);
+	reinterpret_cast<ID3D11Texture2D*>(originalRenderTargets[index].texture)->GetDesc(&dstDesc);
 
 	D3D11_BOX srcBox;
 	srcBox.left = 0;
@@ -361,7 +399,7 @@ void Upscaling::ResetRenderTarget(int index)
 	srcBox.back = 1;
 
 	auto context = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
-	context->CopySubresourceRegion(originalRenderTargets[index].texture, 0, 0, 0, 0, proxyRenderTargets[index].texture, 0, &srcBox);
+	context->CopySubresourceRegion(reinterpret_cast<ID3D11Texture2D*>(originalRenderTargets[index].texture), 0, 0, 0, 0, reinterpret_cast<ID3D11Texture2D*>(proxyRenderTargets[index].texture), 0, &srcBox);
 }
 
 void Upscaling::UpdateRenderTargets(float a_currentWidthRatio, float a_currentHeightRatio)
@@ -481,10 +519,14 @@ void Upscaling::OverrideDepth()
 	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
 
 	// Save the original depth SRV (with dynamic resolution)
-	originalDepthView.copy_from(rendererData->depthStencilTargets[(uint)Util::DepthStencilTarget::kMain].srViewDepth);
+	originalDepthView.copy_from(reinterpret_cast<ID3D11ShaderResourceView*>(rendererData->depthStencilTargets[(uint)Util::DepthStencilTarget::kMain].srViewDepth));
 
 	// Replace with our full-resolution depth texture for post-processing effects
+#if defined(FALLOUT_POST_NG)
+	rendererData->depthStencilTargets[(uint)Util::DepthStencilTarget::kMain].srViewDepth = reinterpret_cast<REX::W32::ID3D11ShaderResourceView*>(depthOverrideTexture->srv.get());
+#else
 	rendererData->depthStencilTargets[(uint)Util::DepthStencilTarget::kMain].srViewDepth = depthOverrideTexture->srv.get();
+#endif
 }
 
 void Upscaling::ResetDepth()
@@ -492,7 +534,11 @@ void Upscaling::ResetDepth()
 	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
 
 	// Restore the original depth SRV with dynamic resolution
+#if defined(FALLOUT_POST_NG)
+	rendererData->depthStencilTargets[(uint)Util::DepthStencilTarget::kMain].srViewDepth = reinterpret_cast<REX::W32::ID3D11ShaderResourceView*>(originalDepthView.get());
+#else
 	rendererData->depthStencilTargets[(uint)Util::DepthStencilTarget::kMain].srViewDepth = originalDepthView.get();
+#endif
 }
 
 void Upscaling::UpdateSamplerStates(float a_currentMipBias)
@@ -627,7 +673,7 @@ Upscaling::UpscaleMethod Upscaling::GetUpscaleMethod(bool a_checkMenu)
 	
 	// Disable the upscaling method when certain menus are open
 	if (a_checkMenu){
-		if (ui->GetMenuOpen("ExamineMenu") || ui->GetMenuOpen("PipboyMenu") || ui->GetMenuOpen("LoadingMenu"))
+		if (ui->GetMenuOpen("ExamineMenu") || ui->GetMenuOpen("PipboyMenu"))
 			return UpscaleMethod::kDisabled;
 	}
 
@@ -918,7 +964,7 @@ void Upscaling::CreateUpscalingResources()
 
 		// Get main render target dimensions
 		D3D11_TEXTURE2D_DESC texDesc{};
-		main.texture->GetDesc(&texDesc);
+		reinterpret_cast<ID3D11Texture2D*>(main.texture)->GetDesc(&texDesc);
 		texDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
 
 		// Create view descriptions

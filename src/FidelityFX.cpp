@@ -61,7 +61,7 @@ void FidelityFX::CreateFSRResources()
 	auto& main = renderer->renderTargets[(uint)Util::RenderTarget::kMainTemp];
 
 	D3D11_TEXTURE2D_DESC texDesc{};
-	main.texture->GetDesc(&texDesc);
+	reinterpret_cast<ID3D11Texture2D*>(main.texture)->GetDesc(&texDesc);
 	texDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
 
 	colorOpaqueOnlyTexture = std::make_unique<Texture2D>(texDesc);
@@ -172,8 +172,8 @@ void FidelityFX::Upscale(Texture2D* a_color, float2 a_jitter, float2 a_renderSiz
 
 		dispatchParameters.commandList = ffxGetCommandListDX11(context);
 		dispatchParameters.color = ffxGetResource(a_color->resource.get(), L"FSR3_Input_OutputColor", FFX_RESOURCE_STATE_PIXEL_COMPUTE_READ);
-		dispatchParameters.depth = ffxGetResource(depthTexture.texture, L"FSR3_InputDepth", FFX_RESOURCE_STATE_PIXEL_COMPUTE_READ);
-		dispatchParameters.motionVectors = ffxGetResource(motionVectorTexture.texture, L"FSR3_InputMotionVectors", FFX_RESOURCE_STATE_PIXEL_COMPUTE_READ);
+		dispatchParameters.depth = ffxGetResource(reinterpret_cast<ID3D11Texture2D*>(depthTexture.texture), L"FSR3_InputDepth", FFX_RESOURCE_STATE_PIXEL_COMPUTE_READ);
+		dispatchParameters.motionVectors = ffxGetResource(reinterpret_cast<ID3D11Texture2D*>(motionVectorTexture.texture), L"FSR3_InputMotionVectors", FFX_RESOURCE_STATE_PIXEL_COMPUTE_READ);
 		dispatchParameters.exposure = ffxGetResource(nullptr, L"FSR3_InputExposure", FFX_RESOURCE_STATE_PIXEL_COMPUTE_READ);
 		dispatchParameters.upscaleOutput = dispatchParameters.color;
 		dispatchParameters.reactive = ffxGetResource(reactiveMaskTexture->resource.get(), L"FSR3_InputReactiveMap", FFX_RESOURCE_STATE_PIXEL_COMPUTE_READ);
