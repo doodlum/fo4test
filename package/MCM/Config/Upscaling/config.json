@@ -69,9 +69,9 @@
 		},
 		{
 			"id": "fSharpness:Settings",
-			"text": "Sharpness Boost",
+			"text": "Sharpness",
 			"type": "slider",
-			"help": "Boosts image clarity. (Default: 0)",
+			"help": "Controls image clarity. (Default: 0)",
 			"valueOptions": {
 				"min": 0.0,
 				"max": 1.0,
