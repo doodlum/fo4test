@@ -773,8 +773,11 @@ void Upscaling::UpdateJitter()
 	float resolutionScale = enbLoaded || upscaleMethodNoMenu == UpscaleMethod::kDisabled ? 1.0f : 1.0f / ffxFsr3GetUpscaleRatioFromQualityMode((FfxFsr3QualityMode)settings.qualityMode);
 
 	// Calculate mipmap LOD bias
-	// Example: 0.67 scale -> log2(0.67) - 1.0 = -1.58
-	float currentMipBias = std::log2f(resolutionScale) - 1.0f;
+	// Example: 0.67 scale -> log2(0.67) = -0.58
+	float currentMipBias = std::log2f(resolutionScale);
+	
+	if (upscaleMethodNoMenu == UpscaleMethod::kDLSS)
+		currentMipBias -= 1.0f;
 
 	UpdateSamplerStates(currentMipBias);
 	UpdateRenderTargets(resolutionScale, resolutionScale);
