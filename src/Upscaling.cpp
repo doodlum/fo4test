@@ -246,7 +246,7 @@ void Upscaling::LoadSettings()
 	
 	settings.upscaleMethodPreference = static_cast<uint>(ini.GetLongValue("Settings", "iUpscaleMethodPreference", 2));
 	settings.qualityMode = static_cast<uint>(ini.GetLongValue("Settings", "iQualityMode", 1));
-	settings.sharpness = static_cast<float>(ini.GetDoubleValue("Settings", "fSharpness", 0.5));
+	settings.sharpness = static_cast<float>(ini.GetDoubleValue("Settings", "fSharpness", 0));
 }
 
 void Upscaling::OnDataLoaded()
