@@ -81,13 +81,21 @@ namespace Util
 
 	[[nodiscard]] static RE::BSGraphics::State* State_GetSingleton()
 	{
+#if defined(FALLOUT_POST_NG)
+		REL::Relocation<RE::BSGraphics::State*> singleton{ REL::ID(2704621) };
+#else
 		REL::Relocation<RE::BSGraphics::State*> singleton{ REL::ID(600795) };
+#endif
 		return singleton.get();
 	}
 
 	[[nodiscard]] static RE::BSGraphics::RenderTargetManager* RenderTargetManager_GetSingleton()
 	{
+#if defined(FALLOUT_POST_NG)
+		REL::Relocation<RE::BSGraphics::RenderTargetManager*> singleton{ REL::ID(2666735) };
+#else
 		REL::Relocation<RE::BSGraphics::RenderTargetManager*> singleton{ REL::ID(1508457) };
+#endif
 		return singleton.get();
 	}
 
