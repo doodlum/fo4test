@@ -253,6 +253,7 @@ void Upscaling::OnDataLoaded()
 {
 	RE::UI::GetSingleton()->RegisterSink<RE::MenuOpenCloseEvent>(this);
 	LoadSettings();
+	UpdateGameSettings();
 }
 
 RE::BSEventNotifyControl Upscaling::ProcessEvent(const RE::MenuOpenCloseEvent& a_event, RE::BSTEventSource<RE::MenuOpenCloseEvent>*)
@@ -556,9 +557,8 @@ void Upscaling::UpdateSamplerStates(float a_currentMipBias)
 
 	// Store original sampler states from the game
 	// These will be used to restore the original states later
-	for (int a = 0; a < 320; a++) {
-		originalSamplerStates[a].copy_from(samplerStates->a[a]);
-	}
+	for (int a = 0; a < 320; a++)
+		originalSamplerStates[a] = samplerStates->a[a];
 
 	static float previousMipBias = 1.0f;
 
@@ -571,10 +571,13 @@ void Upscaling::UpdateSamplerStates(float a_currentMipBias)
 	// Create new sampler states with negative LOD bias
 	for (int a = 0; a < 320; a++) {
 		// Release existing biased sampler state
-		biasedSamplerStates[a] = nullptr;
+		if (biasedSamplerStates[a]){
+			biasedSamplerStates[a]->Release();
+			biasedSamplerStates[a] = nullptr;
+		}
 
 		// Create modified version with LOD bias applied
-		if (auto samplerState = originalSamplerStates[a].get()) {
+		if (auto samplerState = originalSamplerStates[a]) {
 			D3D11_SAMPLER_DESC samplerDesc;
 			samplerState->GetDesc(&samplerDesc);
 
@@ -584,11 +587,8 @@ void Upscaling::UpdateSamplerStates(float a_currentMipBias)
 				samplerDesc.MipLODBias = a_currentMipBias;
 			}
 
-			DX::ThrowIfFailed(device->CreateSamplerState(&samplerDesc, biasedSamplerStates[a].put()));
+			DX::ThrowIfFailed(device->CreateSamplerState(&samplerDesc, &biasedSamplerStates[a]));
 		}
-
-		// Update the game's sampler state pointer to our biased version
-		samplerStates->a[a] = biasedSamplerStates[a].get();
 	}
 }
 
@@ -597,11 +597,9 @@ void Upscaling::OverrideSamplerStates()
 	if (GetUpscaleMethod(true) == UpscaleMethod::kDisabled)
 		return;
 
-	static auto renderTargetManager = Util::RenderTargetManager_GetSingleton();
-
 	static auto samplerStates = SamplerStates::GetSingleton();
 	for (int a = 0; a < 320; a++)
-		samplerStates->a[a] = biasedSamplerStates[a].get();
+		samplerStates->a[a] = biasedSamplerStates[a];
 }
 
 void Upscaling::ResetSamplerStates()
@@ -611,7 +609,7 @@ void Upscaling::ResetSamplerStates()
 
 	static auto samplerStates = SamplerStates::GetSingleton();
 	for (int a = 0; a < 320; a++)
-		samplerStates->a[a] = originalSamplerStates[a].get();
+		samplerStates->a[a] = originalSamplerStates[a];
 }
 
 void Upscaling::CopyDepth()
@@ -813,6 +811,22 @@ void Upscaling::UpdateAndBindUpscalingCB(ID3D11DeviceContext* a_context, float2 
 	a_context->CSSetConstantBuffers(0, 1, &upscalingBuffer);
 }
 
+void Upscaling::UpdateGameSettings()
+{
+	static auto imageSpaceManager = RE::ImageSpaceManager::GetSingleton();
+
+	// Automatically disable FXAA
+	imageSpaceManager->effectList[(uint)RE::ImageSpaceManager::ImageSpaceEffectEnum::EFFECT_SHADER_FXAA]->isActive = false;
+
+	// Automatically enable TAA
+#if defined(FALLOUT_POST_NG)
+	static auto enableTAA = (bool*)REL::ID(2704658).address();
+#else
+	static auto enableTAA = (bool*)REL::ID(460417).address();
+#endif
+	* enableTAA = true;
+}
+
 void Upscaling::UpdateJitter()
 {
 	static auto gameViewport = Util::State_GetSingleton();
@@ -834,6 +848,7 @@ void Upscaling::UpdateJitter()
 
 	UpdateSamplerStates(currentMipBias);
 	UpdateRenderTargets(resolutionScale, resolutionScale);
+	UpdateGameSettings();
 
 	// Disable upscaling when certain menus are open (Pip-Boy, Examine, Loading)
 	if (upscaleMethod == UpscaleMethod::kDisabled)

@@ -214,8 +214,8 @@ public:
 	 */
 	void ResetSamplerStates();
 
-	std::array<winrt::com_ptr<ID3D11SamplerState>, 320> originalSamplerStates;  ///< Original game sampler states
-	std::array<winrt::com_ptr<ID3D11SamplerState>, 320> biasedSamplerStates;    ///< Modified sampler states with LOD bias
+	std::array<ID3D11SamplerState*, 320>				originalSamplerStates;  ///< Original game sampler states
+	std::array<ID3D11SamplerState*, 320> biasedSamplerStates;					///< Modified sampler states with LOD bias
 
 	// ========================================
 	// Depth Management
@@ -304,6 +304,11 @@ public:
 	 * Automatically reads camera parameters from the game engine
 	 */
 	void UpdateAndBindUpscalingCB(ID3D11DeviceContext* a_context, float2 a_screenSize, float2 a_renderSize);
+
+	/**
+	 * @brief Updates game settings
+	 */
+	void UpdateGameSettings();
 
 	// ========================================
 	// Resource Management
