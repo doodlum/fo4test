@@ -219,6 +219,9 @@ void Upscaling::InstallHooks()
 
 		// Fix dynamic resolution for Screenspace Reflections
 		stl::write_thunk_call<BSImagespaceShaderSSLRRaytracing_SetupTechnique_BeginTechnique>(REL::ID(2317302).address() + 0x1C);
+
+		// Fix dynamic resolution for post processing
+		stl::write_thunk_call<DrawWorld_Imagespace_RenderEffectRange>(REL::ID(2318322).address() + 0x83)
 	}
 #else
 	// Control jitters, dynamic resolution, sampler states, and render targets
@@ -226,7 +229,6 @@ void Upscaling::InstallHooks()
 
 	// Disable TAA shader if using alternative scaling method
 	stl::write_vfunc<0x8, ImageSpaceEffectTemporalAA_IsActive>(RE::VTABLE::ImageSpaceEffectTemporalAA[0]);
-
 
 	// Add alternative scaling method
 	stl::write_thunk_call<DrawWorld_Imagespace_SetUseDynamicResolutionViewportAsDefaultViewport>(REL::ID(587723).address() + 0xE1);
