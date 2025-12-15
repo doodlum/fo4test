@@ -81,7 +81,6 @@ extern "C" DLLEXPORT bool F4SEAPI F4SEPlugin_Load(const F4SE::LoadInterface* a_f
 	InitializeLog();
 
 	DX11Hooks::Install();
-	Upscaling::InstallHooks();
 
 	Upscaling::GetSingleton()->LoadSettings();
 

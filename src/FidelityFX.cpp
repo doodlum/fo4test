@@ -33,6 +33,27 @@ void FidelityFX::SetupFrameGeneration()
 	}
 }
 
+[[nodiscard]] static RE::BSGraphics::State* State_GetSingleton()
+{
+#if defined(FALLOUT_POST_NG)
+	REL::Relocation<RE::BSGraphics::State*> singleton{ REL::ID(2704621) };
+#else
+	REL::Relocation<RE::BSGraphics::State*> singleton{ REL::ID(600795) };
+#endif
+	return singleton.get();
+}
+
+
+[[nodiscard]] static RE::BSGraphics::RenderTargetManager* RenderTargetManager_GetSingleton()
+{
+#if defined(FALLOUT_POST_NG)
+	REL::Relocation<RE::BSGraphics::RenderTargetManager*> singleton{ REL::ID(2666735) };
+#else
+	REL::Relocation<RE::BSGraphics::RenderTargetManager*> singleton{ REL::ID(1508457) };
+#endif
+	return singleton.get();
+}
+
 void FidelityFX::Present(bool a_useFrameGeneration)
 {
 	auto upscaling = Upscaling::GetSingleton();
@@ -108,13 +129,23 @@ void FidelityFX::Present(bool a_useFrameGeneration)
 
 		dispatchParameters.commandList = commandList;
 
-		dispatchParameters.motionVectorScale.x = (float)dx12SwapChain->swapChainDesc.Width;
-		dispatchParameters.motionVectorScale.y = (float)dx12SwapChain->swapChainDesc.Height;
-		dispatchParameters.renderSize.width = dx12SwapChain->swapChainDesc.Width;
-		dispatchParameters.renderSize.height = dx12SwapChain->swapChainDesc.Height;
+		static auto gameViewport = State_GetSingleton();
+		static auto renderTargetManager = RenderTargetManager_GetSingleton();
+
+		auto screenSize = float2(float(gameViewport->screenWidth), float(gameViewport->screenHeight));
+		auto renderSize = float2(screenSize.x * renderTargetManager->dynamicWidthRatio, screenSize.y * renderTargetManager->dynamicHeightRatio);
+
+		dispatchParameters.motionVectorScale.x = renderSize.x;
+		dispatchParameters.motionVectorScale.y = renderSize.y;
+		dispatchParameters.renderSize.width = static_cast<uint>(renderSize.x);
+		dispatchParameters.renderSize.height = static_cast<uint>(renderSize.y);
 		
-		dispatchParameters.jitterOffset.x = 0;
-		dispatchParameters.jitterOffset.y = 0;
+		float2 jitter;
+		jitter.x = -gameViewport->offsetX * screenSize.x / 2.0f;
+		jitter.y = gameViewport->offsetY * screenSize.y / 2.0f;
+
+		dispatchParameters.jitterOffset.x = -jitter.x / renderTargetManager->dynamicWidthRatio;
+		dispatchParameters.jitterOffset.y = -jitter.y / renderTargetManager->dynamicHeightRatio;
 
 		dispatchParameters.frameTimeDelta = deltaTime * 1000.f;
 

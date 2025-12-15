@@ -134,6 +134,8 @@ void Upscaling::PostPostLoad()
 		logger::info("[Frame Generation] HighFPSPhysicsFix.dll is loaded");
 	else
 		logger::info("[Frame Generation] HighFPSPhysicsFix.dll is not loaded");
+
+	InstallHooks();
 }
 
 void Upscaling::CreateFrameGenerationResources()
@@ -540,9 +542,9 @@ struct SetUseDynamicResolutionViewportAsDefaultViewport
 {
 	static void thunk(RE::BSGraphics::RenderTargetManager* This, bool a_true)
 	{
+		func(This, a_true);
 		if (!a_true)
 			Upscaling::GetSingleton()->PostDisplay();
-		func(This, a_true);
 	}
 	static inline REL::Relocation<decltype(thunk)> func;
 };
@@ -580,9 +582,7 @@ void Upscaling::InstallHooks()
 {
 #if defined(FALLOUT_POST_NG)
 	stl::detour_thunk<WindowSizeChanged>(REL::ID(2276824));
-
-	stl::detour_thunk<SetUseDynamicResolutionViewportAsDefaultViewport>(REL::ID(2277194));
-
+	stl::write_thunk_call<SetUseDynamicResolutionViewportAsDefaultViewport>(REL::ID(2318322).address() + 0xC5);
 	stl::detour_thunk<DrawWorld_Forward>(REL::ID(2318315));
 	stl::write_thunk_call<DrawWorld_Reticle>(REL::ID(2318315).address() + 0x53D);
 #else
@@ -590,7 +590,7 @@ void Upscaling::InstallHooks()
 	stl::detour_thunk<WindowSizeChanged>(REL::ID(212827));
 
 	// Watch frame presentation
-	stl::detour_thunk<SetUseDynamicResolutionViewportAsDefaultViewport>(REL::ID(676851));
+	stl::write_thunk_call<SetUseDynamicResolutionViewportAsDefaultViewport>(REL::ID(587723).address() + 0xE1);
 
 	// Fix reticles on motion vectors and depth
 	stl::detour_thunk<DrawWorld_Forward>(REL::ID(656535));
