@@ -582,7 +582,7 @@ void Upscaling::UpdateSamplerStates(float a_currentMipBias)
 			samplerState->GetDesc(&samplerDesc);
 
 			// Only modify 16x anisotropic samplers (the high-quality ones)
-			if (samplerDesc.Filter == D3D11_FILTER_ANISOTROPIC && samplerDesc.MaxAnisotropy == 16) {
+			if (samplerDesc.Filter == D3D11_FILTER_ANISOTROPIC) {
 				samplerDesc.MaxAnisotropy = 8; // Reduced from 16x to 8x for performance
 				samplerDesc.MipLODBias = a_currentMipBias;
 			}
@@ -816,7 +816,11 @@ void Upscaling::UpdateGameSettings()
 	static auto imageSpaceManager = RE::ImageSpaceManager::GetSingleton();
 
 	// Automatically disable FXAA
+#if defined(FALLOUT_POST_NG)
 	imageSpaceManager->effectList[(uint)RE::ImageSpaceManager::ImageSpaceEffectEnum::EFFECT_SHADER_FXAA]->isActive = false;
+#else
+	imageSpaceManager->effectList[17]->isActive = false;
+#endif
 
 	// Automatically enable TAA
 #if defined(FALLOUT_POST_NG)
