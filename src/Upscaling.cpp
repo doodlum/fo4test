@@ -26,6 +26,38 @@ struct ImageSpaceEffectTemporalAA_IsActive
 	static inline REL::Relocation<decltype(thunk)> func;
 };
 
+/** @brief Hook to fix dynamic resolution in post processing shaders */
+struct DrawWorld_Imagespace_RenderEffectRange
+{
+	static void thunk(RE::BSGraphics::RenderTargetManager* This, uint a2, uint a3, uint a4, uint a5)
+	{
+		auto upscaling = Upscaling::GetSingleton();
+
+		static auto renderTargetManager = Util::RenderTargetManager_GetSingleton();
+		bool requiresOverride = renderTargetManager->dynamicHeightRatio != 1.0 || renderTargetManager->dynamicWidthRatio != 1.0;
+
+		float originalDynamicHeightRatio = renderTargetManager->dynamicHeightRatio;
+		float originalDynamicWidthRatio = renderTargetManager->dynamicWidthRatio;
+
+		if (requiresOverride) {
+			upscaling->OverrideRenderTargets();
+			upscaling->OverrideDepth();
+			renderTargetManager->dynamicHeightRatio = 1.0f;
+			renderTargetManager->dynamicWidthRatio = 1.0f;
+		}
+
+		func(This, a2, a3, a4, a5);
+
+		if (requiresOverride) {
+			upscaling->ResetDepth();
+			upscaling->ResetRenderTargets();
+			renderTargetManager->dynamicHeightRatio = originalDynamicHeightRatio;
+			renderTargetManager->dynamicWidthRatio = originalDynamicWidthRatio;
+		}
+	}
+	static inline REL::Relocation<decltype(thunk)> func;
+};
+
 /** @brief Hook to add alternative scaling method */
 struct DrawWorld_Imagespace_SetUseDynamicResolutionViewportAsDefaultViewport
 {
@@ -195,6 +227,7 @@ void Upscaling::InstallHooks()
 	// Disable TAA shader if using alternative scaling method
 	stl::write_vfunc<0x8, ImageSpaceEffectTemporalAA_IsActive>(RE::VTABLE::ImageSpaceEffectTemporalAA[0]);
 
+
 	// Add alternative scaling method
 	stl::write_thunk_call<DrawWorld_Imagespace_SetUseDynamicResolutionViewportAsDefaultViewport>(REL::ID(587723).address() + 0xE1);
 
@@ -213,12 +246,16 @@ void Upscaling::InstallHooks()
 
 		// Fix dynamic resolution for BSDFComposite
 		stl::write_thunk_call<DrawWorld_DeferredComposite_RenderPassImmediately>(REL::ID(728427).address() + 0x8DC);
+		//stl::write_thunk_call<DrawWorld_DeferredComposite_RenderPassImmediately>(REL::ID(984743).address() + 0x1C4);
 
 		// Fix dynamic resolution for Lens Flare visibility
 		stl::detour_thunk<BSImagespaceShaderLensFlare_RenderLensFlare>(REL::ID(676108));
 
 		// Fix dynamic resolution for Screenspace Reflections
 		stl::write_thunk_call<BSImagespaceShaderSSLRRaytracing_SetupTechnique_BeginTechnique>(REL::ID(779077).address() + 0x1C);
+		
+		// Fix dynamic resolution for post processing
+		stl::write_thunk_call<DrawWorld_Imagespace_RenderEffectRange>(REL::ID(587723).address() + 0x9F);
 	}
 #endif
 }
@@ -319,6 +356,9 @@ void Upscaling::UpdateRenderTarget(int index, float a_currentWidthRatio, float a
 	textureDesc.Width = static_cast<uint>(static_cast<float>(textureDesc.Width) * a_currentWidthRatio);
 	textureDesc.Height = static_cast<uint>(static_cast<float>(textureDesc.Height) * a_currentHeightRatio);
 
+	textureDesc.Width = std::max(textureDesc.Width, 1u);
+	textureDesc.Height = std::max(textureDesc.Height, 1u);
+
 	auto device = reinterpret_cast<ID3D11Device*>(rendererData->device);
 
 	if (originalRenderTarget.texture)
@@ -326,7 +366,7 @@ void Upscaling::UpdateRenderTarget(int index, float a_currentWidthRatio, float a
 
 	if (auto texture = reinterpret_cast<ID3D11Texture2D*>(proxyRenderTarget.texture)) {
 		if (originalRenderTarget.rtView)
-			DX::ThrowIfFailed(device->CreateRenderTargetView(texture, &rtViewDesc, reinterpret_cast<ID3D11RenderTargetView**>(proxyRenderTarget.rtView)));
+			DX::ThrowIfFailed(device->CreateRenderTargetView(texture, &rtViewDesc, reinterpret_cast<ID3D11RenderTargetView**>(&proxyRenderTarget.rtView)));
 
 		if (originalRenderTarget.srView)
 			DX::ThrowIfFailed(device->CreateShaderResourceView(texture, &srViewDesc, reinterpret_cast<ID3D11ShaderResourceView**>(&proxyRenderTarget.srView)));
@@ -467,7 +507,10 @@ void Upscaling::UpdateRenderTargets(float a_currentWidthRatio, float a_currentHe
 	if (a_currentWidthRatio == 1.0f && a_currentHeightRatio == 1.0f)
 		return;
 
-	// Full-resolution depth texture (R32 float)
+	// Dynamic resolution depth texture (R32 float)
+	texDesc.Width = static_cast<uint>(static_cast<float>(texDesc.Width) * a_currentWidthRatio);
+	texDesc.Height = static_cast<uint>(static_cast<float>(texDesc.Height) * a_currentHeightRatio);
+
 	texDesc.Format = DXGI_FORMAT_R32_FLOAT;
 	srvDesc.Format = texDesc.Format;
 	uavDesc.Format = texDesc.Format;
@@ -653,8 +696,8 @@ void Upscaling::CopyDepth()
 			context->CSSetShader(GetOverrideDepthCS(), nullptr, 0);
 
 			// Dispatch with 8x8 thread groups covering the full screen resolution
-			uint dispatchX = (uint)std::ceil(screenSize.x / 8.0f);
-			uint dispatchY = (uint)std::ceil(screenSize.y / 8.0f);
+			uint dispatchX = (uint)std::ceil(renderSize.x / 8.0f);
+			uint dispatchY = (uint)std::ceil(renderSize.y / 8.0f);
 			context->Dispatch(dispatchX, dispatchY, 1);
 		}
 
