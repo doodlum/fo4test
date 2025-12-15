@@ -246,7 +246,6 @@ void Upscaling::InstallHooks()
 
 		// Fix dynamic resolution for BSDFComposite
 		stl::write_thunk_call<DrawWorld_DeferredComposite_RenderPassImmediately>(REL::ID(728427).address() + 0x8DC);
-		//stl::write_thunk_call<DrawWorld_DeferredComposite_RenderPassImmediately>(REL::ID(984743).address() + 0x1C4);
 
 		// Fix dynamic resolution for Lens Flare visibility
 		stl::detour_thunk<BSImagespaceShaderLensFlare_RenderLensFlare>(REL::ID(676108));
@@ -570,9 +569,9 @@ void Upscaling::OverrideDepth()
 	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
 
 	// Save the original depth SRV (with dynamic resolution)
-	originalDepthView.copy_from(reinterpret_cast<ID3D11ShaderResourceView*>(rendererData->depthStencilTargets[(uint)Util::DepthStencilTarget::kMain].srViewDepth));
+	originalDepthView = reinterpret_cast<ID3D11ShaderResourceView*>(rendererData->depthStencilTargets[(uint)Util::DepthStencilTarget::kMain].srViewDepth);
 
-	// Replace with our full-resolution depth texture for post-processing effects
+	// Replace with our dynamic resolution depth texture for post-processing effects
 #if defined(FALLOUT_POST_NG)
 	rendererData->depthStencilTargets[(uint)Util::DepthStencilTarget::kMain].srViewDepth = reinterpret_cast<REX::W32::ID3D11ShaderResourceView*>(depthOverrideTexture->srv.get());
 #else
@@ -586,9 +585,9 @@ void Upscaling::ResetDepth()
 
 	// Restore the original depth SRV with dynamic resolution
 #if defined(FALLOUT_POST_NG)
-	rendererData->depthStencilTargets[(uint)Util::DepthStencilTarget::kMain].srViewDepth = reinterpret_cast<REX::W32::ID3D11ShaderResourceView*>(originalDepthView.get());
+	rendererData->depthStencilTargets[(uint)Util::DepthStencilTarget::kMain].srViewDepth = reinterpret_cast<REX::W32::ID3D11ShaderResourceView*>(originalDepthView);
 #else
-	rendererData->depthStencilTargets[(uint)Util::DepthStencilTarget::kMain].srViewDepth = originalDepthView.get();
+	rendererData->depthStencilTargets[(uint)Util::DepthStencilTarget::kMain].srViewDepth = originalDepthView;
 #endif
 }
 
@@ -689,7 +688,25 @@ void Upscaling::CopyDepth()
 			context->CSSetShaderResources(0, ARRAYSIZE(views), views);
 
 			// Bind full-resolution depth outputs (UAV)
-			ID3D11UnorderedAccessView* uavs[] = { depthUAV, linearDepthUAV };
+			ID3D11UnorderedAccessView* uavs[] = { linearDepthUAV };
+			context->CSSetUnorderedAccessViews(0, ARRAYSIZE(uavs), uavs, nullptr);
+
+			// Run depth upscaling compute shader
+			context->CSSetShader(GetOverrideLinearDepthCS(), nullptr, 0);
+
+			// Dispatch with 8x8 thread groups covering the full screen resolution
+			uint dispatchX = (uint)std::ceil(screenSize.x / 8.0f);
+			uint dispatchY = (uint)std::ceil(screenSize.y / 8.0f);
+			context->Dispatch(dispatchX, dispatchY, 1);
+		}
+
+		{
+			// Bind scaled depth as input (SRV)
+			ID3D11ShaderResourceView* views[] = { depthSRV };
+			context->CSSetShaderResources(0, ARRAYSIZE(views), views);
+
+			// Bind full-resolution depth outputs (UAV)
+			ID3D11UnorderedAccessView* uavs[] = { depthUAV };
 			context->CSSetUnorderedAccessViews(0, ARRAYSIZE(uavs), uavs, nullptr);
 
 			// Run depth upscaling compute shader
@@ -705,7 +722,7 @@ void Upscaling::CopyDepth()
 		ID3D11ShaderResourceView* views[1] = { nullptr };
 		context->CSSetShaderResources(0, ARRAYSIZE(views), views);
 
-		ID3D11UnorderedAccessView* uavs[2] = { nullptr, nullptr };
+		ID3D11UnorderedAccessView* uavs[1] = { nullptr };
 		context->CSSetUnorderedAccessViews(0, ARRAYSIZE(uavs), uavs, nullptr);
 
 		ID3D11ComputeShader* shader = nullptr;
@@ -793,6 +810,15 @@ ID3D11ComputeShader* Upscaling::GetDilateMotionVectorCS()
 		dilateMotionVectorCS.attach((ID3D11ComputeShader*)Util::CompileShader(L"Data/F4SE/Plugins/Upscaling/DilateMotionVectorCS.hlsl", {}, "cs_5_0"));
 	}
 	return dilateMotionVectorCS.get();
+}
+
+ID3D11ComputeShader* Upscaling::GetOverrideLinearDepthCS()
+{
+	if (!overrideLinearDepthCS) {
+		logger::debug("Compiling OverrideLinearDepthCS.hlsl");
+		overrideLinearDepthCS.attach((ID3D11ComputeShader*)Util::CompileShader(L"Data/F4SE/Plugins/Upscaling/OverrideLinearDepthCS.hlsl", {}, "cs_5_0"));
+	}
+	return overrideLinearDepthCS.get();
 }
 
 ID3D11ComputeShader* Upscaling::GetOverrideDepthCS()

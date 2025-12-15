@@ -235,15 +235,13 @@ public:
 	void ResetDepth();
 
 	/**
-	 * @brief Copy and upscale depth buffer
-	 *
-	 * Copies depth from render resolution to display resolution using
-	 * a compute shader for effects that need full-resolution depth
+	 * @brief Copy and upscale depth buffers
 	 */
 	void CopyDepth();
 
-	winrt::com_ptr<ID3D11ShaderResourceView> originalDepthView;  ///< Original depth buffer SRV
-	std::unique_ptr<Texture2D> depthOverrideTexture;             ///< Full-resolution depth override texture
+	ID3D11ShaderResourceView* originalDepthView;	    ///< Original depth buffer SRV
+
+	std::unique_ptr<Texture2D> depthOverrideTexture;             ///< Dynamic resolution depth override texture
 
 	// ========================================
 	// Shader Management
@@ -276,7 +274,15 @@ public:
 	 * @brief Get or compile depth override shader
 	 * @return Compiled compute shader
 	 *
-	 * Copies depth buffer from render to display resolution
+	 * Upscales depth buffer from render to display resolution
+	 */
+	ID3D11ComputeShader* GetOverrideLinearDepthCS();
+
+	/**
+	 * @brief Get or compile depth override shader
+	 * @return Compiled compute shader
+	 *
+	 * Copies depth buffer
 	 */
 	ID3D11ComputeShader* GetOverrideDepthCS();
 
@@ -347,6 +353,7 @@ private:
 
 	winrt::com_ptr<ID3D11ComputeShader> rcas;                        ///< RCAS sharpening shader
 	winrt::com_ptr<ID3D11ComputeShader> dilateMotionVectorCS;        ///< Motion vector dilation shader
-	winrt::com_ptr<ID3D11ComputeShader> overrideDepthCS;             ///< Depth upscaling shader
+	winrt::com_ptr<ID3D11ComputeShader> overrideLinearDepthCS;       ///< Linear depth upscaling shader
+	winrt::com_ptr<ID3D11ComputeShader> overrideDepthCS;             ///< Depth copy shader
 	winrt::com_ptr<ID3D11PixelShader> BSImagespaceShaderSSLRRaytracing;  ///< Custom SSR shader
 };
