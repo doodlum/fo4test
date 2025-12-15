@@ -29,7 +29,7 @@ struct ImageSpaceEffectTemporalAA_IsActive
 /** @brief Hook to fix dynamic resolution in post processing shaders */
 struct DrawWorld_Imagespace_RenderEffectRange
 {
-	static void thunk(RE::BSGraphics::RenderTargetManager* This, uint a2, uint a3, uint a4, uint a5)
+	static void thunk(RE::BSGraphics::RenderTargetManager* This, uint, uint, uint, uint)
 	{
 		auto upscaling = Upscaling::GetSingleton();
 
@@ -39,6 +39,8 @@ struct DrawWorld_Imagespace_RenderEffectRange
 		float originalDynamicHeightRatio = renderTargetManager->dynamicHeightRatio;
 		float originalDynamicWidthRatio = renderTargetManager->dynamicWidthRatio;
 
+		func(This, 0, 3, 1, 1);
+
 		if (requiresOverride) {
 			upscaling->OverrideRenderTargets();
 			upscaling->OverrideDepth();
@@ -46,7 +48,7 @@ struct DrawWorld_Imagespace_RenderEffectRange
 			renderTargetManager->dynamicWidthRatio = 1.0f;
 		}
 
-		func(This, a2, a3, a4, a5);
+		func(This, 4, 13, 1, 1);
 
 		if (requiresOverride) {
 			upscaling->ResetDepth();
