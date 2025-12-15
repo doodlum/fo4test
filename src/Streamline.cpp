@@ -128,7 +128,7 @@ HRESULT Streamline::CreateDeviceAndSwapChain(IDXGIAdapter* pAdapter,
 	return hr;
 }
 
-void Streamline::Upscale(Texture2D* a_upscaleTexture, Texture2D* a_dilatedMotionVectorTexture, float2 a_jitter, float2 a_renderSize, uint a_qualityMode)
+void Streamline::Upscale(ID3D11Texture2D* a_upscaleTexture, Texture2D* a_dilatedMotionVectorTexture, float2 a_jitter, float2 a_renderSize, uint a_qualityMode)
 {
 	UpdateConstants(a_jitter);
 
@@ -162,7 +162,7 @@ void Streamline::Upscale(Texture2D* a_upscaleTexture, Texture2D* a_dilatedMotion
 		dlssOptions.mode = dlssMode;
 		dlssOptions.outputWidth = gameViewport->screenWidth;
 		dlssOptions.outputHeight = gameViewport->screenHeight;
-		dlssOptions.colorBuffersHDR = sl::Boolean::eFalse;
+		dlssOptions.colorBuffersHDR = sl::Boolean::eTrue;
 
 		if (SL_FAILED(result, slDLSSSetOptions(viewport, dlssOptions))) {
 			logger::critical("[Streamline] Could not enable DLSS");
@@ -173,8 +173,8 @@ void Streamline::Upscale(Texture2D* a_upscaleTexture, Texture2D* a_dilatedMotion
 		sl::Extent lowResExtent{ 0, 0, (uint)a_renderSize.x, (uint)a_renderSize.y };
 		sl::Extent fullExtent{ 0, 0, gameViewport->screenWidth, gameViewport->screenHeight };
 
-		sl::Resource colorIn = { sl::ResourceType::eTex2d, a_upscaleTexture->resource.get(), 0 };
-		sl::Resource colorOut = { sl::ResourceType::eTex2d, a_upscaleTexture->resource.get(), 0 };
+		sl::Resource colorIn = { sl::ResourceType::eTex2d, a_upscaleTexture, 0 };
+		sl::Resource colorOut = { sl::ResourceType::eTex2d, a_upscaleTexture, 0 };
 		sl::Resource depth = { sl::ResourceType::eTex2d, reinterpret_cast<ID3D11Texture2D*>(depthTexture.texture), 0 };
 		sl::Resource mvec = { sl::ResourceType::eTex2d, a_dilatedMotionVectorTexture->resource.get(), 0};
 

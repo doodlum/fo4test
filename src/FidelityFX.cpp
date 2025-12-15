@@ -53,7 +53,7 @@ void FidelityFX::CreateFSRResources()
 	contextDescription.maxUpscaleSize.height = gameViewport->screenHeight;
 	contextDescription.displaySize.width = gameViewport->screenWidth;
 	contextDescription.displaySize.height = gameViewport->screenHeight;
-	contextDescription.flags = FFX_FSR3_ENABLE_UPSCALING_ONLY;
+	contextDescription.flags = FFX_FSR3_ENABLE_UPSCALING_ONLY | FFX_FSR3_ENABLE_HIGH_DYNAMIC_RANGE;
 	contextDescription.backendInterfaceUpscaling = fsrInterface;
 
 	auto renderer = RE::BSGraphics::RendererData::GetSingleton();
@@ -136,7 +136,7 @@ void FidelityFX::GenerateReactiveMask()
 		logger::critical("[FidelityFX] Failed to dispatch reactive mask!");
 }
 
-void FidelityFX::Upscale(Texture2D* a_color, float2 a_jitter, float2 a_renderSize, float a_sharpness)
+void FidelityFX::Upscale(ID3D11Texture2D* a_upscaleTexture, float2 a_jitter, float2 a_renderSize, float a_sharpness)
 {
 	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
 	auto context = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
@@ -167,7 +167,7 @@ void FidelityFX::Upscale(Texture2D* a_color, float2 a_jitter, float2 a_renderSiz
 		FfxFsr3DispatchUpscaleDescription dispatchParameters{};
 
 		dispatchParameters.commandList = ffxGetCommandListDX11(context);
-		dispatchParameters.color = ffxGetResource(a_color->resource.get(), L"FSR3_Input_OutputColor", FFX_RESOURCE_STATE_PIXEL_COMPUTE_READ);
+		dispatchParameters.color = ffxGetResource(a_upscaleTexture, L"FSR3_Input_OutputColor", FFX_RESOURCE_STATE_PIXEL_COMPUTE_READ);
 		dispatchParameters.depth = ffxGetResource(reinterpret_cast<ID3D11Texture2D*>(depthTexture.texture), L"FSR3_InputDepth", FFX_RESOURCE_STATE_PIXEL_COMPUTE_READ);
 		dispatchParameters.motionVectors = ffxGetResource(reinterpret_cast<ID3D11Texture2D*>(motionVectorTexture.texture), L"FSR3_InputMotionVectors", FFX_RESOURCE_STATE_PIXEL_COMPUTE_READ);
 		dispatchParameters.exposure = ffxGetResource(nullptr, L"FSR3_InputExposure", FFX_RESOURCE_STATE_PIXEL_COMPUTE_READ);

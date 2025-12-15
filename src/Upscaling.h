@@ -326,7 +326,6 @@ public:
 	 */
 	void DestroyUpscalingResources();
 
-	std::unique_ptr<Texture2D> upscalingTexture;           ///< Intermediate upscaling texture
 	std::unique_ptr<Texture2D> dilatedMotionVectorTexture; ///< Dilated motion vectors for DLSS
 
 	/**
