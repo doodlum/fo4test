@@ -541,6 +541,38 @@ void Upscaling::OverrideRenderTargets()
 		renderTargetManager->renderTargetData[i].height = static_cast<uint>(static_cast<float>(renderTargetManager->renderTargetData[i].height) * renderTargetManager->dynamicHeightRatio);
 	}
 
+	// Check and override pixel shader SRVs that reference original render targets
+	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
+	auto context = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
+
+	// Get currently bound pixel shader SRVs (first 16 slots)
+	ID3D11ShaderResourceView* boundSRVs[16] = {};
+	context->PSGetShaderResources(0, 16, boundSRVs);
+
+	// Scan through bound SRVs and replace any that match original render targets
+	for (int srvSlot = 0; srvSlot < 16; srvSlot++) {
+		if (!boundSRVs[srvSlot])
+			continue;
+
+		// Check if this SRV matches any original render target
+		for (int rtIndex = 0; rtIndex < ARRAYSIZE(renderTargetsPatch); rtIndex++) {
+			int targetIndex = renderTargetsPatch[rtIndex];
+			auto& originalRT = originalRenderTargets[targetIndex];
+			auto& proxyRT = proxyRenderTargets[targetIndex];
+
+			// If the bound SRV matches an original render target SRV and we have a proxy
+			if (boundSRVs[srvSlot] == reinterpret_cast<ID3D11ShaderResourceView*>(originalRT.srView) && proxyRT.srView) {
+				// Replace with the proxy SRV
+				auto proxySRV = reinterpret_cast<ID3D11ShaderResourceView*>(proxyRT.srView);
+				context->PSSetShaderResources(srvSlot, 1, &proxySRV);
+				break;
+			}
+		}
+
+		// Release the reference from PSGetShaderResources
+		boundSRVs[srvSlot]->Release();
+	}
+
 	// Temporarily disable dynamic resolution
 	DrawWorld_Imagespace_SetUseDynamicResolutionViewportAsDefaultViewport::func(renderTargetManager, false);
 }
@@ -556,6 +588,38 @@ void Upscaling::ResetRenderTargets()
 	// Restore original render target metadata (full-resolution dimensions)
 	for (int i = 0; i < 100; i++) {
 		renderTargetManager->renderTargetData[i] = originalRenderTargetData[i];
+	}
+
+	// Check and restore pixel shader SRVs that reference proxy render targets
+	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
+	auto context = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
+
+	// Get currently bound pixel shader SRVs (first 16 slots)
+	ID3D11ShaderResourceView* boundSRVs[16] = {};
+	context->PSGetShaderResources(0, 16, boundSRVs);
+
+	// Scan through bound SRVs and replace any that match proxy render targets
+	for (int srvSlot = 0; srvSlot < 16; srvSlot++) {
+		if (!boundSRVs[srvSlot])
+			continue;
+
+		// Check if this SRV matches any proxy render target
+		for (int rtIndex = 0; rtIndex < ARRAYSIZE(renderTargetsPatch); rtIndex++) {
+			int targetIndex = renderTargetsPatch[rtIndex];
+			auto& originalRT = originalRenderTargets[targetIndex];
+			auto& proxyRT = proxyRenderTargets[targetIndex];
+
+			// If the bound SRV matches a proxy render target SRV and we have an original
+			if (boundSRVs[srvSlot] == reinterpret_cast<ID3D11ShaderResourceView*>(proxyRT.srView) && originalRT.srView) {
+				// Replace with the original SRV
+				auto originalSRV = reinterpret_cast<ID3D11ShaderResourceView*>(originalRT.srView);
+				context->PSSetShaderResources(srvSlot, 1, &originalSRV);
+				break;
+			}
+		}
+
+		// Release the reference from PSGetShaderResources
+		boundSRVs[srvSlot]->Release();
 	}
 
 	// Enable dynamic resolution again
