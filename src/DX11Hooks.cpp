@@ -20,7 +20,6 @@ struct BSGraphics_CreateD3DAndSwapChain_D3D11CreateDeviceAndSwapChain
 		D3D_FEATURE_LEVEL* pFeatureLevel,
 		ID3D11DeviceContext** ppImmediateContext)
 	{
-
 		const D3D_FEATURE_LEVEL featureLevel = D3D_FEATURE_LEVEL_11_1;
 		pFeatureLevels = &featureLevel;
 		FeatureLevels = 1;
@@ -60,8 +59,8 @@ namespace DX11Hooks
 	void Install()
 	{
 #if defined(FALLOUT_POST_NG)
-		// Hook BSGraphics::CreateD3DAndSwapChain::D3D11CreateDeviceAndSwapChain to use D3D_FEATURE_LEVEL_11_1
-		stl::write_thunk_call<BSGraphics_CreateD3DAndSwapChain_D3D11CreateDeviceAndSwapChain>(REL::ID(2277018).address() + 0x411);
+		uintptr_t moduleBase = (uintptr_t)GetModuleHandle(nullptr);
+		(uintptr_t&)BSGraphics_CreateD3DAndSwapChain_D3D11CreateDeviceAndSwapChain::func = Detours::IATHook(moduleBase, "d3d11.dll", "D3D11CreateDeviceAndSwapChain", (uintptr_t)BSGraphics_CreateD3DAndSwapChain_D3D11CreateDeviceAndSwapChain::thunk);
 #else
 		// Hook BSGraphics::CreateD3DAndSwapChain::D3D11CreateDeviceAndSwapChain to use D3D_FEATURE_LEVEL_11_1
 		stl::write_thunk_call<BSGraphics_CreateD3DAndSwapChain_D3D11CreateDeviceAndSwapChain>(REL::ID(224250).address() + 0x419);
