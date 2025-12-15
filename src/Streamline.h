@@ -81,6 +81,16 @@ public:
 	void Initialize();
 
 	/**
+	 * @brief Check Streamline plugin compat
+	 */
+	void CheckFeatures(IDXGIAdapter* a_adapte);
+
+	/**
+	 * @brief Initialise features after device
+	 */
+	void PostDevice();
+
+	/**
 	 * @brief Create D3D11 device and swap chain with Streamline integration
 	 * @param pAdapter GPU adapter to use
 	 * @param DriverType Driver type

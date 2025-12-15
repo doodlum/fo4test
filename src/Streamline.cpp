@@ -63,26 +63,11 @@ void Streamline::Initialize()
 	}
 }
 
-extern decltype(&D3D11CreateDeviceAndSwapChain) ptrD3D11CreateDeviceAndSwapChain;
-
-HRESULT Streamline::CreateDeviceAndSwapChain(IDXGIAdapter* pAdapter,
-	D3D_DRIVER_TYPE DriverType,
-	HMODULE Software,
-	UINT Flags,
-	const D3D_FEATURE_LEVEL* pFeatureLevels,
-	UINT FeatureLevels,
-	UINT SDKVersion,
-	const DXGI_SWAP_CHAIN_DESC* pSwapChainDesc,
-	IDXGISwapChain** ppSwapChain,
-	ID3D11Device** ppDevice,
-	D3D_FEATURE_LEVEL* pFeatureLevel,
-	ID3D11DeviceContext** ppImmediateContext)
+void Streamline::CheckFeatures(IDXGIAdapter* a_adapter)
 {
-	if (!initialized)
-		Initialize();
-
+	logger::info("[Streamline] Checking features");
 	DXGI_ADAPTER_DESC adapterDesc;
-	pAdapter->GetDesc(&adapterDesc);
+	a_adapter->GetDesc(&adapterDesc);
 
 	sl::AdapterInfo adapterInfo;
 	adapterInfo.deviceLUID = (uint8_t*)&adapterDesc.AdapterLuid;
@@ -92,7 +77,8 @@ HRESULT Streamline::CreateDeviceAndSwapChain(IDXGIAdapter* pAdapter,
 	if (featureDLSS) {
 		logger::info("[Streamline] DLSS feature is loaded");
 		featureDLSS = slIsFeatureSupported(sl::kFeatureDLSS, adapterInfo) == sl::Result::eOk;
-	} else {
+	}
+	else {
 		logger::info("[Streamline] DLSS feature is not loaded");
 		sl::FeatureRequirements featureRequirements;
 		sl::Result result = slGetFeatureRequirements(sl::kFeatureDLSS, featureRequirements);
@@ -102,30 +88,15 @@ HRESULT Streamline::CreateDeviceAndSwapChain(IDXGIAdapter* pAdapter,
 	}
 
 	logger::info("[Streamline] DLSS {} available", featureDLSS ? "is" : "is not");
+}
 
-	HRESULT hr = ptrD3D11CreateDeviceAndSwapChain(
-			pAdapter,
-			DriverType,
-			Software,
-			Flags,
-			pFeatureLevels,
-			FeatureLevels,
-			SDKVersion,
-			pSwapChainDesc,
-			ppSwapChain,
-			ppDevice,
-			pFeatureLevel,
-			ppImmediateContext);
-
-	slSetD3DDevice(*ppDevice);
-
+void Streamline::PostDevice()
+{
 	if (featureDLSS) {
 		slGetFeatureFunction(sl::kFeatureDLSS, "slDLSSGetOptimalSettings", (void*&)slDLSSGetOptimalSettings);
 		slGetFeatureFunction(sl::kFeatureDLSS, "slDLSSGetState", (void*&)slDLSSGetState);
 		slGetFeatureFunction(sl::kFeatureDLSS, "slDLSSSetOptions", (void*&)slDLSSSetOptions);
 	}
-
-	return hr;
 }
 
 void Streamline::Upscale(Texture2D* a_upscaleTexture, Texture2D* a_dilatedMotionVectorTexture, float2 a_jitter, float2 a_renderSize, uint a_qualityMode)
