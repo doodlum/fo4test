@@ -39,6 +39,7 @@ struct DrawWorld_Imagespace_RenderEffectRange
 		float originalDynamicHeightRatio = renderTargetManager->dynamicHeightRatio;
 		float originalDynamicWidthRatio = renderTargetManager->dynamicWidthRatio;
 
+		// HDR shaders
 		func(This, 0, 3, 1, 1);
 
 		if (requiresOverride) {
@@ -48,6 +49,7 @@ struct DrawWorld_Imagespace_RenderEffectRange
 			renderTargetManager->dynamicWidthRatio = 1.0f;
 		}
 
+		// LDR shaders
 		func(This, 4, 13, 1, 1);
 
 		if (requiresOverride) {
@@ -192,7 +194,7 @@ void Upscaling::InstallHooks()
 {
 #if defined(FALLOUT_POST_NG)
 	// Control jitters, dynamic resolution, sampler states, and render targets
-	stl::write_thunk_call<BSGraphics_State_UpdateTemporalData>(REL::ID(2318286).address() + 0x38C);
+	stl::detour_thunk<BSGraphics_State_UpdateTemporalData>(REL::ID(2277095));
 
 	// Disable TAA shader if using alternative scaling method
 	stl::write_vfunc<0x8, ImageSpaceEffectTemporalAA_IsActive>(RE::VTABLE::ImageSpaceEffectTemporalAA[0]);
@@ -227,7 +229,7 @@ void Upscaling::InstallHooks()
 	}
 #else
 	// Control jitters, dynamic resolution, sampler states, and render targets
-	stl::write_thunk_call<BSGraphics_State_UpdateTemporalData>(REL::ID(502840).address() + 0x3C1);
+	stl::detour_thunk<BSGraphics_State_UpdateTemporalData>(REL::ID(376068));
 
 	// Disable TAA shader if using alternative scaling method
 	stl::write_vfunc<0x8, ImageSpaceEffectTemporalAA_IsActive>(RE::VTABLE::ImageSpaceEffectTemporalAA[0]);
