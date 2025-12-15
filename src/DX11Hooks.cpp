@@ -4,102 +4,67 @@
 
 #include "Streamline.h"
 
-decltype(&D3D11CreateDeviceAndSwapChain) ptrD3D11CreateDeviceAndSwapChain;
-
-HRESULT WINAPI hk_D3D11CreateDeviceAndSwapChainNoStreamline(
-	IDXGIAdapter* pAdapter,
-	D3D_DRIVER_TYPE DriverType,
-	HMODULE Software,
-	UINT Flags,
-	const D3D_FEATURE_LEVEL* pFeatureLevels,
-	UINT FeatureLevels,
-	UINT SDKVersion,
-	const DXGI_SWAP_CHAIN_DESC* pSwapChainDesc,
-	IDXGISwapChain** ppSwapChain,
-	ID3D11Device** ppDevice,
-	D3D_FEATURE_LEVEL* pFeatureLevel,
-	ID3D11DeviceContext** ppImmediateContext)
+struct BSGraphics_CreateD3DAndSwapChain_D3D11CreateDeviceAndSwapChain
 {
-	const D3D_FEATURE_LEVEL featureLevel = D3D_FEATURE_LEVEL_11_1;
-	pFeatureLevels = &featureLevel;
-	FeatureLevels = 1;
+	static HRESULT WINAPI thunk(
+		IDXGIAdapter* pAdapter,
+		D3D_DRIVER_TYPE DriverType,
+		HMODULE Software,
+		UINT Flags,
+		const D3D_FEATURE_LEVEL* pFeatureLevels,
+		UINT FeatureLevels,
+		UINT SDKVersion,
+		const DXGI_SWAP_CHAIN_DESC* pSwapChainDesc,
+		IDXGISwapChain** ppSwapChain,
+		ID3D11Device** ppDevice,
+		D3D_FEATURE_LEVEL* pFeatureLevel,
+		ID3D11DeviceContext** ppImmediateContext)
+	{
 
-	return ptrD3D11CreateDeviceAndSwapChain(pAdapter,
-		DriverType,
-		Software,
-		Flags,
-		pFeatureLevels,
-		FeatureLevels,
-		SDKVersion,
-		pSwapChainDesc,
-		ppSwapChain,
-		ppDevice,
-		pFeatureLevel,
-		ppImmediateContext);
-}
+		const D3D_FEATURE_LEVEL featureLevel = D3D_FEATURE_LEVEL_11_1;
+		pFeatureLevels = &featureLevel;
+		FeatureLevels = 1;
 
-HRESULT WINAPI hk_D3D11CreateDeviceAndSwapChain(
-	IDXGIAdapter* pAdapter,
-	D3D_DRIVER_TYPE DriverType,
-	HMODULE Software,
-	UINT Flags,
-	const D3D_FEATURE_LEVEL* pFeatureLevels,
-	UINT FeatureLevels,
-	UINT SDKVersion,
-	const DXGI_SWAP_CHAIN_DESC* pSwapChainDesc,
-	IDXGISwapChain** ppSwapChain,
-	ID3D11Device** ppDevice,
-	D3D_FEATURE_LEVEL* pFeatureLevel,
-	ID3D11DeviceContext** ppImmediateContext)
-{
-	const D3D_FEATURE_LEVEL featureLevel = D3D_FEATURE_LEVEL_11_1;
-	pFeatureLevels = &featureLevel;
-	FeatureLevels = 1;
+		auto ret = func(pAdapter,
+			DriverType,
+			Software,
+			Flags,
+			pFeatureLevels,
+			FeatureLevels,
+			SDKVersion,
+			pSwapChainDesc,
+			ppSwapChain,
+			ppDevice,
+			pFeatureLevel,
+			ppImmediateContext);
+			
+		auto streamline = Streamline::GetSingleton();
+		streamline->LoadInterposer();
 
-	auto result = Streamline::GetSingleton()->CreateDeviceAndSwapChain(
-		pAdapter,
-		DriverType,
-		Software,
-		Flags,
-		pFeatureLevels,
-		FeatureLevels,
-		SDKVersion,
-		pSwapChainDesc,
-		ppSwapChain,
-		ppDevice,
-		pFeatureLevel,
-		ppImmediateContext);
-	if (SUCCEEDED(result)) {
-		return result;
+		if (streamline->interposer){
+			streamline->Initialize();
+			streamline->slUpgradeInterface((void**)&(*ppDevice));
+			streamline->slUpgradeInterface((void**)&(*ppSwapChain));
+			streamline->slSetD3DDevice(*ppDevice);
+			streamline->CheckFeatures(pAdapter);
+			streamline->PostDevice();
+		}
+
+		return ret;
 	}
-	return ptrD3D11CreateDeviceAndSwapChain(pAdapter,
-		DriverType,
-		Software,
-		Flags,
-		pFeatureLevels,
-		FeatureLevels,
-		SDKVersion,
-		pSwapChainDesc,
-		ppSwapChain,
-		ppDevice,
-		pFeatureLevel,
-		ppImmediateContext);
-}
+	static inline REL::Relocation<decltype(thunk)> func;
+};
 
 namespace DX11Hooks
 {
 	void Install()
 	{
-		auto streamline = Streamline::GetSingleton();
-
-		streamline->LoadInterposer();
-
-		logger::info("Hooking D3D11CreateDeviceAndSwapChain");
-
-		uintptr_t moduleBase = (uintptr_t)GetModuleHandle(nullptr);
-		if (streamline->interposer)
-			(uintptr_t&)ptrD3D11CreateDeviceAndSwapChain = Detours::IATHook(moduleBase, "d3d11.dll", "D3D11CreateDeviceAndSwapChain", (uintptr_t)hk_D3D11CreateDeviceAndSwapChain);
-		else
-			(uintptr_t&)ptrD3D11CreateDeviceAndSwapChain = Detours::IATHook(moduleBase, "d3d11.dll", "D3D11CreateDeviceAndSwapChain", (uintptr_t)hk_D3D11CreateDeviceAndSwapChainNoStreamline);
+#if defined(FALLOUT_POST_NG)
+		// Hook BSGraphics::CreateD3DAndSwapChain::D3D11CreateDeviceAndSwapChain to use D3D_FEATURE_LEVEL_11_1
+		stl::write_thunk_call<BSGraphics_CreateD3DAndSwapChain_D3D11CreateDeviceAndSwapChain>(REL::ID(2277018).address() + 0x411);
+#else
+		// Hook BSGraphics::CreateD3DAndSwapChain::D3D11CreateDeviceAndSwapChain to use D3D_FEATURE_LEVEL_11_1
+		stl::write_thunk_call<BSGraphics_CreateD3DAndSwapChain_D3D11CreateDeviceAndSwapChain>(REL::ID(224250).address() + 0x419);
+#endif
 	}
 }
