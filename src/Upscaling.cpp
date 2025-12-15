@@ -678,7 +678,7 @@ Upscaling::UpscaleMethod Upscaling::GetUpscaleMethod(bool a_checkMenu)
 	
 	// Disable the upscaling method when certain menus are open
 	if (a_checkMenu){
-		if (ui->GetMenuOpen("ExamineMenu") || ui->GetMenuOpen("PipboyMenu"))
+		if (ui->GetMenuOpen("ExamineMenu") || ui->GetMenuOpen("PipboyMenu") || ui->GetMenuOpen("LoadingMenu"))
 			return UpscaleMethod::kDisabled;
 	}
 
