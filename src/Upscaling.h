@@ -9,7 +9,7 @@
 #include <memory>
 #include <winrt/base.h>
 
-const uint renderTargetsPatch[] = { 20, 57, 24, 25, 23, 58, 59, 28, 3, 9, 60, 61, 4, 29, 1, 36, 37, 64, 65, 66, 67, 68, 14, 15, 22, 10, 11, 7, 8 };
+const uint renderTargetsPatch[] = { 20, 57, 24, 25, 23, 58, 59, 28, 3, 9, 60, 61, 4, 29, 1, 36, 37, 22, 10, 11, 7, 8, 64, 14 };
 
 /**
  * @class Upscaling
