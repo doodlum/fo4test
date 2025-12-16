@@ -47,7 +47,7 @@ struct DrawWorld_Imagespace_RenderEffectRange
 		func(This, 0, 3, 1, 1);
 
 		if (requiresOverride) {
-			upscaling->OverrideRenderTargets({1, 4, 29});
+			upscaling->OverrideRenderTargets({1, 4, 29, 16});
 			upscaling->OverrideDepth(true);
 			renderTargetManager->dynamicHeightRatio = 1.0f;
 			renderTargetManager->dynamicWidthRatio = 1.0f;
