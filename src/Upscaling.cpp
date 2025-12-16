@@ -1129,6 +1129,8 @@ void Upscaling::Upscale()
 
 		{
 			{
+				UpdateAndBindUpscalingCB(context, screenSize, renderSize);
+
 				ID3D11ShaderResourceView* views[1] = { frameBufferSRV };
 				context->CSSetShaderResources(0, ARRAYSIZE(views), views);
 

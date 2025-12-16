@@ -34,6 +34,14 @@
 //       0.25
 // This is used as a noise detection filter, to reduce the effect of RCAS on grain, and focus on real edges.
 
+
+cbuffer Upscaling : register(b0)
+{
+	uint2 ScreenSize;
+	uint2 RenderSize;
+	float4 CameraData;
+};
+
 Texture2D<float3> Source : register(t0);
 RWTexture2D<float3> Dest : register(u0);
 
@@ -42,8 +50,11 @@ float getRCASLuma(float3 rgb)
 	return dot(rgb, float3(0.5, 1.0, 0.5));
 }
 
-[numthreads(8, 8, 1)] void main(uint3 DTid
-								: SV_DispatchThreadID) {
+[numthreads(8, 8, 1)] void main(uint3 DTid : SV_DispatchThreadID) {
+	// Early exit if dispatch thread is outside texture dimensions
+	if (any(dispatchID.xy >= ScreenSize))
+		return;
+
 	float3 e = Source.Load(int3(DTid.x, DTid.y, 0)).rgb;
 
 	float3 b = Source.Load(int3(DTid.x, DTid.y - 1, 0)).rgb;
