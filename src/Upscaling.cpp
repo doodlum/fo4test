@@ -108,6 +108,39 @@ struct DrawWorld_Render_PreUI_Forward
 	static inline REL::Relocation<decltype(thunk)> func;
 };
 
+/** @brief Hook for HBAO to fix dynamic resolution */
+struct DrawWorld_Render_PreUI_NVHBAO
+{
+	static void thunk(struct DrawWorld* This)
+	{
+		auto upscaling = Upscaling::GetSingleton();
+
+
+		static auto renderTargetManager = Util::RenderTargetManager_GetSingleton();
+		bool requiresOverride = renderTargetManager->dynamicHeightRatio != 1.0 || renderTargetManager->dynamicWidthRatio != 1.0;
+
+		float originalDynamicHeightRatio = renderTargetManager->dynamicHeightRatio;
+		float originalDynamicWidthRatio = renderTargetManager->dynamicWidthRatio;
+
+		if (requiresOverride) {
+			upscaling->OverrideRenderTargets();
+			upscaling->OverrideDepth();
+			renderTargetManager->dynamicHeightRatio = 1.0f;
+			renderTargetManager->dynamicWidthRatio = 1.0f;
+		}
+
+		func(This);
+
+		if (requiresOverride) {
+			upscaling->ResetDepth();
+			upscaling->ResetRenderTargets();
+			renderTargetManager->dynamicHeightRatio = originalDynamicHeightRatio;
+			renderTargetManager->dynamicWidthRatio = originalDynamicWidthRatio;
+		}
+	}
+	static inline REL::Relocation<decltype(thunk)> func;
+};
+
 /** @brief Hook for BSDFComposite with render target and depth override */
 struct DrawWorld_DeferredComposite_RenderPassImmediately
 {
@@ -261,6 +294,10 @@ void Upscaling::InstallHooks()
 		
 		// Fix dynamic resolution for post processing
 		stl::write_thunk_call<DrawWorld_Imagespace_RenderEffectRange>(REL::ID(587723).address() + 0x9F);
+		
+		// Fix dynamic resolution for HBAO
+		stl::write_thunk_call<DrawWorld_Render_PreUI_NVHBAO>(REL::ID(984743).address() + 0x1BA);
+
 	}
 #endif
 }
