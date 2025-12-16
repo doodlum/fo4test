@@ -4,6 +4,8 @@
 
 #include "Streamline.h"
 
+extern bool enbLoaded;
+
 struct BSGraphics_CreateD3DAndSwapChain_D3D11CreateDeviceAndSwapChain
 {
 	static HRESULT WINAPI thunk(
@@ -42,8 +44,10 @@ struct BSGraphics_CreateD3DAndSwapChain_D3D11CreateDeviceAndSwapChain
 
 		if (streamline->interposer){
 			streamline->Initialize();
-			streamline->slUpgradeInterface((void**)&(*ppDevice));
-			streamline->slUpgradeInterface((void**)&(*ppSwapChain));
+			if (!enbLoaded){
+				streamline->slUpgradeInterface((void**)&(*ppDevice));
+				streamline->slUpgradeInterface((void**)&(*ppSwapChain));
+			}
 			streamline->slSetD3DDevice(*ppDevice);
 			streamline->CheckFeatures(pAdapter);
 			streamline->PostDevice();
