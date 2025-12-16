@@ -5,12 +5,16 @@
 extern bool enbLoaded;
 
 /** @brief Hook for updating jitter, dynamic resolution, and resources */
-struct BSGraphics_State_UpdateTemporalData
+struct BSGraphics_State_UpdateDynamicResolution
 {
-	static void thunk(RE::BSGraphics::State* a_state)
+	static void thunk(RE::BSGraphics::RenderTargetManager* This,
+		RE::NiPoint3* a2,
+		RE::NiPoint3* a3,
+		RE::NiPoint3* a4,
+		RE::NiPoint3* a5)
 	{
-		func(a_state);
-		Upscaling::GetSingleton()->UpdateJitter();
+		func(This, a2, a3, a4, a5);
+		Upscaling::GetSingleton()->UpdateUpscaling();
 	}
 	static inline REL::Relocation<decltype(thunk)> func;
 };
@@ -20,8 +24,7 @@ struct ImageSpaceEffectTemporalAA_IsActive
 {
 	static bool thunk(struct ImageSpaceEffectTemporalAA* This)
 	{
-		auto upscaleMethod = Upscaling::GetSingleton()->GetUpscaleMethod(true);
-		return upscaleMethod == Upscaling::UpscaleMethod::kDisabled && func(This);
+		return Upscaling::GetSingleton()->upscaleMethod == Upscaling::UpscaleMethod::kDisabled && func(This);
 	}
 	static inline REL::Relocation<decltype(thunk)> func;
 };
@@ -99,10 +102,9 @@ struct DrawWorld_Render_PreUI_Forward
 		func(This);
 		upscaling->ResetSamplerStates();
 
-		auto upscaleMethod = upscaling->GetUpscaleMethod(false);
 		auto fidelityFX = FidelityFX::GetSingleton();
 
-		if (upscaleMethod == Upscaling::UpscaleMethod::kFSR)
+		if (upscaling->upscaleMethod == Upscaling::UpscaleMethod::kFSR)
 			fidelityFX->GenerateReactiveMask();
 	}
 	static inline REL::Relocation<decltype(thunk)> func;
@@ -114,7 +116,6 @@ struct DrawWorld_Render_PreUI_NVHBAO
 	static void thunk(struct DrawWorld* This)
 	{
 		auto upscaling = Upscaling::GetSingleton();
-
 
 		static auto renderTargetManager = Util::RenderTargetManager_GetSingleton();
 		bool requiresOverride = renderTargetManager->dynamicHeightRatio != 1.0 || renderTargetManager->dynamicWidthRatio != 1.0;
@@ -183,15 +184,13 @@ struct BSImagespaceShaderLensFlare_RenderLensFlare
 		static auto renderTargetManager = Util::RenderTargetManager_GetSingleton();
 		bool requiresOverride = renderTargetManager->dynamicHeightRatio != 1.0 || renderTargetManager->dynamicWidthRatio != 1.0;
 
-		if (requiresOverride) {
+		if (requiresOverride)
 			upscaling->OverrideDepth();
-		}
 
 		func(a_camera);
 
-		if (requiresOverride) {
+		if (requiresOverride)
 			upscaling->ResetDepth();
-		}
 	}
 	static inline REL::Relocation<decltype(thunk)> func;
 };
@@ -214,10 +213,9 @@ struct ForwardAlphaImpl_FinishAccumulating_Standard_PostResolveDepth
 	{
 		func(This);
 		auto upscaling = Upscaling::GetSingleton();
-		auto upscaleMethod = upscaling->GetUpscaleMethod(false);
 		auto fidelityFX = FidelityFX::GetSingleton();
 
-		if (upscaleMethod == Upscaling::UpscaleMethod::kFSR)
+		if (upscaling->upscaleMethod == Upscaling::UpscaleMethod::kFSR)
 			fidelityFX->CopyOpaqueTexture();
 	}
 	static inline REL::Relocation<decltype(thunk)> func;
@@ -225,12 +223,15 @@ struct ForwardAlphaImpl_FinishAccumulating_Standard_PostResolveDepth
 
 void Upscaling::InstallHooks()
 {
-#if defined(FALLOUT_POST_NG)
-	// Control jitters, dynamic resolution, sampler states, and render targets
-	stl::detour_thunk<BSGraphics_State_UpdateTemporalData>(REL::ID(2277095));
+	// Disable dynamic resolution shader if using alternative scaling method
+	//stl::write_vfunc<0x8, ImageSpaceEffectUpsampleDynamicResolution_IsActive>(RE::VTABLE::ImageSpaceEffectUpsampleDynamicResolution[0]);
 
 	// Disable TAA shader if using alternative scaling method
 	stl::write_vfunc<0x8, ImageSpaceEffectTemporalAA_IsActive>(RE::VTABLE::ImageSpaceEffectTemporalAA[0]);
+
+#if defined(FALLOUT_POST_NG)
+	// Control jitters, dynamic resolution, sampler states, and render targets
+	stl::write_thunk_call<BSGraphics_State_UpdateDynamicResolution>(REL::ID(2318321).address() + 0x29F);
 
 	// Add alternative scaling method
 	stl::write_thunk_call<DrawWorld_Imagespace_SetUseDynamicResolutionViewportAsDefaultViewport>(REL::ID(2318322).address() + 0xC5);
@@ -244,10 +245,6 @@ void Upscaling::InstallHooks()
 
 	// These hooks are not needed when using ENB because dynamic resolution is not supported
 	if (!enbLoaded) {
-		// Disable BSGraphics::RenderTargetManager::UpdateDynamicResolution
-		REL::Relocation<std::uintptr_t> target{ REL::ID(2318321), 0x29F };
-		REL::safe_fill(target.address(), 0x90, 5);
-
 		// Fix dynamic resolution for BSDFComposite
 		stl::write_thunk_call<DrawWorld_DeferredComposite_RenderPassImmediately>(REL::ID(2318313).address() + 0x915);
 
@@ -262,13 +259,7 @@ void Upscaling::InstallHooks()
 	}
 #else
 	// Control jitters, dynamic resolution, sampler states, and render targets
-	stl::detour_thunk<BSGraphics_State_UpdateTemporalData>(REL::ID(376068));
-
-	// Disable TAA shader if using alternative scaling method
-	stl::write_vfunc<0x8, ImageSpaceEffectTemporalAA_IsActive>(RE::VTABLE::ImageSpaceEffectTemporalAA[0]);
-
-	// Add alternative scaling method
-	stl::write_thunk_call<DrawWorld_Imagespace_SetUseDynamicResolutionViewportAsDefaultViewport>(REL::ID(587723).address() + 0xE1);
+	stl::write_thunk_call<BSGraphics_State_UpdateDynamicResolution>(REL::ID(984743).address() + 0x14B);
 
 	// Control sampler states for mipmap bias
 	stl::write_thunk_call<DrawWorld_Render_PreUI_DeferredPrePass>(REL::ID(984743).address() + 0x17F);
@@ -279,10 +270,6 @@ void Upscaling::InstallHooks()
 
 	// These hooks are not needed when using ENB because dynamic resolution is not supported
 	if (!enbLoaded) {
-		// Disable BSGraphics::RenderTargetManager::UpdateDynamicResolution
-		REL::Relocation<std::uintptr_t> target{ REL::ID(984743), 0x14B };
-		REL::safe_fill(target.address(), 0x90, 5);
-
 		// Fix dynamic resolution for BSDFComposite
 		stl::write_thunk_call<DrawWorld_DeferredComposite_RenderPassImmediately>(REL::ID(728427).address() + 0x8DC);
 
@@ -297,7 +284,6 @@ void Upscaling::InstallHooks()
 		
 		// Fix dynamic resolution for HBAO
 		stl::write_thunk_call<DrawWorld_Render_PreUI_NVHBAO>(REL::ID(984743).address() + 0x1BA);
-
 	}
 #endif
 }
@@ -400,6 +386,9 @@ void Upscaling::UpdateRenderTarget(int index, float a_currentWidthRatio, float a
 
 	textureDesc.Width = std::max(textureDesc.Width, 1u);
 	textureDesc.Height = std::max(textureDesc.Height, 1u);
+	textureDesc.MipLevels = 1;
+
+	srViewDesc.Texture2D.MipLevels = 1;
 
 	auto device = reinterpret_cast<ID3D11Device*>(rendererData->device);
 
@@ -743,7 +732,7 @@ void Upscaling::UpdateSamplerStates(float a_currentMipBias)
 
 void Upscaling::OverrideSamplerStates()
 {
-	if (GetUpscaleMethod(true) == UpscaleMethod::kDisabled)
+	if (upscaleMethod == UpscaleMethod::kDisabled)
 		return;
 
 	static auto samplerStates = SamplerStates::GetSingleton();
@@ -753,7 +742,7 @@ void Upscaling::OverrideSamplerStates()
 
 void Upscaling::ResetSamplerStates()
 {
-	if (GetUpscaleMethod(true) == UpscaleMethod::kDisabled)
+	if (upscaleMethod == UpscaleMethod::kDisabled)
 		return;
 
 	static auto samplerStates = SamplerStates::GetSingleton();
@@ -780,32 +769,11 @@ void Upscaling::CopyDepth()
 	// Get the scaled depth buffer as input
 	auto depthSRV = reinterpret_cast<ID3D11ShaderResourceView*>(rendererData->depthStencilTargets[(uint)Util::DepthStencilTarget::kMain].srViewDepth);
 
-	// Get the full-resolution depth output UAV
+	// Get the dynamic resolution depth output UAV
 	auto depthUAV = depthOverrideTexture->uav.get();
-
-	// Also update the linearized depth mips used by other effects
-	auto linearDepthUAV = reinterpret_cast<ID3D11UnorderedAccessView*>(rendererData->renderTargets[(uint)Util::RenderTarget::kMainDepthMips].uaView);
 
 	{
 		UpdateAndBindUpscalingCB(context, screenSize, renderSize);
-
-		{
-			// Bind scaled depth as input (SRV)
-			ID3D11ShaderResourceView* views[] = { depthSRV };
-			context->CSSetShaderResources(0, ARRAYSIZE(views), views);
-
-			// Bind full-resolution depth outputs (UAV)
-			ID3D11UnorderedAccessView* uavs[] = { linearDepthUAV };
-			context->CSSetUnorderedAccessViews(0, ARRAYSIZE(uavs), uavs, nullptr);
-
-			// Run depth upscaling compute shader
-			context->CSSetShader(GetOverrideLinearDepthCS(), nullptr, 0);
-
-			// Dispatch with 8x8 thread groups covering the full screen resolution
-			uint dispatchX = (uint)std::ceil(screenSize.x / 8.0f);
-			uint dispatchY = (uint)std::ceil(screenSize.y / 8.0f);
-			context->Dispatch(dispatchX, dispatchY, 1);
-		}
 
 		{
 			// Bind scaled depth as input (SRV)
@@ -819,7 +787,7 @@ void Upscaling::CopyDepth()
 			// Run depth upscaling compute shader
 			context->CSSetShader(GetOverrideDepthCS(), nullptr, 0);
 
-			// Dispatch with 8x8 thread groups covering the full screen resolution
+			// Dispatch with 8x8 thread groups covering the render size
 			uint dispatchX = (uint)std::ceil(renderSize.x / 8.0f);
 			uint dispatchY = (uint)std::ceil(renderSize.y / 8.0f);
 			context->Dispatch(dispatchX, dispatchY, 1);
@@ -849,23 +817,22 @@ Upscaling::UpscaleMethod Upscaling::GetUpscaleMethod(bool a_checkMenu)
 			return UpscaleMethod::kDisabled;
 	}
 
-	UpscaleMethod upscaleMethod = (UpscaleMethod)settings.upscaleMethodPreference;
+	UpscaleMethod currentUpscaleMethod = (UpscaleMethod)settings.upscaleMethodPreference;
 		
 	// If DLSS is not available, default to FSR
 	if (!streamline->featureDLSS && upscaleMethod == UpscaleMethod::kDLSS)
-		upscaleMethod = UpscaleMethod::kFSR;
+		currentUpscaleMethod = UpscaleMethod::kFSR;
 
 	// ENB is loaded, disable FSR
 	if (enbLoaded && upscaleMethod == UpscaleMethod::kFSR)
-		upscaleMethod = UpscaleMethod::kDisabled;
+		currentUpscaleMethod = UpscaleMethod::kDisabled;
 
-	return upscaleMethod;
+	return currentUpscaleMethod;
 }
 
 void Upscaling::CheckResources()
 {
 	static auto previousUpscaleMethodNoMenu = UpscaleMethod::kDisabled;
-	auto upscaleMethodNoMenu = GetUpscaleMethod(false);  // false = ignore menu state
 
 	auto streamline = Streamline::GetSingleton();
 	auto fidelityFX = FidelityFX::GetSingleton();
@@ -917,15 +884,6 @@ ID3D11ComputeShader* Upscaling::GetDilateMotionVectorCS()
 		dilateMotionVectorCS.attach((ID3D11ComputeShader*)Util::CompileShader(L"Data/F4SE/Plugins/Upscaling/DilateMotionVectorCS.hlsl", {}, "cs_5_0"));
 	}
 	return dilateMotionVectorCS.get();
-}
-
-ID3D11ComputeShader* Upscaling::GetOverrideLinearDepthCS()
-{
-	if (!overrideLinearDepthCS) {
-		logger::debug("Compiling OverrideLinearDepthCS.hlsl");
-		overrideLinearDepthCS.attach((ID3D11ComputeShader*)Util::CompileShader(L"Data/F4SE/Plugins/Upscaling/OverrideLinearDepthCS.hlsl", {}, "cs_5_0"));
-	}
-	return overrideLinearDepthCS.get();
 }
 
 ID3D11ComputeShader* Upscaling::GetOverrideDepthCS()
@@ -1007,13 +965,13 @@ void Upscaling::UpdateGameSettings()
 	* enableTAA = true;
 }
 
-void Upscaling::UpdateJitter()
+void Upscaling::UpdateUpscaling()
 {
 	static auto gameViewport = Util::State_GetSingleton();
 	static auto renderTargetManager = Util::RenderTargetManager_GetSingleton();
 
-	auto upscaleMethodNoMenu = GetUpscaleMethod(false);
-	auto upscaleMethod = GetUpscaleMethod(true);
+	upscaleMethodNoMenu = GetUpscaleMethod(false);
+	upscaleMethod = GetUpscaleMethod(true);
 
 	// Calculate render resolution scale from quality mode
 	// Example: Quality mode returns upscale ratio of ~1.5x, so resolutionScale = 1/1.5 = 0.67
@@ -1022,7 +980,7 @@ void Upscaling::UpdateJitter()
 	// Calculate mipmap LOD bias
 	// Example: 0.67 scale -> log2(0.67) = -0.58
 	float currentMipBias = std::log2f(resolutionScale);
-	
+
 	if (upscaleMethodNoMenu == UpscaleMethod::kDLSS)
 		currentMipBias -= 1.0f;
 
@@ -1031,11 +989,9 @@ void Upscaling::UpdateJitter()
 	UpdateGameSettings();
 
 	// Disable upscaling when certain menus are open (Pip-Boy, Examine, Loading)
-	if (upscaleMethod == UpscaleMethod::kDisabled)
+	if (upscaleMethod == UpscaleMethod::kDisabled) {
 		resolutionScale = 1.0f;
-
-	renderTargetManager->lowestWidthRatio = renderTargetManager->dynamicWidthRatio;
-	renderTargetManager->lowestHeightRatio = renderTargetManager->dynamicHeightRatio;
+	}
 
 	// Apply TAA jitter (shifts projection matrix sub-pixel per frame)
 	if (upscaleMethod != UpscaleMethod::kDisabled) {
@@ -1054,13 +1010,13 @@ void Upscaling::UpdateJitter()
 	renderTargetManager->dynamicWidthRatio = resolutionScale;
 	renderTargetManager->dynamicHeightRatio = resolutionScale;
 
+	renderTargetManager->isDynamicResolutionCurrentlyActivated = renderTargetManager->dynamicWidthRatio != 1.0 || renderTargetManager->dynamicHeightRatio != 1.0;
+
 	CheckResources();
 }
 
 void Upscaling::Upscale()
 {
-	auto upscaleMethod = GetUpscaleMethod(true);
-
 	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
 	auto context = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
 

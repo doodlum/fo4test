@@ -9,7 +9,7 @@
 #include <memory>
 #include <winrt/base.h>
 
-const uint renderTargetsPatch[] = { 20, 57, 24, 25, 23, 58, 59, 28, 3, 9, 60, 61, 4, 29, 1, 36, 37, 22, 10, 11, 7, 8, 64, 14 };
+const uint renderTargetsPatch[] = { 20, 57, 24, 25, 23, 58, 59, 28, 3, 9, 60, 61, 4, 29, 1, 36, 37, 22, 10, 11, 7, 8, 64, 14, 39 };
 
 /**
  * @class Upscaling
@@ -117,7 +117,7 @@ public:
 	 * Calculates per-frame jitter offsets, updates sampler states, render targets,
 	 * and manages resource creation/destruction based on active upscaling method
 	 */
-	void UpdateJitter();
+	void UpdateUpscaling();
 
 	/**
 	 * @brief Perform upscaling operation
@@ -136,6 +136,8 @@ public:
 	void CheckResources();
 
 	float2 jitter = { 0, 0 };  ///< Current frame's camera jitter offset
+	UpscaleMethod upscaleMethodNoMenu = UpscaleMethod::kDisabled;
+	UpscaleMethod upscaleMethod = UpscaleMethod::kDisabled;
 
 	// ========================================
 	// Render Target Management
@@ -214,8 +216,8 @@ public:
 	 */
 	void ResetSamplerStates();
 
-	std::array<ID3D11SamplerState*, 320>				originalSamplerStates;  ///< Original game sampler states
-	std::array<ID3D11SamplerState*, 320> biasedSamplerStates;					///< Modified sampler states with LOD bias
+	std::array<ID3D11SamplerState*, 320> originalSamplerStates;  ///< Original game sampler states
+	std::array<ID3D11SamplerState*, 320> biasedSamplerStates;	 ///< Modified sampler states with LOD bias
 
 	// ========================================
 	// Depth Management
@@ -240,8 +242,7 @@ public:
 	void CopyDepth();
 
 	ID3D11ShaderResourceView* originalDepthView;	    ///< Original depth buffer SRV
-
-	std::unique_ptr<Texture2D> depthOverrideTexture;             ///< Dynamic resolution depth override texture
+	std::unique_ptr<Texture2D> depthOverrideTexture;    ///< Dynamic resolution depth override texture
 
 	// ========================================
 	// Shader Management
@@ -269,14 +270,6 @@ public:
 	 * Dilates motion vectors for better temporal stability in DLSS
 	 */
 	ID3D11ComputeShader* GetDilateMotionVectorCS();
-
-	/**
-	 * @brief Get or compile depth override shader
-	 * @return Compiled compute shader
-	 *
-	 * Upscales depth buffer from render to display resolution
-	 */
-	ID3D11ComputeShader* GetOverrideLinearDepthCS();
 
 	/**
 	 * @brief Get or compile depth override shader
@@ -353,7 +346,6 @@ private:
 
 	winrt::com_ptr<ID3D11ComputeShader> rcas;                        ///< RCAS sharpening shader
 	winrt::com_ptr<ID3D11ComputeShader> dilateMotionVectorCS;        ///< Motion vector dilation shader
-	winrt::com_ptr<ID3D11ComputeShader> overrideLinearDepthCS;       ///< Linear depth upscaling shader
 	winrt::com_ptr<ID3D11ComputeShader> overrideDepthCS;             ///< Depth copy shader
 	winrt::com_ptr<ID3D11PixelShader> BSImagespaceShaderSSLRRaytracing;  ///< Custom SSR shader
 };
