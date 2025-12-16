@@ -223,9 +223,6 @@ struct ForwardAlphaImpl_FinishAccumulating_Standard_PostResolveDepth
 
 void Upscaling::InstallHooks()
 {
-	// Disable dynamic resolution shader if using alternative scaling method
-	//stl::write_vfunc<0x8, ImageSpaceEffectUpsampleDynamicResolution_IsActive>(RE::VTABLE::ImageSpaceEffectUpsampleDynamicResolution[0]);
-
 	// Disable TAA shader if using alternative scaling method
 	stl::write_vfunc<0x8, ImageSpaceEffectTemporalAA_IsActive>(RE::VTABLE::ImageSpaceEffectTemporalAA[0]);
 
@@ -260,6 +257,9 @@ void Upscaling::InstallHooks()
 #else
 	// Control jitters, dynamic resolution, sampler states, and render targets
 	stl::write_thunk_call<BSGraphics_State_UpdateDynamicResolution>(REL::ID(984743).address() + 0x14B);
+
+	// Add alternative scaling method
+	stl::write_thunk_call<DrawWorld_Imagespace_SetUseDynamicResolutionViewportAsDefaultViewport>(REL::ID(587723).address() + 0xE1);
 
 	// Control sampler states for mipmap bias
 	stl::write_thunk_call<DrawWorld_Render_PreUI_DeferredPrePass>(REL::ID(984743).address() + 0x17F);
