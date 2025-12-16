@@ -7,9 +7,10 @@
 
 #include <array>
 #include <memory>
+#include <vector>
 #include <winrt/base.h>
 
-const uint renderTargetsPatch[] = { 20, 57, 24, 25, 23, 58, 59, 28, 3, 9, 60, 61, 4, 29, 1, 36, 37, 22, 10, 11, 7, 8, 64, 14, 39 };
+const uint renderTargetsPatch[] = { 20, 57, 24, 25, 23, 58, 59, 28, 3, 9, 60, 61, 4, 29, 1, 36, 37, 22, 10, 11, 7, 8, 64, 14 };
 
 /**
  * @class Upscaling
@@ -154,18 +155,20 @@ public:
 
 	/**
 	 * @brief Override game render targets with scaled proxy targets
+	 * @param a_indicesToCopy Optional array of render target indices that require expensive copy. Empty = copy all.
 	 *
 	 * Temporarily replaces game render targets with lower resolution proxies
 	 * during main rendering pass
 	 */
-	void OverrideRenderTargets();
+	void OverrideRenderTargets(const std::vector<int>& a_indicesToCopy = {});
 
 	/**
 	 * @brief Restore original render targets
+	 * @param a_indicesToCopy Optional array of render target indices that require expensive copy. Empty = copy all.
 	 *
 	 * Restores full resolution render targets after scaled rendering is complete
 	 */
-	void ResetRenderTargets();
+	void ResetRenderTargets(const std::vector<int>& a_indicesToCopy = {});
 
 	/**
 	 * @brief Update a single render target
@@ -178,14 +181,16 @@ public:
 	/**
 	 * @brief Override a single render target
 	 * @param index Render target index
+	 * @param a_doCopy If true, performs expensive copy of texture content. If false, only swaps pointers.
 	 */
-	void OverrideRenderTarget(int index);
+	void OverrideRenderTarget(int index, bool a_doCopy = true);
 
 	/**
 	 * @brief Reset a single render target
 	 * @param index Render target index
+	 * @param a_doCopy If true, performs expensive copy of texture content. If false, only swaps pointers.
 	 */
-	void ResetRenderTarget(int index);
+	void ResetRenderTarget(int index, bool a_doCopy = true);
 
 	RE::BSGraphics::RenderTarget originalRenderTargets[101];      ///< Original full-resolution render targets
 	RE::BSGraphics::RenderTarget proxyRenderTargets[101];         ///< Scaled proxy render targets
@@ -225,11 +230,12 @@ public:
 
 	/**
 	 * @brief Override depth buffer with upscaled version
+	 * @param a_doCopy If true, performs expensive copy of depth content. If false, only swaps pointers.
 	 *
 	 * Replaces depth buffer SRV with full-resolution depth for correct
 	 * depth testing in post-processing effects
 	 */
-	void OverrideDepth();
+	void OverrideDepth(bool a_doCopy = true);
 
 	/**
 	 * @brief Restore original depth buffer
@@ -270,6 +276,14 @@ public:
 	 * Dilates motion vectors for better temporal stability in DLSS
 	 */
 	ID3D11ComputeShader* GetDilateMotionVectorCS();
+
+	/**
+	 * @brief Get or compile depth override shader
+	 * @return Compiled compute shader
+	 *
+	 * Upscales depth buffer from render to display resolution
+	 */
+	ID3D11ComputeShader* GetOverrideLinearDepthCS();
 
 	/**
 	 * @brief Get or compile depth override shader
@@ -346,6 +360,7 @@ private:
 
 	winrt::com_ptr<ID3D11ComputeShader> rcas;                        ///< RCAS sharpening shader
 	winrt::com_ptr<ID3D11ComputeShader> dilateMotionVectorCS;        ///< Motion vector dilation shader
+	winrt::com_ptr<ID3D11ComputeShader> overrideLinearDepthCS;       ///< Linear depth upscaling shader
 	winrt::com_ptr<ID3D11ComputeShader> overrideDepthCS;             ///< Depth copy shader
 	winrt::com_ptr<ID3D11PixelShader> BSImagespaceShaderSSLRRaytracing;  ///< Custom SSR shader
 };

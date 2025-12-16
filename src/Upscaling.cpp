@@ -1,5 +1,6 @@
 #include "Upscaling.h"
 
+#include <algorithm>
 #include <SimpleIni.h>
 
 extern bool enbLoaded;
@@ -46,8 +47,8 @@ struct DrawWorld_Imagespace_RenderEffectRange
 		func(This, 0, 3, 1, 1);
 
 		if (requiresOverride) {
-			upscaling->OverrideRenderTargets();
-			upscaling->OverrideDepth();
+			upscaling->OverrideRenderTargets({1, 4, 29});
+			upscaling->OverrideDepth(true);
 			renderTargetManager->dynamicHeightRatio = 1.0f;
 			renderTargetManager->dynamicWidthRatio = 1.0f;
 		}
@@ -57,7 +58,7 @@ struct DrawWorld_Imagespace_RenderEffectRange
 
 		if (requiresOverride) {
 			upscaling->ResetDepth();
-			upscaling->ResetRenderTargets();
+			upscaling->ResetRenderTargets({4});
 			renderTargetManager->dynamicHeightRatio = originalDynamicHeightRatio;
 			renderTargetManager->dynamicWidthRatio = originalDynamicWidthRatio;
 		}
@@ -124,8 +125,8 @@ struct DrawWorld_Render_PreUI_NVHBAO
 		float originalDynamicWidthRatio = renderTargetManager->dynamicWidthRatio;
 
 		if (requiresOverride) {
-			upscaling->OverrideRenderTargets();
-			upscaling->OverrideDepth();
+			upscaling->OverrideDepth(true);
+			upscaling->OverrideRenderTargets({20});
 			renderTargetManager->dynamicHeightRatio = 1.0f;
 			renderTargetManager->dynamicWidthRatio = 1.0f;
 		}
@@ -134,7 +135,7 @@ struct DrawWorld_Render_PreUI_NVHBAO
 
 		if (requiresOverride) {
 			upscaling->ResetDepth();
-			upscaling->ResetRenderTargets();
+			upscaling->ResetRenderTargets({25});
 			renderTargetManager->dynamicHeightRatio = originalDynamicHeightRatio;
 			renderTargetManager->dynamicWidthRatio = originalDynamicWidthRatio;
 		}
@@ -156,8 +157,8 @@ struct DrawWorld_DeferredComposite_RenderPassImmediately
 		float originalDynamicWidthRatio = renderTargetManager->dynamicWidthRatio;
 
 		if (requiresOverride) {
-			upscaling->OverrideRenderTargets();
-			upscaling->OverrideDepth();
+			upscaling->OverrideRenderTargets({20, 25, 57, 24, 23, 58, 59, 3, 9, 60, 61, 28});
+			upscaling->OverrideDepth(true);
 			renderTargetManager->dynamicHeightRatio = 1.0f;
 			renderTargetManager->dynamicWidthRatio = 1.0f;
 		}
@@ -165,8 +166,8 @@ struct DrawWorld_DeferredComposite_RenderPassImmediately
 		func(This, a2, a3);
 
 		if (requiresOverride) {
+			upscaling->ResetRenderTargets({4});
 			upscaling->ResetDepth();
-			upscaling->ResetRenderTargets();
 			renderTargetManager->dynamicHeightRatio = originalDynamicHeightRatio;
 			renderTargetManager->dynamicWidthRatio = originalDynamicWidthRatio;
 		}
@@ -185,7 +186,7 @@ struct BSImagespaceShaderLensFlare_RenderLensFlare
 		bool requiresOverride = renderTargetManager->dynamicHeightRatio != 1.0 || renderTargetManager->dynamicWidthRatio != 1.0;
 
 		if (requiresOverride)
-			upscaling->OverrideDepth();
+			upscaling->OverrideDepth(true);
 
 		func(a_camera);
 
@@ -384,12 +385,6 @@ void Upscaling::UpdateRenderTarget(int index, float a_currentWidthRatio, float a
 	textureDesc.Width = static_cast<uint>(static_cast<float>(textureDesc.Width) * a_currentWidthRatio);
 	textureDesc.Height = static_cast<uint>(static_cast<float>(textureDesc.Height) * a_currentHeightRatio);
 
-	textureDesc.Width = std::max(textureDesc.Width, 1u);
-	textureDesc.Height = std::max(textureDesc.Height, 1u);
-	textureDesc.MipLevels = 1;
-
-	srViewDesc.Texture2D.MipLevels = 1;
-
 	auto device = reinterpret_cast<ID3D11Device*>(rendererData->device);
 
 	if (originalRenderTarget.texture)
@@ -429,7 +424,7 @@ void Upscaling::UpdateRenderTarget(int index, float a_currentWidthRatio, float a
 #endif
 }
 
-void Upscaling::OverrideRenderTarget(int index)
+void Upscaling::OverrideRenderTarget(int index, bool a_doCopy)
 {
 	if (!originalRenderTargets[index].texture || !proxyRenderTargets[index].texture)
 		return;
@@ -439,46 +434,53 @@ void Upscaling::OverrideRenderTarget(int index)
 	// Replace the game's render target with our scaled proxy version
 	rendererData->renderTargets[index] = proxyRenderTargets[index];
 
-	// Get dimensions of both textures
-	D3D11_TEXTURE2D_DESC srcDesc, dstDesc;
-	reinterpret_cast<ID3D11Texture2D*>(originalRenderTargets[index].texture)->GetDesc(&srcDesc);
-	reinterpret_cast<ID3D11Texture2D*>(proxyRenderTargets[index].texture)->GetDesc(&dstDesc);
+	// Optionally perform expensive copy operation
+	if (a_doCopy) {
+		// Get dimensions of both textures
+		D3D11_TEXTURE2D_DESC srcDesc, dstDesc;
+		reinterpret_cast<ID3D11Texture2D*>(originalRenderTargets[index].texture)->GetDesc(&srcDesc);
+		reinterpret_cast<ID3D11Texture2D*>(proxyRenderTargets[index].texture)->GetDesc(&dstDesc);
 
-	D3D11_BOX srcBox;
-	srcBox.left = 0;
-	srcBox.top = 0;
-	srcBox.front = 0;
-	srcBox.right = dstDesc.Width;
-	srcBox.bottom = dstDesc.Height;
-	srcBox.back = 1;
+		D3D11_BOX srcBox;
+		srcBox.left = 0;
+		srcBox.top = 0;
+		srcBox.front = 0;
+		srcBox.right = dstDesc.Width;
+		srcBox.bottom = dstDesc.Height;
+		srcBox.back = 1;
 
-	auto context = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
-	context->CopySubresourceRegion(reinterpret_cast<ID3D11Texture2D*>(proxyRenderTargets[index].texture), 0, 0, 0, 0, reinterpret_cast<ID3D11Texture2D*>(originalRenderTargets[index].texture), 0, &srcBox);
+		auto context = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
+		context->CopySubresourceRegion(reinterpret_cast<ID3D11Texture2D*>(proxyRenderTargets[index].texture), 0, 0, 0, 0, reinterpret_cast<ID3D11Texture2D*>(originalRenderTargets[index].texture), 0, &srcBox);
+	}
 }
 
-void Upscaling::ResetRenderTarget(int index)
+void Upscaling::ResetRenderTarget(int index, bool a_doCopy)
 {
 	if (!originalRenderTargets[index].texture || !proxyRenderTargets[index].texture)
 		return;
 
 	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
 
+	// Optionally perform expensive copy operation before swapping back
+	if (a_doCopy) {
+		D3D11_TEXTURE2D_DESC srcDesc, dstDesc;
+		reinterpret_cast<ID3D11Texture2D*>(proxyRenderTargets[index].texture)->GetDesc(&srcDesc);
+		reinterpret_cast<ID3D11Texture2D*>(originalRenderTargets[index].texture)->GetDesc(&dstDesc);
+
+		D3D11_BOX srcBox;
+		srcBox.left = 0;
+		srcBox.top = 0;
+		srcBox.front = 0;
+		srcBox.right = srcDesc.Width;
+		srcBox.bottom = srcDesc.Height;
+		srcBox.back = 1;
+
+		auto context = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
+		context->CopySubresourceRegion(reinterpret_cast<ID3D11Texture2D*>(originalRenderTargets[index].texture), 0, 0, 0, 0, reinterpret_cast<ID3D11Texture2D*>(proxyRenderTargets[index].texture), 0, &srcBox);
+	}
+
+	// Restore the original render target
 	rendererData->renderTargets[index] = originalRenderTargets[index];
-
-	D3D11_TEXTURE2D_DESC srcDesc, dstDesc;
-	reinterpret_cast<ID3D11Texture2D*>(proxyRenderTargets[index].texture)->GetDesc(&srcDesc);
-	reinterpret_cast<ID3D11Texture2D*>(originalRenderTargets[index].texture)->GetDesc(&dstDesc);
-
-	D3D11_BOX srcBox;
-	srcBox.left = 0;
-	srcBox.top = 0;
-	srcBox.front = 0;
-	srcBox.right = srcDesc.Width;
-	srcBox.bottom = srcDesc.Height;
-	srcBox.back = 1;
-
-	auto context = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
-	context->CopySubresourceRegion(reinterpret_cast<ID3D11Texture2D*>(originalRenderTargets[index].texture), 0, 0, 0, 0, reinterpret_cast<ID3D11Texture2D*>(proxyRenderTargets[index].texture), 0, &srcBox);
 }
 
 void Upscaling::UpdateRenderTargets(float a_currentWidthRatio, float a_currentHeightRatio)
@@ -551,11 +553,14 @@ void Upscaling::UpdateRenderTargets(float a_currentWidthRatio, float a_currentHe
 	depthOverrideTexture->CreateUAV(uavDesc);
 }
 
-void Upscaling::OverrideRenderTargets()
+void Upscaling::OverrideRenderTargets(const std::vector<int>& a_indicesToCopy)
 {
 	// Replace all patched render targets with their scaled proxy versions
-	for (int i = 0; i < ARRAYSIZE(renderTargetsPatch); i++)
-		OverrideRenderTarget(renderTargetsPatch[i]);
+	for (int i = 0; i < ARRAYSIZE(renderTargetsPatch); i++) {
+		int targetIndex = renderTargetsPatch[i];
+		bool shouldCopy = std::find(a_indicesToCopy.begin(), a_indicesToCopy.end(), targetIndex) != a_indicesToCopy.end();
+		OverrideRenderTarget(targetIndex, shouldCopy);
+	}
 
 	static auto renderTargetManager = Util::RenderTargetManager_GetSingleton();
 
@@ -603,11 +608,16 @@ void Upscaling::OverrideRenderTargets()
 	DrawWorld_Imagespace_SetUseDynamicResolutionViewportAsDefaultViewport::func(renderTargetManager, false);
 }
 
-void Upscaling::ResetRenderTargets()
+void Upscaling::ResetRenderTargets(const std::vector<int>& a_indicesToCopy)
 {
 	// Restore all original full-resolution render targets
-	for(int i = 0; i < ARRAYSIZE(renderTargetsPatch); i++)
-		ResetRenderTarget(renderTargetsPatch[i]);
+	for (int i = 0; i < ARRAYSIZE(renderTargetsPatch); i++) {
+		int targetIndex = renderTargetsPatch[i];
+		// If indices array is empty, copy all. Otherwise, only copy if in the array
+		bool shouldCopy = a_indicesToCopy.empty() ||
+			std::find(a_indicesToCopy.begin(), a_indicesToCopy.end(), targetIndex) != a_indicesToCopy.end();
+		ResetRenderTarget(targetIndex, shouldCopy);
+	}
 
 	static auto renderTargetManager = Util::RenderTargetManager_GetSingleton();
 
@@ -652,20 +662,23 @@ void Upscaling::ResetRenderTargets()
 	DrawWorld_Imagespace_SetUseDynamicResolutionViewportAsDefaultViewport::func(renderTargetManager, true);
 }
 
-void Upscaling::OverrideDepth()
+void Upscaling::OverrideDepth(bool a_doCopy)
 {
-	static auto gameViewport = Util::State_GetSingleton();
-
-	// Only copy depth once per frame
-	static auto previousFrame = gameViewport->frameCount;
-	if (previousFrame != gameViewport->frameCount)
-		CopyDepth();
-	previousFrame = gameViewport->frameCount;
-
 	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
 
 	// Save the original depth SRV (with dynamic resolution)
 	originalDepthView = reinterpret_cast<ID3D11ShaderResourceView*>(rendererData->depthStencilTargets[(uint)Util::DepthStencilTarget::kMain].srViewDepth);
+
+	// Optionally perform expensive copy operation
+	if (a_doCopy) {
+		static auto gameViewport = Util::State_GetSingleton();
+
+		// Only copy depth once per frame
+		static auto previousFrame = gameViewport->frameCount;
+		if (previousFrame != gameViewport->frameCount)
+			CopyDepth();
+		previousFrame = gameViewport->frameCount;
+	}
 
 	// Replace with our dynamic resolution depth texture for post-processing effects
 #if defined(FALLOUT_POST_NG)
@@ -772,8 +785,29 @@ void Upscaling::CopyDepth()
 	// Get the dynamic resolution depth output UAV
 	auto depthUAV = depthOverrideTexture->uav.get();
 
+	// Also update the linearized depth used by other effects
+	auto linearDepthUAV = reinterpret_cast<ID3D11UnorderedAccessView*>(rendererData->renderTargets[(uint)Util::RenderTarget::kMainDepthMips].uaView);
+
 	{
 		UpdateAndBindUpscalingCB(context, screenSize, renderSize);
+
+		{
+			// Bind scaled depth as input (SRV)
+			ID3D11ShaderResourceView* views[] = { depthSRV };
+			context->CSSetShaderResources(0, ARRAYSIZE(views), views);
+
+			// Bind full-resolution depth outputs (UAV)
+			ID3D11UnorderedAccessView* uavs[] = { linearDepthUAV };
+			context->CSSetUnorderedAccessViews(0, ARRAYSIZE(uavs), uavs, nullptr);
+
+			// Run depth upscaling compute shader
+			context->CSSetShader(GetOverrideLinearDepthCS(), nullptr, 0);
+
+			// Dispatch with 8x8 thread groups covering the full screen resolution
+			uint dispatchX = (uint)std::ceil(screenSize.x / 8.0f);
+			uint dispatchY = (uint)std::ceil(screenSize.y / 8.0f);
+			context->Dispatch(dispatchX, dispatchY, 1);
+		}
 
 		{
 			// Bind scaled depth as input (SRV)
@@ -820,11 +854,11 @@ Upscaling::UpscaleMethod Upscaling::GetUpscaleMethod(bool a_checkMenu)
 	UpscaleMethod currentUpscaleMethod = (UpscaleMethod)settings.upscaleMethodPreference;
 		
 	// If DLSS is not available, default to FSR
-	if (!streamline->featureDLSS && upscaleMethod == UpscaleMethod::kDLSS)
+	if (!streamline->featureDLSS && currentUpscaleMethod == UpscaleMethod::kDLSS)
 		currentUpscaleMethod = UpscaleMethod::kFSR;
 
 	// ENB is loaded, disable FSR
-	if (enbLoaded && upscaleMethod == UpscaleMethod::kFSR)
+	if (enbLoaded && currentUpscaleMethod == UpscaleMethod::kFSR)
 		currentUpscaleMethod = UpscaleMethod::kDisabled;
 
 	return currentUpscaleMethod;
@@ -884,6 +918,15 @@ ID3D11ComputeShader* Upscaling::GetDilateMotionVectorCS()
 		dilateMotionVectorCS.attach((ID3D11ComputeShader*)Util::CompileShader(L"Data/F4SE/Plugins/Upscaling/DilateMotionVectorCS.hlsl", {}, "cs_5_0"));
 	}
 	return dilateMotionVectorCS.get();
+}
+
+ID3D11ComputeShader* Upscaling::GetOverrideLinearDepthCS()
+{
+	if (!overrideLinearDepthCS) {
+		logger::debug("Compiling OverrideLinearDepthCS.hlsl");
+		overrideLinearDepthCS.attach((ID3D11ComputeShader*)Util::CompileShader(L"Data/F4SE/Plugins/Upscaling/OverrideLinearDepthCS.hlsl", {}, "cs_5_0"));
+	}
+	return overrideLinearDepthCS.get();
 }
 
 ID3D11ComputeShader* Upscaling::GetOverrideDepthCS()
