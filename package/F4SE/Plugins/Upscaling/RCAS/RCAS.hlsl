@@ -52,7 +52,7 @@ float getRCASLuma(float3 rgb)
 
 [numthreads(8, 8, 1)] void main(uint3 DTid : SV_DispatchThreadID) {
 	// Early exit if dispatch thread is outside texture dimensions
-	if (any(dispatchID.xy >= ScreenSize))
+	if (any(DTid.xy >= ScreenSize))
 		return;
 
 	float3 e = Source.Load(int3(DTid.x, DTid.y, 0)).rgb;
