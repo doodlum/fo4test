@@ -26,7 +26,7 @@ struct BSGraphics_CreateD3DAndSwapChain_D3D11CreateDeviceAndSwapChain
 		pFeatureLevels = &featureLevel;
 		FeatureLevels = 1;
 
-		auto ret = func(pAdapter,
+		DX::ThrowIfFailed(func(pAdapter,
 			DriverType,
 			Software,
 			Flags,
@@ -37,7 +37,7 @@ struct BSGraphics_CreateD3DAndSwapChain_D3D11CreateDeviceAndSwapChain
 			ppSwapChain,
 			ppDevice,
 			pFeatureLevel,
-			ppImmediateContext);
+			ppImmediateContext));
 			
 		auto streamline = Streamline::GetSingleton();
 		streamline->LoadInterposer();
@@ -53,7 +53,7 @@ struct BSGraphics_CreateD3DAndSwapChain_D3D11CreateDeviceAndSwapChain
 			streamline->PostDevice();
 		}
 
-		return ret;
+		return S_OK;
 	}
 	static inline REL::Relocation<decltype(thunk)> func;
 };
@@ -62,7 +62,7 @@ namespace DX11Hooks
 {
 	void Install()
 	{
-#if defined(FALLOUT_POST_NG)
+#if defined(FALLOUT_POST_NG) || defined(NDEBUG)
 		uintptr_t moduleBase = (uintptr_t)GetModuleHandle(nullptr);
 		(uintptr_t&)BSGraphics_CreateD3DAndSwapChain_D3D11CreateDeviceAndSwapChain::func = Detours::IATHook(moduleBase, "d3d11.dll", "D3D11CreateDeviceAndSwapChain", (uintptr_t)BSGraphics_CreateD3DAndSwapChain_D3D11CreateDeviceAndSwapChain::thunk);
 #else
