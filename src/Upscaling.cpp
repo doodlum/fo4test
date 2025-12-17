@@ -33,34 +33,32 @@ struct ImageSpaceEffectTemporalAA_IsActive
 /** @brief Hook to fix dynamic resolution in post processing shaders */
 struct DrawWorld_Imagespace_RenderEffectRange
 {
-	static void thunk(RE::BSGraphics::RenderTargetManager* This, uint, uint, uint, uint)
+	static void thunk(RE::BSGraphics::RenderTargetManager* This, uint a2, uint a3, uint a4, uint a5)
 	{
 		auto upscaling = Upscaling::GetSingleton();
 
 		static auto renderTargetManager = Util::RenderTargetManager_GetSingleton();
 		bool requiresOverride = renderTargetManager->dynamicHeightRatio != 1.0 || renderTargetManager->dynamicWidthRatio != 1.0;
 
-		float originalDynamicHeightRatio = renderTargetManager->dynamicHeightRatio;
-		float originalDynamicWidthRatio = renderTargetManager->dynamicWidthRatio;
-
-		// HDR shaders
-		func(This, 0, 3, 1, 1);
-
 		if (requiresOverride) {
+			float originalDynamicHeightRatio = renderTargetManager->dynamicHeightRatio;
+			float originalDynamicWidthRatio = renderTargetManager->dynamicWidthRatio;
+
+			// HDR shaders
+			func(This, 0, 3, 1, 1);
 			upscaling->OverrideRenderTargets({1, 4, 29, 16});
 			upscaling->OverrideDepth(true);
 			renderTargetManager->dynamicHeightRatio = 1.0f;
 			renderTargetManager->dynamicWidthRatio = 1.0f;
-		}
 
-		// LDR shaders
-		func(This, 4, 13, 1, 1);
-
-		if (requiresOverride) {
+			// LDR shaders
+			func(This, 4, 13, 1, 1);
 			upscaling->ResetDepth();
 			upscaling->ResetRenderTargets({4});
 			renderTargetManager->dynamicHeightRatio = originalDynamicHeightRatio;
 			renderTargetManager->dynamicWidthRatio = originalDynamicWidthRatio;
+		} else {
+			func(This, a2, a3, a4, a5);
 		}
 	}
 	static inline REL::Relocation<decltype(thunk)> func;
