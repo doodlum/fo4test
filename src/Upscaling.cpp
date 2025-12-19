@@ -249,6 +249,20 @@ struct ForwardAlphaImpl_FinishAccumulating_Standard_PostResolveDepth
 	static inline REL::Relocation<decltype(thunk)> func;
 };
 
+/** @brief Hook LoadingMenu to fix jitter scale */
+struct LoadingMenu_Render_UpdateTemporalData
+{
+	static void thunk(RE::BSGraphics::State* This)
+	{
+		func(This);
+
+		static auto renderTargetManager = Util::RenderTargetManager_GetSingleton();
+		renderTargetManager->dynamicHeightRatio = 1.0f;
+		renderTargetManager->dynamicWidthRatio = 1.0f;
+	}
+	static inline REL::Relocation<decltype(thunk)> func;
+};
+
 void Upscaling::InstallHooks()
 {
 	// Disable TAA shader if using alternative scaling method
@@ -284,6 +298,9 @@ void Upscaling::InstallHooks()
 		
 		// Fix VATs line thickness
 		stl::write_thunk_call<ImageSpaceEffectVatsTarget_UpdateParams_SetPixelConstant>(REL::ID(2317983).address() + 0x110);
+
+		// Fix jitter in LoadingMenu
+		stl::write_thunk_call<LoadingMenu_Render_UpdateTemporalData>(REL::ID(2249225).address() + 0x275);
 	}
 #else
 	// Control jitters, dynamic resolution, sampler states, and render targets
@@ -318,6 +335,9 @@ void Upscaling::InstallHooks()
 		
 		// Fix VATs line thickness
 		stl::write_thunk_call<ImageSpaceEffectVatsTarget_UpdateParams_SetPixelConstant>(REL::ID(1042583).address() + 0xBB);
+
+		// Fix jitter in LoadingMenu
+		stl::write_thunk_call<LoadingMenu_Render_UpdateTemporalData>(REL::ID(135719).address() + 0x2BD);
 	}
 #endif
 }
