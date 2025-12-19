@@ -76,7 +76,6 @@ public:
 	struct Settings
 	{
 		uint upscaleMethodPreference = (uint)UpscaleMethod::kDLSS; ///< Preferred upscaling method
-		float sharpness = 0;                                       ///< Sharpening amount (0.0-1.0)
 		uint qualityMode = 1;									   ///< Quality mode: 0=Native AA, 1=Quality, 2=Balanced, 3=Performance, 4=Ultra Performance
 	};
 
