@@ -246,8 +246,17 @@ public:
 	 */
 	void CopyDepth();
 
-	ID3D11ShaderResourceView* originalDepthView;	    ///< Original depth buffer SRV
-	std::unique_ptr<Texture2D> depthOverrideTexture;    ///< Dynamic resolution depth override texture
+	/**
+	 * @brief Update depth stencil target for new resolution scaling
+	 * @param a_currentWidthRatio Width scale factor
+	 * @param a_currentHeightRatio Height scale factor
+	 *
+	 * Recreates proxy depth stencil target when resolution changes
+	 */
+	void UpdateDepth(float a_currentWidthRatio, float a_currentHeightRatio);
+
+	RE::BSGraphics::DepthStencilTarget originalDepthStencilTarget;  ///< Original depth stencil target
+	RE::BSGraphics::DepthStencilTarget depthOverrideTarget;         ///< Scaled proxy depth stencil target
 
 	// ========================================
 	// Shader Management
@@ -283,6 +292,46 @@ public:
 	 * Copies depth buffer
 	 */
 	ID3D11ComputeShader* GetOverrideDepthCS();
+
+	/**
+	 * @brief Get or compile depth copy vertex shader
+	 * @return Compiled vertex shader
+	 *
+	 * Fullscreen triangle vertex shader for depth copying
+	 */
+	ID3D11VertexShader* GetCopyDepthVS();
+
+	/**
+	 * @brief Get or compile depth copy pixel shader
+	 * @return Compiled pixel shader
+	 *
+	 * Pixel shader that outputs depth using SV_Depth
+	 */
+	ID3D11PixelShader* GetCopyDepthPS();
+
+	/**
+	 * @brief Get or create depth stencil state for depth copying
+	 * @return Depth stencil state
+	 */
+	ID3D11DepthStencilState* GetCopyDepthStencilState();
+
+	/**
+	 * @brief Get or create blend state for depth copying
+	 * @return Blend state
+	 */
+	ID3D11BlendState* GetCopyBlendState();
+
+	/**
+	 * @brief Get or create rasterizer state for depth copying
+	 * @return Rasterizer state
+	 */
+	ID3D11RasterizerState* GetCopyRasterizerState();
+
+	/**
+	 * @brief Get or create sampler state for depth copying
+	 * @return Sampler state
+	 */
+	ID3D11SamplerState* GetCopySamplerState();
 
 	/**
 	 * @brief Get or compile custom SSR raytracing pixel shader
@@ -353,5 +402,13 @@ private:
 	winrt::com_ptr<ID3D11ComputeShader> dilateMotionVectorCS;        ///< Motion vector dilation shader
 	winrt::com_ptr<ID3D11ComputeShader> overrideLinearDepthCS;       ///< Linear depth upscaling shader
 	winrt::com_ptr<ID3D11ComputeShader> overrideDepthCS;             ///< Depth copy shader
+	winrt::com_ptr<ID3D11VertexShader> copyDepthVS;                  ///< Depth copy vertex shader
+	winrt::com_ptr<ID3D11PixelShader> copyDepthPS;                   ///< Depth copy pixel shader
 	winrt::com_ptr<ID3D11PixelShader> BSImagespaceShaderSSLRRaytracing;  ///< Custom SSR shader
+
+	// Cached render states for depth copying
+	winrt::com_ptr<ID3D11DepthStencilState> copyDepthStencilState;   ///< Cached depth stencil state for depth copy
+	winrt::com_ptr<ID3D11BlendState> copyBlendState;                 ///< Cached blend state for depth copy
+	winrt::com_ptr<ID3D11RasterizerState> copyRasterizerState;       ///< Cached rasterizer state for depth copy
+	winrt::com_ptr<ID3D11SamplerState> copySamplerState;             ///< Cached sampler state for depth copy
 };
