@@ -365,7 +365,6 @@ void Upscaling::LoadSettings()
 	
 	settings.upscaleMethodPreference = static_cast<uint>(ini.GetLongValue("Settings", "iUpscaleMethodPreference", 2));
 	settings.qualityMode = static_cast<uint>(ini.GetLongValue("Settings", "iQualityMode", 1));
-	settings.sharpness = static_cast<float>(ini.GetDoubleValue("Settings", "fSharpness", 0));
 }
 
 void Upscaling::OnDataLoaded()
@@ -1157,7 +1156,7 @@ void Upscaling::Upscale()
 	if (upscaleMethod == UpscaleMethod::kDLSS)
 		Streamline::GetSingleton()->Upscale(upscalingTexture.get(), dilatedMotionVectorTexture.get(), jitter, renderSize, settings.qualityMode);
 	else if (upscaleMethod == UpscaleMethod::kFSR)
-		FidelityFX::GetSingleton()->Upscale(upscalingTexture.get(), jitter, renderSize, settings.sharpness);
+		FidelityFX::GetSingleton()->Upscale(upscalingTexture.get(), jitter, renderSize, -1.0f);
 
 	context->CopyResource(frameBufferResource, upscalingTexture->resource.get());
 }

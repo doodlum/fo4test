@@ -22,14 +22,6 @@
 			"type": "text"
 		},
 		{
-			"text": "AMD Robust Contrast Adaptive Sharpening improves image clarity, even when upscaling is disabled or in 3D menus.",
-			"type": "text"
-		},
-		{
-			"text": "",
-			"type": "text"
-		},
-		{
 			"text": "When ENBSeries is active, only DLAA is available.",
 			"type": "text"
 		},
@@ -69,18 +61,6 @@
 					"Performance",
 					"Ultra Performance"
 				]
-			}
-		},
-		{
-			"id": "fSharpness:Settings",
-			"text": "Sharpness",
-			"type": "slider",
-			"help": "Controls the additional sharpness after upscaling. (Default: 0)",
-			"valueOptions": {
-				"min": 0.0,
-				"max": 1.0,
-				"step": 0.1,
-				"sourceType": "ModSettingFloat"
 			}
 		}
 	]
