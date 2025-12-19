@@ -6,7 +6,7 @@
 
 extern bool enbLoaded;
 
-struct BSGraphics_CreateD3DAndSwapChain_D3D11CreateDeviceAndSwapChain
+struct hkD3D11CreateDeviceAndSwapChain
 {
 	static HRESULT WINAPI thunk(
 		IDXGIAdapter* pAdapter,
@@ -40,14 +40,11 @@ struct BSGraphics_CreateD3DAndSwapChain_D3D11CreateDeviceAndSwapChain
 			ppImmediateContext));
 			
 		auto streamline = Streamline::GetSingleton();
-		streamline->LoadInterposer();
 
 		if (streamline->interposer){
 			streamline->Initialize();
-			if (!enbLoaded){
-				streamline->slUpgradeInterface((void**)&(*ppDevice));
+			if (!enbLoaded)
 				streamline->slUpgradeInterface((void**)&(*ppSwapChain));
-			}
 			streamline->slSetD3DDevice(*ppDevice);
 			streamline->CheckFeatures(pAdapter);
 			streamline->PostDevice();
@@ -62,12 +59,16 @@ namespace DX11Hooks
 {
 	void Install()
 	{
+		auto streamline = Streamline::GetSingleton();
+		streamline->LoadInterposer();
+
 #if defined(FALLOUT_POST_NG) || defined(NDEBUG)
 		uintptr_t moduleBase = (uintptr_t)GetModuleHandle(nullptr);
-		(uintptr_t&)BSGraphics_CreateD3DAndSwapChain_D3D11CreateDeviceAndSwapChain::func = Detours::IATHook(moduleBase, "d3d11.dll", "D3D11CreateDeviceAndSwapChain", (uintptr_t)BSGraphics_CreateD3DAndSwapChain_D3D11CreateDeviceAndSwapChain::thunk);
+		// Hook BSGraphics::CreateD3DAndSwapChain::D3D11CreateDeviceAndSwapChain to use D3D_FEATURE_LEVEL_11_1
+		(uintptr_t&)hkD3D11CreateDeviceAndSwapChain::func = Detours::IATHook(moduleBase, "d3d11.dll", "D3D11CreateDeviceAndSwapChain", (uintptr_t)hkD3D11CreateDeviceAndSwapChain::thunk);
 #else
 		// Hook BSGraphics::CreateD3DAndSwapChain::D3D11CreateDeviceAndSwapChain to use D3D_FEATURE_LEVEL_11_1
-		stl::write_thunk_call<BSGraphics_CreateD3DAndSwapChain_D3D11CreateDeviceAndSwapChain>(REL::ID(224250).address() + 0x419);
+		stl::write_thunk_call<hkD3D11CreateDeviceAndSwapChain>(REL::ID(224250).address() + 0x419);
 #endif
 	}
 }

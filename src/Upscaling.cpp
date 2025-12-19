@@ -30,7 +30,20 @@ struct ImageSpaceEffectTemporalAA_IsActive
 	static inline REL::Relocation<decltype(thunk)> func;
 };
 
-/** @brief Hook to fix dynamic resolution in post processing shaders */
+float originalDynamicHeightRatio;
+float originalDynamicWidthRatio;
+
+/** @brief Hook to fix outline thickness in VATs shader*/
+struct ImageSpaceEffectVatsTarget_UpdateParams_SetPixelConstant
+{
+	static void thunk(struct ImageSpaceShaderParam* This, int row, float x, float y, float z, float w)
+	{
+		func(This, row, x * originalDynamicHeightRatio, y * originalDynamicWidthRatio, z, w);
+	}
+	static inline REL::Relocation<decltype(thunk)> func;
+};
+
+/** @brief Hook to fix dynamic resolution and jitter in post processing shaders */
 struct DrawWorld_Imagespace_RenderEffectRange
 {
 	static void thunk(RE::BSGraphics::RenderTargetManager* This, uint a2, uint a3, uint a4, uint a5)
@@ -38,11 +51,23 @@ struct DrawWorld_Imagespace_RenderEffectRange
 		auto upscaling = Upscaling::GetSingleton();
 
 		static auto renderTargetManager = Util::RenderTargetManager_GetSingleton();
+		static auto gameViewport = Util::State_GetSingleton();
+
 		bool requiresOverride = renderTargetManager->dynamicHeightRatio != 1.0 || renderTargetManager->dynamicWidthRatio != 1.0;
 
+		auto originalOffsetX = gameViewport->offsetX;
+		auto originalOffsetY = gameViewport->offsetY;
+
+		// Disable removal of jitter in some passes
+		if (upscaling->upscaleMethod != Upscaling::UpscaleMethod::kDisabled){
+			gameViewport->offsetX = originalOffsetX;
+			gameViewport->offsetY = originalOffsetY;
+		}
+
+		originalDynamicHeightRatio = renderTargetManager->dynamicHeightRatio;
+		originalDynamicWidthRatio = renderTargetManager->dynamicWidthRatio;
+
 		if (requiresOverride) {
-			float originalDynamicHeightRatio = renderTargetManager->dynamicHeightRatio;
-			float originalDynamicWidthRatio = renderTargetManager->dynamicWidthRatio;
 
 			// HDR shaders
 			func(This, 0, 3, 1, 1);
@@ -55,11 +80,15 @@ struct DrawWorld_Imagespace_RenderEffectRange
 			func(This, 4, 13, 1, 1);
 			upscaling->ResetDepth();
 			upscaling->ResetRenderTargets({4});
+
 			renderTargetManager->dynamicHeightRatio = originalDynamicHeightRatio;
 			renderTargetManager->dynamicWidthRatio = originalDynamicWidthRatio;
 		} else {
 			func(This, a2, a3, a4, a5);
 		}
+
+		gameViewport->offsetX = originalOffsetX;
+		gameViewport->offsetY = originalOffsetY;
 	}
 	static inline REL::Relocation<decltype(thunk)> func;
 };
@@ -119,8 +148,8 @@ struct DrawWorld_Render_PreUI_NVHBAO
 		static auto renderTargetManager = Util::RenderTargetManager_GetSingleton();
 		bool requiresOverride = renderTargetManager->dynamicHeightRatio != 1.0 || renderTargetManager->dynamicWidthRatio != 1.0;
 
-		float originalDynamicHeightRatio = renderTargetManager->dynamicHeightRatio;
-		float originalDynamicWidthRatio = renderTargetManager->dynamicWidthRatio;
+		originalDynamicHeightRatio = renderTargetManager->dynamicHeightRatio;
+		originalDynamicWidthRatio = renderTargetManager->dynamicWidthRatio;
 
 		if (requiresOverride) {
 			upscaling->OverrideDepth(true);
@@ -151,8 +180,8 @@ struct DrawWorld_DeferredComposite_RenderPassImmediately
 		static auto renderTargetManager = Util::RenderTargetManager_GetSingleton();
 		bool requiresOverride = renderTargetManager->dynamicHeightRatio != 1.0 || renderTargetManager->dynamicWidthRatio != 1.0;
 
-		float originalDynamicHeightRatio = renderTargetManager->dynamicHeightRatio;
-		float originalDynamicWidthRatio = renderTargetManager->dynamicWidthRatio;
+		originalDynamicHeightRatio = renderTargetManager->dynamicHeightRatio;
+		originalDynamicWidthRatio = renderTargetManager->dynamicWidthRatio;
 
 		if (requiresOverride) {
 			upscaling->OverrideRenderTargets({20, 25, 57, 24, 23, 58, 59, 3, 9, 60, 61, 28});
@@ -252,6 +281,9 @@ void Upscaling::InstallHooks()
 
 		// Fix dynamic resolution for post processing
 		stl::write_thunk_call<DrawWorld_Imagespace_RenderEffectRange>(REL::ID(2318322).address() + 0x83);
+		
+		// Fix VATs line thickness
+		stl::write_thunk_call<ImageSpaceEffectVatsTarget_UpdateParams_SetPixelConstant>(REL::ID(2317983).address() + 0x110);
 	}
 #else
 	// Control jitters, dynamic resolution, sampler states, and render targets
@@ -283,6 +315,9 @@ void Upscaling::InstallHooks()
 		
 		// Fix dynamic resolution for HBAO
 		stl::write_thunk_call<DrawWorld_Render_PreUI_NVHBAO>(REL::ID(984743).address() + 0x1BA);
+		
+		// Fix VATs line thickness
+		stl::write_thunk_call<ImageSpaceEffectVatsTarget_UpdateParams_SetPixelConstant>(REL::ID(1042583).address() + 0xBB);
 	}
 #endif
 }
