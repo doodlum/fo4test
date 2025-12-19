@@ -1057,7 +1057,7 @@ void Upscaling::UpdateUpscaling()
 	// Example: 0.67 scale -> log2(0.67) = -0.58
 	float currentMipBias = std::log2f(resolutionScale);
 
-	if (upscaleMethodNoMenu == UpscaleMethod::kDLSS)
+	if (upscaleMethodNoMenu == UpscaleMethod::kDLSS || upscaleMethodNoMenu == UpscaleMethod::kFSR)
 		currentMipBias -= 1.0f;
 
 	UpdateSamplerStates(currentMipBias);
