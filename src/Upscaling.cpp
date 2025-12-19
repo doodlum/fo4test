@@ -1073,6 +1073,9 @@ void Upscaling::UpdateUpscaling()
 
 void Upscaling::Upscale()
 {
+	if (upscaleMethod == UpscaleMethod::kDisabled)
+		return;
+
 	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
 	auto context = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
 
