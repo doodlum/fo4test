@@ -1156,7 +1156,7 @@ void Upscaling::Upscale()
 	if (upscaleMethod == UpscaleMethod::kDLSS)
 		Streamline::GetSingleton()->Upscale(upscalingTexture.get(), dilatedMotionVectorTexture.get(), jitter, renderSize, settings.qualityMode);
 	else if (upscaleMethod == UpscaleMethod::kFSR)
-		FidelityFX::GetSingleton()->Upscale(upscalingTexture.get(), jitter, renderSize, -1.0f);
+		FidelityFX::GetSingleton()->Upscale(upscalingTexture.get(), jitter, renderSize, 0.0f);
 
 	context->CopyResource(frameBufferResource, upscalingTexture->resource.get());
 }
