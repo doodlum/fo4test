@@ -71,8 +71,8 @@ struct DrawWorld_Imagespace_RenderEffectRange
 
 			// HDR shaders
 			func(This, 0, 3, 1, 1);
-			upscaling->OverrideRenderTargets({1, 4, 29, 16});
 			upscaling->OverrideDepth(true);
+			upscaling->OverrideRenderTargets({1, 4, 29, 16});
 			renderTargetManager->dynamicHeightRatio = 1.0f;
 			renderTargetManager->dynamicWidthRatio = 1.0f;
 
@@ -184,8 +184,8 @@ struct DrawWorld_DeferredComposite_RenderPassImmediately
 		originalDynamicWidthRatio = renderTargetManager->dynamicWidthRatio;
 
 		if (requiresOverride) {
-			upscaling->OverrideRenderTargets({20, 25, 57, 24, 23, 58, 59, 3, 9, 60, 61, 28});
 			upscaling->OverrideDepth(true);
+			upscaling->OverrideRenderTargets({20, 25, 57, 24, 23, 58, 59, 3, 9, 60, 61, 28});
 			renderTargetManager->dynamicHeightRatio = 1.0f;
 			renderTargetManager->dynamicWidthRatio = 1.0f;
 		}
@@ -193,8 +193,8 @@ struct DrawWorld_DeferredComposite_RenderPassImmediately
 		func(This, a2, a3);
 
 		if (requiresOverride) {
-			upscaling->ResetRenderTargets({4});
 			upscaling->ResetDepth();
+			upscaling->ResetRenderTargets({4});
 			renderTargetManager->dynamicHeightRatio = originalDynamicHeightRatio;
 			renderTargetManager->dynamicWidthRatio = originalDynamicWidthRatio;
 		}
@@ -476,6 +476,127 @@ void Upscaling::UpdateRenderTarget(int index, float a_currentWidthRatio, float a
 #endif
 }
 
+void Upscaling::UpdateDepth(float a_currentWidthRatio, float a_currentHeightRatio)
+{
+	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
+
+	// Save the original depth stencil target
+	originalDepthStencilTarget = rendererData->depthStencilTargets[(uint)Util::DepthStencilTarget::kMain];
+	auto& originalTarget = originalDepthStencilTarget;
+	auto& proxyTarget = depthOverrideTarget;
+
+	// Clean up existing proxy depth stencil target resources
+	for (int i = 0; i < 4; i++) {
+		if (proxyTarget.dsView[i]) {
+			proxyTarget.dsView[i]->Release();
+			proxyTarget.dsView[i] = nullptr;
+		}
+		if (proxyTarget.dsViewReadOnlyDepth[i]) {
+			proxyTarget.dsViewReadOnlyDepth[i]->Release();
+			proxyTarget.dsViewReadOnlyDepth[i] = nullptr;
+		}
+		if (proxyTarget.dsViewReadOnlyStencil[i]) {
+			proxyTarget.dsViewReadOnlyStencil[i]->Release();
+			proxyTarget.dsViewReadOnlyStencil[i] = nullptr;
+		}
+		if (proxyTarget.dsViewReadOnlyDepthStencil[i]) {
+			proxyTarget.dsViewReadOnlyDepthStencil[i]->Release();
+			proxyTarget.dsViewReadOnlyDepthStencil[i] = nullptr;
+		}
+	}
+
+	if (proxyTarget.srViewDepth) {
+		proxyTarget.srViewDepth->Release();
+		proxyTarget.srViewDepth = nullptr;
+	}
+
+	if (proxyTarget.srViewStencil) {
+		proxyTarget.srViewStencil->Release();
+		proxyTarget.srViewStencil = nullptr;
+	}
+
+	if (proxyTarget.texture) {
+		proxyTarget.texture->Release();
+		proxyTarget.texture = nullptr;
+	}
+
+	// Do not need to replace depth at native resolution
+	if (a_currentWidthRatio == 1.0f && a_currentHeightRatio == 1.0f)
+		return;
+
+	// Get original texture description
+	D3D11_TEXTURE2D_DESC textureDesc{};
+	if (originalTarget.texture)
+		reinterpret_cast<ID3D11Texture2D*>(originalTarget.texture)->GetDesc(&textureDesc);
+
+	// Scale texture dimensions
+	textureDesc.Width = static_cast<uint>(static_cast<float>(textureDesc.Width) * a_currentWidthRatio);
+	textureDesc.Height = static_cast<uint>(static_cast<float>(textureDesc.Height) * a_currentHeightRatio);
+
+	auto device = reinterpret_cast<ID3D11Device*>(rendererData->device);
+
+	// Create texture
+	if (originalTarget.texture)
+		DX::ThrowIfFailed(device->CreateTexture2D(&textureDesc, nullptr, reinterpret_cast<ID3D11Texture2D**>(&proxyTarget.texture)));
+
+	if (auto texture = reinterpret_cast<ID3D11Texture2D*>(proxyTarget.texture)) {
+		for (int i = 0; i < 4; i++) {
+			if (originalTarget.dsView[i]) {
+				D3D11_DEPTH_STENCIL_VIEW_DESC dsvDesc;
+				reinterpret_cast<ID3D11DepthStencilView*>(originalTarget.dsView[i])->GetDesc(&dsvDesc);
+				DX::ThrowIfFailed(device->CreateDepthStencilView(texture, &dsvDesc, reinterpret_cast<ID3D11DepthStencilView**>(&proxyTarget.dsView[i])));
+			}
+
+			if (originalTarget.dsViewReadOnlyDepth[i]) {
+				D3D11_DEPTH_STENCIL_VIEW_DESC dsvDesc;
+				reinterpret_cast<ID3D11DepthStencilView*>(originalTarget.dsViewReadOnlyDepth[i])->GetDesc(&dsvDesc);
+				DX::ThrowIfFailed(device->CreateDepthStencilView(texture, &dsvDesc, reinterpret_cast<ID3D11DepthStencilView**>(&proxyTarget.dsViewReadOnlyDepth[i])));
+			}
+
+			if (originalTarget.dsViewReadOnlyStencil[i]) {
+				D3D11_DEPTH_STENCIL_VIEW_DESC dsvDesc;
+				reinterpret_cast<ID3D11DepthStencilView*>(originalTarget.dsViewReadOnlyStencil[i])->GetDesc(&dsvDesc);
+				DX::ThrowIfFailed(device->CreateDepthStencilView(texture, &dsvDesc, reinterpret_cast<ID3D11DepthStencilView**>(&proxyTarget.dsViewReadOnlyStencil[i])));
+			}
+
+			if (originalTarget.dsViewReadOnlyDepthStencil[i]) {
+				D3D11_DEPTH_STENCIL_VIEW_DESC dsvDesc;
+				reinterpret_cast<ID3D11DepthStencilView*>(originalTarget.dsViewReadOnlyDepthStencil[i])->GetDesc(&dsvDesc);
+				DX::ThrowIfFailed(device->CreateDepthStencilView(texture, &dsvDesc, reinterpret_cast<ID3D11DepthStencilView**>(&proxyTarget.dsViewReadOnlyDepthStencil[i])));
+			}
+		}
+
+		if (originalTarget.srViewDepth) {
+			D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc;
+			reinterpret_cast<ID3D11ShaderResourceView*>(originalTarget.srViewDepth)->GetDesc(&srvDesc);
+			DX::ThrowIfFailed(device->CreateShaderResourceView(texture, &srvDesc, reinterpret_cast<ID3D11ShaderResourceView**>(&proxyTarget.srViewDepth)));
+		}
+
+		if (originalTarget.srViewStencil) {
+			D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc;
+			reinterpret_cast<ID3D11ShaderResourceView*>(originalTarget.srViewStencil)->GetDesc(&srvDesc);
+			DX::ThrowIfFailed(device->CreateShaderResourceView(texture, &srvDesc, reinterpret_cast<ID3D11ShaderResourceView**>(&proxyTarget.srViewStencil)));
+		}
+	}
+
+#ifndef NDEBUG
+	if (auto texture = reinterpret_cast<ID3D11Texture2D*>(proxyTarget.texture)) {
+		auto name = std::string("DEPTH PROXY");
+		texture->SetPrivateData(WKPDID_D3DDebugObjectName, static_cast<UINT>(name.size()), name.data());
+	}
+
+	if (auto dsView = reinterpret_cast<ID3D11DepthStencilView*>(proxyTarget.dsView[0])) {
+		auto name = std::string("DSV PROXY");
+		dsView->SetPrivateData(WKPDID_D3DDebugObjectName, static_cast<UINT>(name.size()), name.data());
+	}
+
+	if (auto srView = reinterpret_cast<ID3D11ShaderResourceView*>(proxyTarget.srViewDepth)) {
+		auto name = std::string("DEPTH SRV PROXY");
+		srView->SetPrivateData(WKPDID_D3DDebugObjectName, static_cast<UINT>(name.size()), name.data());
+	}
+#endif
+}
+
 void Upscaling::OverrideRenderTarget(int index, bool a_doCopy)
 {
 	if (!originalRenderTargets[index].texture || !proxyRenderTargets[index].texture)
@@ -551,9 +672,11 @@ void Upscaling::UpdateRenderTargets(float a_currentWidthRatio, float a_currentHe
 	for (int i = 0; i < ARRAYSIZE(renderTargetsPatch); i++)
 		UpdateRenderTarget(renderTargetsPatch[i], a_currentWidthRatio, a_currentHeightRatio);
 
+	// Recreate depth stencil target with new dimensions
+	UpdateDepth(a_currentWidthRatio, a_currentHeightRatio);
+
 	// Reset intermediate textures to force recreation with new dimensions
 	upscalingTexture = nullptr;
-	depthOverrideTexture = nullptr;
 
 	// Get the frame buffer texture description to match its properties
 	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
@@ -587,26 +710,13 @@ void Upscaling::UpdateRenderTargets(float a_currentWidthRatio, float a_currentHe
 	upscalingTexture = std::make_unique<Texture2D>(texDesc);
 	upscalingTexture->CreateSRV(srvDesc);
 	upscalingTexture->CreateUAV(uavDesc);
-
-	// Do not need to replace render targets at native resolution
-	if (a_currentWidthRatio == 1.0f && a_currentHeightRatio == 1.0f)
-		return;
-
-	// Dynamic resolution depth texture (R32 float)
-	texDesc.Width = static_cast<uint>(static_cast<float>(texDesc.Width) * a_currentWidthRatio);
-	texDesc.Height = static_cast<uint>(static_cast<float>(texDesc.Height) * a_currentHeightRatio);
-
-	texDesc.Format = DXGI_FORMAT_R32_FLOAT;
-	srvDesc.Format = texDesc.Format;
-	uavDesc.Format = texDesc.Format;
-
-	depthOverrideTexture = std::make_unique<Texture2D>(texDesc);
-	depthOverrideTexture->CreateSRV(srvDesc);
-	depthOverrideTexture->CreateUAV(uavDesc);
 }
 
 void Upscaling::OverrideRenderTargets(const std::vector<int>& a_indicesToCopy)
 {
+	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
+	auto context = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
+
 	// Replace all patched render targets with their scaled proxy versions
 	for (int i = 0; i < ARRAYSIZE(renderTargetsPatch); i++) {
 		int targetIndex = renderTargetsPatch[i];
@@ -625,9 +735,6 @@ void Upscaling::OverrideRenderTargets(const std::vector<int>& a_indicesToCopy)
 	}
 
 	// Check and override pixel shader SRVs that reference original render targets
-	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
-	auto context = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
-
 	// Get currently bound pixel shader SRVs (first 16 slots)
 	ID3D11ShaderResourceView* boundSRVs[16] = {};
 	context->PSGetShaderResources(0, 16, boundSRVs);
@@ -716,10 +823,13 @@ void Upscaling::ResetRenderTargets(const std::vector<int>& a_indicesToCopy)
 
 void Upscaling::OverrideDepth(bool a_doCopy)
 {
+	if (!depthOverrideTarget.texture)
+		return;
+
 	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
 
-	// Save the original depth SRV (with dynamic resolution)
-	originalDepthView = reinterpret_cast<ID3D11ShaderResourceView*>(rendererData->depthStencilTargets[(uint)Util::DepthStencilTarget::kMain].srViewDepth);
+	// Save the original depth stencil target (with dynamic resolution)
+	originalDepthStencilTarget = rendererData->depthStencilTargets[(uint)Util::DepthStencilTarget::kMain];
 
 	// Optionally perform expensive copy operation
 	if (a_doCopy) {
@@ -732,24 +842,17 @@ void Upscaling::OverrideDepth(bool a_doCopy)
 		previousFrame = gameViewport->frameCount;
 	}
 
-	// Replace with our dynamic resolution depth texture for post-processing effects
-#if defined(FALLOUT_POST_NG)
-	rendererData->depthStencilTargets[(uint)Util::DepthStencilTarget::kMain].srViewDepth = reinterpret_cast<REX::W32::ID3D11ShaderResourceView*>(depthOverrideTexture->srv.get());
-#else
-	rendererData->depthStencilTargets[(uint)Util::DepthStencilTarget::kMain].srViewDepth = depthOverrideTexture->srv.get();
-#endif
+	// Replace the entire depth stencil target
+	originalDepthStencilTarget = rendererData->depthStencilTargets[(uint)Util::DepthStencilTarget::kMain];
+	rendererData->depthStencilTargets[(uint)Util::DepthStencilTarget::kMain] = depthOverrideTarget;
 }
 
 void Upscaling::ResetDepth()
 {
 	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
 
-	// Restore the original depth SRV with dynamic resolution
-#if defined(FALLOUT_POST_NG)
-	rendererData->depthStencilTargets[(uint)Util::DepthStencilTarget::kMain].srViewDepth = reinterpret_cast<REX::W32::ID3D11ShaderResourceView*>(originalDepthView);
-#else
-	rendererData->depthStencilTargets[(uint)Util::DepthStencilTarget::kMain].srViewDepth = originalDepthView;
-#endif
+	// Restore the original depth stencil target with dynamic resolution
+	rendererData->depthStencilTargets[(uint)Util::DepthStencilTarget::kMain] = originalDepthStencilTarget;
 }
 
 void Upscaling::UpdateSamplerStates(float a_currentMipBias)
@@ -820,10 +923,6 @@ void Upscaling::CopyDepth()
 	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
 	auto context = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
 
-	// Unbind all render targets before we start manipulating textures
-	// This ensures we don't have any resource hazards during the copy
-	context->OMSetRenderTargets(0, nullptr, nullptr);
-
 	static auto gameViewport = Util::State_GetSingleton();
 	static auto renderTargetManager = Util::RenderTargetManager_GetSingleton();
 
@@ -834,60 +933,149 @@ void Upscaling::CopyDepth()
 	// Get the scaled depth buffer as input
 	auto depthSRV = reinterpret_cast<ID3D11ShaderResourceView*>(rendererData->depthStencilTargets[(uint)Util::DepthStencilTarget::kMain].srViewDepth);
 
-	// Get the dynamic resolution depth output UAV
-	auto depthUAV = depthOverrideTexture->uav.get();
-
-	// Also update the linearized depth used by other effects
+	// Also update the linearized depth used by other effects using compute shader
 	auto linearDepthUAV = reinterpret_cast<ID3D11UnorderedAccessView*>(rendererData->renderTargets[(uint)Util::RenderTarget::kMainDepthMips].uaView);
 
 	{
 		UpdateAndBindUpscalingCB(context, screenSize, renderSize);
 
-		{
-			// Bind scaled depth as input (SRV)
-			ID3D11ShaderResourceView* views[] = { depthSRV };
-			context->CSSetShaderResources(0, ARRAYSIZE(views), views);
-
-			// Bind full-resolution depth outputs (UAV)
-			ID3D11UnorderedAccessView* uavs[] = { linearDepthUAV };
-			context->CSSetUnorderedAccessViews(0, ARRAYSIZE(uavs), uavs, nullptr);
-
-			// Run depth upscaling compute shader
-			context->CSSetShader(GetOverrideLinearDepthCS(), nullptr, 0);
-
-			// Dispatch with 8x8 thread groups covering the full screen resolution
-			uint dispatchX = (uint)std::ceil(screenSize.x / 8.0f);
-			uint dispatchY = (uint)std::ceil(screenSize.y / 8.0f);
-			context->Dispatch(dispatchX, dispatchY, 1);
-		}
-
-		{
-			// Bind scaled depth as input (SRV)
-			ID3D11ShaderResourceView* views[] = { depthSRV };
-			context->CSSetShaderResources(0, ARRAYSIZE(views), views);
-
-			// Bind full-resolution depth outputs (UAV)
-			ID3D11UnorderedAccessView* uavs[] = { depthUAV };
-			context->CSSetUnorderedAccessViews(0, ARRAYSIZE(uavs), uavs, nullptr);
-
-			// Run depth upscaling compute shader
-			context->CSSetShader(GetOverrideDepthCS(), nullptr, 0);
-
-			// Dispatch with 8x8 thread groups covering the render size
-			uint dispatchX = (uint)std::ceil(renderSize.x / 8.0f);
-			uint dispatchY = (uint)std::ceil(renderSize.y / 8.0f);
-			context->Dispatch(dispatchX, dispatchY, 1);
-		}
-
-		// Clean up compute shader bindings to avoid resource hazards
-		ID3D11ShaderResourceView* views[1] = { nullptr };
+		// Bind scaled depth as input (SRV)
+		ID3D11ShaderResourceView* views[] = { depthSRV };
 		context->CSSetShaderResources(0, ARRAYSIZE(views), views);
 
-		ID3D11UnorderedAccessView* uavs[1] = { nullptr };
+		// Bind full-resolution depth outputs (UAV)
+		ID3D11UnorderedAccessView* uavs[] = { linearDepthUAV };
 		context->CSSetUnorderedAccessViews(0, ARRAYSIZE(uavs), uavs, nullptr);
 
-		ID3D11ComputeShader* shader = nullptr;
-		context->CSSetShader(shader, nullptr, 0);
+		// Run depth upscaling compute shader
+		context->CSSetShader(GetOverrideLinearDepthCS(), nullptr, 0);
+
+		// Dispatch with 8x8 thread groups covering the full screen resolution
+		uint dispatchX = (uint)std::ceil(screenSize.x / 8.0f);
+		uint dispatchY = (uint)std::ceil(screenSize.y / 8.0f);
+		context->Dispatch(dispatchX, dispatchY, 1);
+
+		// Clean up compute shader bindings to avoid resource hazards
+		ID3D11ShaderResourceView* nullViews[1] = { nullptr };
+		context->CSSetShaderResources(0, ARRAYSIZE(nullViews), nullViews);
+
+		ID3D11UnorderedAccessView* nullUAVs[1] = { nullptr };
+		context->CSSetUnorderedAccessViews(0, ARRAYSIZE(nullUAVs), nullUAVs, nullptr);
+
+		ID3D11ComputeShader* nullCS = nullptr;
+		context->CSSetShader(nullCS, nullptr, 0);
+	}
+
+	// Copy depth to depthOverrideTexture using pixel shader with SV_Depth
+	{
+		// Save current state
+		winrt::com_ptr<ID3D11DepthStencilState> oldDepthStencilState;
+		UINT oldStencilRef = 0;
+		context->OMGetDepthStencilState(oldDepthStencilState.put(), &oldStencilRef);
+
+		winrt::com_ptr<ID3D11BlendState> oldBlendState;
+		FLOAT oldBlendFactor[4] = {};
+		UINT oldSampleMask = 0;
+		context->OMGetBlendState(oldBlendState.put(), oldBlendFactor, &oldSampleMask);
+
+		winrt::com_ptr<ID3D11RasterizerState> oldRasterizerState;
+		context->RSGetState(oldRasterizerState.put());
+
+		ID3D11RenderTargetView* oldRTVs[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT] = {};
+		winrt::com_ptr<ID3D11DepthStencilView> oldDSV;
+		context->OMGetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, oldRTVs, oldDSV.put());
+
+		D3D11_VIEWPORT oldViewports[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE] = {};
+		UINT numViewports = D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;
+		context->RSGetViewports(&numViewports, oldViewports);
+
+		winrt::com_ptr<ID3D11VertexShader> oldVS;
+		context->VSGetShader(oldVS.put(), nullptr, nullptr);
+
+		winrt::com_ptr<ID3D11PixelShader> oldPS;
+		context->PSGetShader(oldPS.put(), nullptr, nullptr);
+
+		ID3D11ShaderResourceView* oldPSSRVs[D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT] = {};
+		context->PSGetShaderResources(0, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT, oldPSSRVs);
+
+		winrt::com_ptr<ID3D11InputLayout> oldInputLayout;
+		context->IAGetInputLayout(oldInputLayout.put());
+
+		D3D11_PRIMITIVE_TOPOLOGY oldTopology;
+		context->IAGetPrimitiveTopology(&oldTopology);
+
+		winrt::com_ptr<ID3D11Buffer> oldPSCB;
+		context->PSGetConstantBuffers(0, 1, oldPSCB.put());
+
+		// Set render state using cached state objects
+		auto dsvPointer = reinterpret_cast<ID3D11DepthStencilView*>(depthOverrideTarget.dsView[0]);
+		context->OMSetRenderTargets(0, nullptr, dsvPointer);
+		context->OMSetDepthStencilState(GetCopyDepthStencilState(), 0xFF);
+		FLOAT blendFactor[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+		context->OMSetBlendState(GetCopyBlendState(), blendFactor, 0xFFFFFFFF);
+		context->RSSetState(GetCopyRasterizerState());
+
+		// Set viewport to render size
+		D3D11_VIEWPORT viewport = {
+			.TopLeftX = 0.0f,
+			.TopLeftY = 0.0f,
+			.Width = renderSize.x,
+			.Height = renderSize.y,
+			.MinDepth = 0.0f,
+			.MaxDepth = 1.0f
+		};
+		context->RSSetViewports(1, &viewport);
+
+		// Bind upscaling constant buffer for pixel shader
+		auto upscalingCB = GetUpscalingCB();
+		auto upscalingBuffer = upscalingCB->CB();
+		context->PSSetConstantBuffers(0, 1, &upscalingBuffer);
+
+		// Bind shaders
+		context->VSSetShader(GetCopyDepthVS(), nullptr, 0);
+		context->PSSetShader(GetCopyDepthPS(), nullptr, 0);
+
+		// Bind depth texture as input
+		context->PSSetShaderResources(0, 1, &depthSRV);
+
+		// Bind sampler state for depth sampling
+		ID3D11SamplerState* samplers[] = { GetCopySamplerState() };
+		context->PSSetSamplers(0, 1, samplers);
+
+		// Set input layout and topology for fullscreen triangle
+		context->IASetInputLayout(nullptr);
+		context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+		// Draw fullscreen triangle (3 vertices, no vertex buffer needed)
+		context->Draw(3, 0);
+
+		// Restore all saved state
+		context->OMSetDepthStencilState(oldDepthStencilState.get(), oldStencilRef);
+		context->OMSetBlendState(oldBlendState.get(), oldBlendFactor, oldSampleMask);
+		context->RSSetState(oldRasterizerState.get());
+		context->OMSetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, oldRTVs, oldDSV.get());
+		context->RSSetViewports(numViewports, oldViewports);
+		context->VSSetShader(oldVS.get(), nullptr, 0);
+		context->PSSetShader(oldPS.get(), nullptr, 0);
+		context->PSSetShaderResources(0, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT, oldPSSRVs);
+		context->IASetInputLayout(oldInputLayout.get());
+		context->IASetPrimitiveTopology(oldTopology);
+
+		// Restore pixel shader constant buffer
+		ID3D11Buffer* psCBArray[] = { oldPSCB.get() };
+		context->PSSetConstantBuffers(0, 1, psCBArray);
+
+		// Release old RTVs
+		for (int i = 0; i < D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT; i++) {
+			if (oldRTVs[i])
+				oldRTVs[i]->Release();
+		}
+
+		// Release old PS SRVs
+		for (int i = 0; i < D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT; i++) {
+			if (oldPSSRVs[i])
+				oldPSSRVs[i]->Release();
+		}
 	}
 }
 
@@ -968,6 +1156,128 @@ ID3D11ComputeShader* Upscaling::GetOverrideDepthCS()
 		overrideDepthCS.attach((ID3D11ComputeShader*)Util::CompileShader(L"Data/F4SE/Plugins/Upscaling/OverrideDepthCS.hlsl", {}, "cs_5_0"));
 	}
 	return overrideDepthCS.get();
+}
+
+ID3D11VertexShader* Upscaling::GetCopyDepthVS()
+{
+	if (!copyDepthVS) {
+		logger::debug("Compiling CopyDepthVS.hlsl");
+		copyDepthVS.attach((ID3D11VertexShader*)Util::CompileShader(L"Data/F4SE/Plugins/Upscaling/CopyDepthVS.hlsl", {}, "vs_5_0"));
+	}
+	return copyDepthVS.get();
+}
+
+ID3D11PixelShader* Upscaling::GetCopyDepthPS()
+{
+	if (!copyDepthPS) {
+		logger::debug("Compiling CopyDepthPS.hlsl");
+		copyDepthPS.attach((ID3D11PixelShader*)Util::CompileShader(L"Data/F4SE/Plugins/Upscaling/CopyDepthPS.hlsl", {}, "ps_5_0"));
+	}
+	return copyDepthPS.get();
+}
+
+ID3D11DepthStencilState* Upscaling::GetCopyDepthStencilState()
+{
+	if (!copyDepthStencilState) {
+		logger::debug("Creating depth copy depth stencil state");
+
+		D3D11_DEPTH_STENCIL_DESC depthStencilDesc = {
+			.DepthEnable = TRUE,
+			.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL,
+			.DepthFunc = D3D11_COMPARISON_ALWAYS,
+			.StencilEnable = FALSE,
+			.StencilReadMask = 0xFF,
+			.StencilWriteMask = 0xFF,
+			.FrontFace = {
+				.StencilFailOp = D3D11_STENCIL_OP_KEEP,
+				.StencilDepthFailOp = D3D11_STENCIL_OP_KEEP,
+				.StencilPassOp = D3D11_STENCIL_OP_REPLACE,
+				.StencilFunc = D3D11_COMPARISON_ALWAYS
+			},
+			.BackFace = {
+				.StencilFailOp = D3D11_STENCIL_OP_KEEP,
+				.StencilDepthFailOp = D3D11_STENCIL_OP_KEEP,
+				.StencilPassOp = D3D11_STENCIL_OP_REPLACE,
+				.StencilFunc = D3D11_COMPARISON_ALWAYS
+			}
+		};
+
+		static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
+		auto device = reinterpret_cast<ID3D11Device*>(rendererData->device);
+		DX::ThrowIfFailed(device->CreateDepthStencilState(&depthStencilDesc, copyDepthStencilState.put()));
+	}
+	return copyDepthStencilState.get();
+}
+
+ID3D11BlendState* Upscaling::GetCopyBlendState()
+{
+	if (!copyBlendState) {
+		logger::debug("Creating depth copy blend state");
+
+		D3D11_BLEND_DESC blendDesc = {
+			.AlphaToCoverageEnable = FALSE,
+			.IndependentBlendEnable = FALSE,
+			.RenderTarget = {{
+				.BlendEnable = FALSE,
+				.RenderTargetWriteMask = 0  // No color writes
+			}}
+		};
+
+		static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
+		auto device = reinterpret_cast<ID3D11Device*>(rendererData->device);
+		DX::ThrowIfFailed(device->CreateBlendState(&blendDesc, copyBlendState.put()));
+	}
+	return copyBlendState.get();
+}
+
+ID3D11RasterizerState* Upscaling::GetCopyRasterizerState()
+{
+	if (!copyRasterizerState) {
+		logger::debug("Creating depth copy rasterizer state");
+
+		D3D11_RASTERIZER_DESC rasterizerDesc = {
+			.FillMode = D3D11_FILL_SOLID,
+			.CullMode = D3D11_CULL_NONE,
+			.FrontCounterClockwise = FALSE,
+			.DepthBias = 0,
+			.DepthBiasClamp = 0.0f,
+			.SlopeScaledDepthBias = 0.0f,
+			.DepthClipEnable = FALSE,
+			.ScissorEnable = FALSE,
+			.MultisampleEnable = FALSE,
+			.AntialiasedLineEnable = FALSE
+		};
+
+		static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
+		auto device = reinterpret_cast<ID3D11Device*>(rendererData->device);
+		DX::ThrowIfFailed(device->CreateRasterizerState(&rasterizerDesc, copyRasterizerState.put()));
+	}
+	return copyRasterizerState.get();
+}
+
+ID3D11SamplerState* Upscaling::GetCopySamplerState()
+{
+	if (!copySamplerState) {
+		logger::debug("Creating depth copy sampler state");
+
+		D3D11_SAMPLER_DESC samplerDesc = {
+			.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT,
+			.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP,
+			.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP,
+			.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP,
+			.MipLODBias = 0.0f,
+			.MaxAnisotropy = 1,
+			.ComparisonFunc = D3D11_COMPARISON_NEVER,
+			.BorderColor = { 0.0f, 0.0f, 0.0f, 0.0f },
+			.MinLOD = 0.0f,
+			.MaxLOD = D3D11_FLOAT32_MAX
+		};
+
+		static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
+		auto device = reinterpret_cast<ID3D11Device*>(rendererData->device);
+		DX::ThrowIfFailed(device->CreateSamplerState(&samplerDesc, copySamplerState.put()));
+	}
+	return copySamplerState.get();
 }
 
 ID3D11PixelShader* Upscaling::GetBSImagespaceShaderSSLRRaytracing()
