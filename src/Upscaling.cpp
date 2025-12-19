@@ -30,8 +30,8 @@ struct ImageSpaceEffectTemporalAA_IsActive
 	static inline REL::Relocation<decltype(thunk)> func;
 };
 
-float originalDynamicHeightRatio;
-float originalDynamicWidthRatio;
+float originalDynamicHeightRatio = 1.0f;
+float originalDynamicWidthRatio = 1.0f;
 
 /** @brief Hook to fix outline thickness in VATs shader*/
 struct ImageSpaceEffectVatsTarget_UpdateParams_SetPixelConstant
@@ -880,7 +880,7 @@ Upscaling::UpscaleMethod Upscaling::GetUpscaleMethod(bool a_checkMenu)
 	
 	// Disable the upscaling method when certain menus are open
 	if (a_checkMenu){
-		if (ui->GetMenuOpen("ExamineMenu") || ui->GetMenuOpen("PipboyMenu") || ui->GetMenuOpen("LoadingMenu"))
+		if (ui->GetMenuOpen("ExamineMenu") || ui->GetMenuOpen("PipboyMenu") || ui->GetMenuOpen("LoadingMenu") || ui->GetMenuOpen("TerminalMenu"))
 			return UpscaleMethod::kDisabled;
 	}
 
@@ -922,26 +922,6 @@ void Upscaling::CheckResources()
 
 		previousUpscaleMethodNoMenu = upscaleMethodNoMenu;
 	}
-}
-
-ID3D11ComputeShader* Upscaling::GetRCAS()
-{
-	// Remap sharpness setting to match internal FSR3.1 code
-	float currentSharpness = (-2.0f * settings.sharpness) + 2.0f;
-	currentSharpness = exp2(-currentSharpness);
-
-	static auto previousSharpness = currentSharpness;
-
-	if (previousSharpness != currentSharpness) {
-		previousSharpness = currentSharpness;
-		rcas = nullptr;
-	}
-
-	if (!rcas) {
-		logger::debug("Compiling RCAS.hlsl");
-		rcas.attach((ID3D11ComputeShader*)Util::CompileShader(L"Data/F4SE/Plugins/Upscaling/RCAS/RCAS.hlsl", { { "SHARPNESS", std::format("{}", currentSharpness).c_str() } }, "cs_5_0"));
-	}
-	return rcas.get();
 }
 
 ID3D11ComputeShader* Upscaling::GetDilateMotionVectorCS()
@@ -1155,38 +1135,6 @@ void Upscaling::Upscale()
 		Streamline::GetSingleton()->Upscale(upscalingTexture.get(), dilatedMotionVectorTexture.get(), jitter, renderSize, settings.qualityMode);
 	else if (upscaleMethod == UpscaleMethod::kFSR)
 		FidelityFX::GetSingleton()->Upscale(upscalingTexture.get(), jitter, renderSize, settings.sharpness);
-
-	// Apply RCAS sharpening (FSR has built-in sharpening)
-	if (upscaleMethod != UpscaleMethod::kFSR) {
-		context->CopyResource(frameBufferResource, upscalingTexture->resource.get());
-
-		{
-			{
-				UpdateAndBindUpscalingCB(context, screenSize, renderSize);
-
-				ID3D11ShaderResourceView* views[1] = { frameBufferSRV };
-				context->CSSetShaderResources(0, ARRAYSIZE(views), views);
-
-				ID3D11UnorderedAccessView* uavs[1] = { upscalingTexture->uav.get() };
-				context->CSSetUnorderedAccessViews(0, ARRAYSIZE(uavs), uavs, nullptr);
-
-				context->CSSetShader(GetRCAS(), nullptr, 0);
-
-				uint dispatchX = (uint)std::ceil(screenSize.x / 8.0f);
-				uint dispatchY = (uint)std::ceil(screenSize.y / 8.0f);
-				context->Dispatch(dispatchX, dispatchY, 1);
-			}
-
-			ID3D11ShaderResourceView* views[1] = { nullptr };
-			context->CSSetShaderResources(0, ARRAYSIZE(views), views);
-
-			ID3D11UnorderedAccessView* uavs[1] = { nullptr };
-			context->CSSetUnorderedAccessViews(0, ARRAYSIZE(uavs), uavs, nullptr);
-
-			ID3D11ComputeShader* shader = nullptr;
-			context->CSSetShader(shader, nullptr, 0);
-		}
-	}
 
 	context->CopyResource(frameBufferResource, upscalingTexture->resource.get());
 }

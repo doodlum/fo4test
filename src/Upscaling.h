@@ -262,14 +262,6 @@ public:
 	void PatchSSRShader();
 
 	/**
-	 * @brief Get or compile RCAS (Robust Contrast Adaptive Sharpening) shader
-	 * @return Compiled compute shader
-	 *
-	 * RCAS is used for post-upscaling sharpening
-	 */
-	ID3D11ComputeShader* GetRCAS();
-
-	/**
 	 * @brief Get or compile motion vector dilation shader
 	 * @return Compiled compute shader
 	 *
