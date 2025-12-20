@@ -117,7 +117,6 @@ public:
 
 	/**
 	 * @brief Execute DLSS upscaling
-	 * @param a_color Input/output color texture at render resolution
 	 * @param a_dilatedMotionVectorTexture Dilated motion vectors for better temporal stability
 	 * @param a_jitter Camera jitter offset for current frame
 	 * @param a_renderSize Render resolution dimensions
@@ -127,7 +126,7 @@ public:
 	 * Uses dilated motion vectors and depth buffer for temporal reconstruction.
 	 * The upscaled result is written back to a_color texture.
 	 */
-	void Upscale(Texture2D* a_color, Texture2D* a_dilatedMotionVectorTexture, float2 a_jitter, float2 a_renderSize, uint a_qualityMode);
+	void Upscale(Texture2D* a_dilatedMotionVectorTexture, float2 a_jitter, float2 a_renderSize, uint a_qualityMode);
 
 	/**
 	 * @brief Update Streamline constants for current frame

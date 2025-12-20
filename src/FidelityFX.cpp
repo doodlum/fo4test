@@ -53,7 +53,7 @@ void FidelityFX::CreateFSRResources()
 	contextDescription.maxUpscaleSize.height = gameViewport->screenHeight;
 	contextDescription.displaySize.width = gameViewport->screenWidth;
 	contextDescription.displaySize.height = gameViewport->screenHeight;
-	contextDescription.flags = FFX_FSR3_ENABLE_UPSCALING_ONLY;
+	contextDescription.flags = FFX_FSR3_ENABLE_UPSCALING_ONLY | FFX_FSR3_ENABLE_HIGH_DYNAMIC_RANGE | FFX_FSR3_ENABLE_AUTO_EXPOSURE;
 	contextDescription.backendInterfaceUpscaling = fsrInterface;
 
 	auto renderer = RE::BSGraphics::RendererData::GetSingleton();
@@ -98,11 +98,6 @@ void FidelityFX::CopyOpaqueTexture()
 	context->CopyResource(colorOpaqueOnlyTexture->resource.get(), mainTexture);
 }
 
-#define FFX_FSR3UPSCALER_AUTOREACTIVEFLAGS_APPLY_TONEMAP                                    1
-#define FFX_FSR3UPSCALER_AUTOREACTIVEFLAGS_APPLY_INVERSETONEMAP                             2
-#define FFX_FSR3UPSCALER_AUTOREACTIVEFLAGS_APPLY_THRESHOLD                                  4
-#define FFX_FSR3UPSCALER_AUTOREACTIVEFLAGS_USE_COMPONENTS_MAX                               8
-
 void FidelityFX::GenerateReactiveMask()
 {
 	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
@@ -130,17 +125,18 @@ void FidelityFX::GenerateReactiveMask()
 	dispatchParameters.renderSize.height = static_cast<uint>(renderSize.y);
 
 	dispatchParameters.scale = 1.0f;
-	dispatchParameters.flags = FFX_FSR3UPSCALER_AUTOREACTIVEFLAGS_USE_COMPONENTS_MAX | FFX_FSR3UPSCALER_AUTOREACTIVEFLAGS_APPLY_TONEMAP;
+	dispatchParameters.flags = 0;
 
 	if (ffxFsr3ContextGenerateReactiveMask(&fsrContext, &dispatchParameters) != FFX_OK)
 		logger::critical("[FidelityFX] Failed to dispatch reactive mask!");
 }
 
-void FidelityFX::Upscale(Texture2D* a_color, float2 a_jitter, float2 a_renderSize, float a_sharpness)
+void FidelityFX::Upscale(float2 a_jitter, float2 a_renderSize, float a_sharpness)
 {
 	static auto rendererData = RE::BSGraphics::RendererData::GetSingleton();
 	auto context = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
-
+	
+	auto& mainTexture = rendererData->renderTargets[(uint)Util::RenderTarget::kMainTemp];
 	auto& depthTexture = rendererData->depthStencilTargets[(uint)Util::DepthStencilTarget::kMain];
 	auto& motionVectorTexture = rendererData->renderTargets[(uint)Util::RenderTarget::kMotionVectors];
 
@@ -167,7 +163,7 @@ void FidelityFX::Upscale(Texture2D* a_color, float2 a_jitter, float2 a_renderSiz
 		FfxFsr3DispatchUpscaleDescription dispatchParameters{};
 
 		dispatchParameters.commandList = ffxGetCommandListDX11(context);
-		dispatchParameters.color = ffxGetResource(a_color->resource.get(), L"FSR3_Input_OutputColor", FFX_RESOURCE_STATE_PIXEL_COMPUTE_READ);
+		dispatchParameters.color = ffxGetResource(reinterpret_cast<ID3D11Texture2D*>(mainTexture.texture), L"FSR3_Input_OutputColor", FFX_RESOURCE_STATE_PIXEL_COMPUTE_READ);
 		dispatchParameters.depth = ffxGetResource(reinterpret_cast<ID3D11Texture2D*>(depthTexture.texture), L"FSR3_InputDepth", FFX_RESOURCE_STATE_PIXEL_COMPUTE_READ);
 		dispatchParameters.motionVectors = ffxGetResource(reinterpret_cast<ID3D11Texture2D*>(motionVectorTexture.texture), L"FSR3_InputMotionVectors", FFX_RESOURCE_STATE_PIXEL_COMPUTE_READ);
 		dispatchParameters.exposure = ffxGetResource(nullptr, L"FSR3_InputExposure", FFX_RESOURCE_STATE_PIXEL_COMPUTE_READ);

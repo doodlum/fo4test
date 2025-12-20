@@ -43,55 +43,6 @@ struct ImageSpaceEffectVatsTarget_UpdateParams_SetPixelConstant
 	static inline REL::Relocation<decltype(thunk)> func;
 };
 
-/** @brief Hook to fix dynamic resolution and jitter in post processing shaders */
-struct DrawWorld_Imagespace_RenderEffectRange
-{
-	static void thunk(RE::BSGraphics::RenderTargetManager* This, uint a2, uint a3, uint a4, uint a5)
-	{
-		auto upscaling = Upscaling::GetSingleton();
-
-		static auto renderTargetManager = Util::RenderTargetManager_GetSingleton();
-		static auto gameViewport = Util::State_GetSingleton();
-
-		bool requiresOverride = renderTargetManager->dynamicHeightRatio != 1.0 || renderTargetManager->dynamicWidthRatio != 1.0;
-
-		auto originalOffsetX = gameViewport->offsetX;
-		auto originalOffsetY = gameViewport->offsetY;
-
-		// Disable removal of jitter in some passes
-		if (upscaling->upscaleMethod != Upscaling::UpscaleMethod::kDisabled){
-			gameViewport->offsetX = originalOffsetX;
-			gameViewport->offsetY = originalOffsetY;
-		}
-
-		originalDynamicHeightRatio = renderTargetManager->dynamicHeightRatio;
-		originalDynamicWidthRatio = renderTargetManager->dynamicWidthRatio;
-
-		if (requiresOverride) {
-
-			// HDR shaders
-			func(This, 0, 3, 1, 1);
-			upscaling->OverrideRenderTargets({1, 4, 29, 16});
-			upscaling->OverrideDepth(true);
-			renderTargetManager->dynamicHeightRatio = 1.0f;
-			renderTargetManager->dynamicWidthRatio = 1.0f;
-
-			// LDR shaders
-			func(This, 4, 13, 1, 1);
-			upscaling->ResetDepth();
-			upscaling->ResetRenderTargets({4});
-
-			renderTargetManager->dynamicHeightRatio = originalDynamicHeightRatio;
-			renderTargetManager->dynamicWidthRatio = originalDynamicWidthRatio;
-		} else {
-			func(This, a2, a3, a4, a5);
-		}
-
-		gameViewport->offsetX = originalOffsetX;
-		gameViewport->offsetY = originalOffsetY;
-	}
-	static inline REL::Relocation<decltype(thunk)> func;
-};
 
 /** @brief Hook to add alternative scaling method */
 struct DrawWorld_Imagespace_SetUseDynamicResolutionViewportAsDefaultViewport
@@ -99,9 +50,34 @@ struct DrawWorld_Imagespace_SetUseDynamicResolutionViewportAsDefaultViewport
 	static void thunk(RE::BSGraphics::RenderTargetManager* This, bool a_true)
 	{
 		func(This, a_true);
+	}
+	static inline REL::Relocation<decltype(thunk)> func;
+};
 
+
+/** @brief Hook to fix dynamic resolution and jitter in post processing shaders */
+struct DrawWorld_Imagespace_RenderEffectRange
+{
+	static void thunk(RE::BSGraphics::RenderTargetManager* This, uint a2, uint a3, uint a4, uint a5)
+	{
 		auto upscaling = Upscaling::GetSingleton();
+
 		upscaling->Upscale();
+
+		static auto renderTargetManager = Util::RenderTargetManager_GetSingleton();
+
+		DrawWorld_Imagespace_SetUseDynamicResolutionViewportAsDefaultViewport::func(renderTargetManager, false);
+
+		originalDynamicHeightRatio = renderTargetManager->dynamicHeightRatio;
+		originalDynamicWidthRatio = renderTargetManager->dynamicWidthRatio;
+
+		renderTargetManager->dynamicHeightRatio = 1.0f;
+		renderTargetManager->dynamicWidthRatio = 1.0f;
+
+		func(This, a2, a3, a4, a5);
+
+		renderTargetManager->dynamicHeightRatio = originalDynamicHeightRatio;
+		renderTargetManager->dynamicWidthRatio = originalDynamicWidthRatio;
 	}
 	static inline REL::Relocation<decltype(thunk)> func;
 };
@@ -552,7 +528,6 @@ void Upscaling::UpdateRenderTargets(float a_currentWidthRatio, float a_currentHe
 		UpdateRenderTarget(renderTargetsPatch[i], a_currentWidthRatio, a_currentHeightRatio);
 
 	// Reset intermediate textures to force recreation with new dimensions
-	upscalingTexture = nullptr;
 	depthOverrideTexture = nullptr;
 
 	// Get the frame buffer texture description to match its properties
@@ -582,11 +557,6 @@ void Upscaling::UpdateRenderTargets(float a_currentWidthRatio, float a_currentHe
 	};
 
 	texDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
-
-	// Intermediate upscaling texture (stores DLSS/FSR output)
-	upscalingTexture = std::make_unique<Texture2D>(texDesc);
-	upscalingTexture->CreateSRV(srvDesc);
-	upscalingTexture->CreateUAV(uavDesc);
 
 	// Do not need to replace render targets at native resolution
 	if (a_currentWidthRatio == 1.0f && a_currentHeightRatio == 1.0f)
@@ -1101,16 +1071,6 @@ void Upscaling::Upscale()
 	// Unbind render targets to avoid resource hazards
 	context->OMSetRenderTargets(0, nullptr, nullptr);
 
-	auto frameBufferSRV = reinterpret_cast<ID3D11ShaderResourceView*>(rendererData->renderTargets[(uint)Util::RenderTarget::kFrameBuffer].srView);
-
-	ID3D11Resource* frameBufferResource;
-	frameBufferSRV->GetResource(&frameBufferResource);
-
-	// Copy frame buffer to upscaling texture (input for DLSS/FSR)
-	context->CopyResource(upscalingTexture->resource.get(), frameBufferResource);
-
-	frameBufferResource->Release();
-
 	static auto gameViewport = Util::State_GetSingleton();
 	static auto renderTargetManager = Util::RenderTargetManager_GetSingleton();
 
@@ -1154,11 +1114,9 @@ void Upscaling::Upscale()
 
 	// Execute upscaling
 	if (upscaleMethod == UpscaleMethod::kDLSS)
-		Streamline::GetSingleton()->Upscale(upscalingTexture.get(), dilatedMotionVectorTexture.get(), jitter, renderSize, settings.qualityMode);
+		Streamline::GetSingleton()->Upscale(dilatedMotionVectorTexture.get(), jitter, renderSize, settings.qualityMode);
 	else if (upscaleMethod == UpscaleMethod::kFSR)
-		FidelityFX::GetSingleton()->Upscale(upscalingTexture.get(), jitter, renderSize, 0.0f);
-
-	context->CopyResource(frameBufferResource, upscalingTexture->resource.get());
+		FidelityFX::GetSingleton()->Upscale(jitter, renderSize, 0.0f);
 }
 
 void Upscaling::CreateUpscalingResources()
