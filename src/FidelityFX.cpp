@@ -130,7 +130,7 @@ void FidelityFX::GenerateReactiveMask()
 	dispatchParameters.renderSize.height = static_cast<uint>(renderSize.y);
 
 	dispatchParameters.scale = 1.0f;
-	dispatchParameters.flags = FFX_FSR3UPSCALER_AUTOREACTIVEFLAGS_USE_COMPONENTS_MAX;
+	dispatchParameters.flags = FFX_FSR3UPSCALER_AUTOREACTIVEFLAGS_USE_COMPONENTS_MAX | FFX_FSR3UPSCALER_AUTOREACTIVEFLAGS_APPLY_TONEMAP;
 
 	if (ffxFsr3ContextGenerateReactiveMask(&fsrContext, &dispatchParameters) != FFX_OK)
 		logger::critical("[FidelityFX] Failed to dispatch reactive mask!");
