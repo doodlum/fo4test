@@ -1,5 +1,25 @@
 #include "MotionVectorFixes.h"
 
+bool isLoadingMenuOpen = false;
+
+class MenuOpenCloserHandler : public RE::BSTEventSink<RE::MenuOpenCloseEvent>
+{
+public:
+	static MenuOpenCloserHandler* GetSingleton()
+	{
+		static MenuOpenCloserHandler singleton;
+		return &singleton;
+	}
+
+	RE::BSEventNotifyControl ProcessEvent(const RE::MenuOpenCloseEvent& a_event, RE::BSTEventSource<RE::MenuOpenCloseEvent>*)
+	{
+		if (a_event.menuName == "LoadingMenu")
+			isLoadingMenuOpen = a_event.opening;
+
+		return RE::BSEventNotifyControl::kContinue;
+	}
+};
+
 inline static void ResetPreviousWorldTransformDownwards(RE::NiAVObject* a_self)
 {
 	if (a_self == nullptr)
@@ -31,7 +51,11 @@ struct BSLightingShaderProperty_GetRenderPasses
 		RE::ShadowSceneNode** a4)
 	{
 		thread_local static auto main = RE::Main::GetSingleton();
-		if (main->gameActive && (main->inMenuMode || main->freezeTime))
+
+		bool frozenTime = main->gameActive && (main->inMenuMode || main->freezeTime);
+		bool lodObject = This->flags.any(RE::BSLightingShaderProperty::EShaderPropertyFlag::kLODObjects, RE::BSLightingShaderProperty::EShaderPropertyFlag::kLODLandscape, RE::BSLightingShaderProperty::EShaderPropertyFlag::kLODLandBlend, RE::BSLightingShaderProperty::EShaderPropertyFlag::kMultiTextureLandscape);
+		
+		if (!isLoadingMenuOpen && (frozenTime || lodObject))
 			a2->previousWorld = a2->world;
 
 		return func(This, a2, a3, a4);
@@ -49,7 +73,6 @@ inline static void CachePreviousWorldTransformDownwards(RE::NiAVObject* a_self, 
 			CachePreviousWorldTransformDownwards(child.get(), playerWorldCache);
 
 	playerWorldCache.try_emplace(a_self, a_self->world);
-
 }
 
 inline static void SetPreviousWorldTransformDownwards(RE::NiAVObject* a_self, std::unordered_map<RE::NiAVObject*, RE::NiTransform>& playerWorldCache)
@@ -82,6 +105,11 @@ struct OnIdle_UpdatePlayer
 	}
 	static inline REL::Relocation<decltype(thunk)> func;
 };
+
+void MotionVectorFixes::OnDataLoaded()
+{
+	RE::UI::GetSingleton()->RegisterSink<RE::MenuOpenCloseEvent>(MenuOpenCloserHandler::GetSingleton());
+}
 
 void MotionVectorFixes::InstallHooks()
 {

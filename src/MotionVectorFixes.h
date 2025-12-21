@@ -2,5 +2,6 @@
 
 namespace MotionVectorFixes
 {
+	void OnDataLoaded();
 	void InstallHooks();
 };
