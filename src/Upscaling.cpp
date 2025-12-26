@@ -102,6 +102,15 @@ struct DrawWorld_Imagespace_SetUseDynamicResolutionViewportAsDefaultViewport
 
 		auto upscaling = Upscaling::GetSingleton();
 		upscaling->Upscale();
+
+		static auto renderTargetManager = Util::RenderTargetManager_GetSingleton();
+
+		originalDynamicHeightRatio = renderTargetManager->dynamicHeightRatio;
+		originalDynamicWidthRatio = renderTargetManager->dynamicWidthRatio;
+
+		renderTargetManager->dynamicHeightRatio = 1.0f;
+		renderTargetManager->dynamicWidthRatio = 1.0f;
+		renderTargetManager->isDynamicResolutionCurrentlyActivated = false;
 	}
 	static inline REL::Relocation<decltype(thunk)> func;
 };
@@ -263,6 +272,21 @@ struct LoadingMenu_Render_UpdateTemporalData
 	static inline REL::Relocation<decltype(thunk)> func;
 };
 
+/** @brief Hook to restore dynamic resolution settings */
+struct DrawWorld_Imagespace
+{
+	static void thunk(struct DrawWorld* This)
+	{
+		func(This);
+
+		static auto renderTargetManager = Util::RenderTargetManager_GetSingleton();
+
+		renderTargetManager->dynamicHeightRatio = originalDynamicHeightRatio;
+		renderTargetManager->dynamicWidthRatio = originalDynamicWidthRatio;
+	}
+	static inline REL::Relocation<decltype(thunk)> func;
+};
+
 void Upscaling::InstallHooks()
 {
 	// Disable TAA shader if using alternative scaling method
@@ -301,6 +325,9 @@ void Upscaling::InstallHooks()
 
 		// Fix jitter in LoadingMenu
 		stl::write_thunk_call<LoadingMenu_Render_UpdateTemporalData>(REL::ID(2249225).address() + 0x275);
+
+		// Fix dynamic resolution after upscaling
+		stl::detour_thunk<DrawWorld_Imagespace>(REL::ID(2318322));
 	}
 #else
 	// Control jitters, dynamic resolution, sampler states, and render targets
@@ -338,6 +365,9 @@ void Upscaling::InstallHooks()
 
 		// Fix jitter in LoadingMenu
 		stl::write_thunk_call<LoadingMenu_Render_UpdateTemporalData>(REL::ID(135719).address() + 0x2BD);
+
+		// Fix dynamic resolution after upscaling
+		stl::detour_thunk<DrawWorld_Imagespace>(REL::ID(587723));
 	}
 #endif
 }
@@ -1087,8 +1117,11 @@ void Upscaling::UpdateUpscaling()
 		gameViewport->offsetY = 2.0f * jitter.y / static_cast<float>(screenHeight);
 	}
 
-	renderTargetManager->dynamicWidthRatio = resolutionScale;
-	renderTargetManager->dynamicHeightRatio = resolutionScale;
+	originalDynamicHeightRatio = resolutionScale;
+	originalDynamicWidthRatio = resolutionScale;
+
+	renderTargetManager->dynamicHeightRatio = originalDynamicHeightRatio;
+	renderTargetManager->dynamicWidthRatio = originalDynamicWidthRatio;
 
 	renderTargetManager->isDynamicResolutionCurrentlyActivated = renderTargetManager->dynamicWidthRatio != 1.0 || renderTargetManager->dynamicHeightRatio != 1.0;
 
