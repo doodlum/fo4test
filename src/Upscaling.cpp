@@ -268,6 +268,7 @@ struct LoadingMenu_Render_UpdateTemporalData
 		static auto renderTargetManager = Util::RenderTargetManager_GetSingleton();
 		renderTargetManager->dynamicHeightRatio = 1.0f;
 		renderTargetManager->dynamicWidthRatio = 1.0f;
+		renderTargetManager->isDynamicResolutionCurrentlyActivated = false;
 	}
 	static inline REL::Relocation<decltype(thunk)> func;
 };
@@ -283,6 +284,7 @@ struct DrawWorld_Imagespace
 
 		renderTargetManager->dynamicHeightRatio = originalDynamicHeightRatio;
 		renderTargetManager->dynamicWidthRatio = originalDynamicWidthRatio;
+		renderTargetManager->isDynamicResolutionCurrentlyActivated = renderTargetManager->dynamicWidthRatio != 1.0 || renderTargetManager->dynamicHeightRatio != 1.0;
 	}
 	static inline REL::Relocation<decltype(thunk)> func;
 };
