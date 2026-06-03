@@ -103,7 +103,7 @@ namespace CommunityShaders
 			std::array<std::uint32_t, 14> constantBufferSizes{};
 			std::vector<std::uint32_t> textureSlots;
 			std::vector<std::pair<std::uint32_t, std::uint32_t>> textureDimensions;
-			std::array<std::uint32_t, 32> textureSampleCounts{};
+			std::array<std::uint32_t, 64> textureSampleCounts{};
 			std::uint32_t textureSlotMask = 0;
 			std::uint32_t textureDimensionMask = 0;
 			std::uint32_t inputTextureCount = 0;
@@ -119,6 +119,10 @@ namespace CommunityShaders
 		};
 
 		[[nodiscard]] std::optional<ShaderMetadata> GetMetadataForBytecode(ShaderStage a_stage, const void* a_bytecode, SIZE_T a_bytecodeLength);
+		void ObserveD3DShaderObject(ShaderStage a_stage, std::uintptr_t a_d3dObject, const ShaderMetadata& a_metadata);
+		void ObserveD3DShaderObjectBytecode(ShaderStage a_stage, std::uintptr_t a_d3dObject, const ShaderMetadata& a_metadata, const void* a_bytecode, SIZE_T a_bytecodeLength);
+		[[nodiscard]] std::optional<ShaderMetadata> GetMetadataForD3DShaderObject(ShaderStage a_stage, std::uintptr_t a_d3dObject);
+		[[nodiscard]] bool DumpObservedD3DShaderObject(ShaderStage a_stage, std::uintptr_t a_d3dObject, std::string_view a_label);
 
 	private:
 
@@ -159,6 +163,35 @@ namespace CommunityShaders
 			}
 		};
 
+		struct D3DShaderObjectKey
+		{
+			ShaderStage stage = ShaderStage::Pixel;
+			std::uintptr_t d3dObject = 0;
+
+			[[nodiscard]] bool operator==(const D3DShaderObjectKey& a_rhs) const noexcept
+			{
+				return stage == a_rhs.stage &&
+				       d3dObject == a_rhs.d3dObject;
+			}
+		};
+
+		struct D3DShaderObjectKeyHash
+		{
+			[[nodiscard]] std::size_t operator()(const D3DShaderObjectKey& a_key) const noexcept
+			{
+				std::size_t hash = static_cast<std::size_t>(a_key.d3dObject);
+				hash ^= (static_cast<std::size_t>(a_key.stage) + 0x9E3779B97F4A7C15ull + (hash << 6) + (hash >> 2));
+				return hash;
+			}
+		};
+
+		struct D3DShaderObjectBytecode
+		{
+			ShaderMetadata metadata;
+			std::string bytecodeHash;
+			std::vector<std::byte> bytecode;
+		};
+
 		struct OwnedDescriptorVertexShader
 		{
 			RE::BSGraphics::VertexShader entry{};
@@ -197,6 +230,9 @@ namespace CommunityShaders
 		std::mutex observedLock;
 		std::unordered_map<std::string, std::uint32_t> bytecodeToAsmHash;
 		std::unordered_map<std::string, ShaderMetadata> bytecodeToMetadata;
+		std::unordered_map<D3DShaderObjectKey, ShaderMetadata, D3DShaderObjectKeyHash> d3dShaderObjectToMetadata;
+		std::unordered_map<D3DShaderObjectKey, D3DShaderObjectBytecode, D3DShaderObjectKeyHash> d3dShaderObjectToBytecode;
+		std::unordered_set<std::string> dumpedD3DShaderObjectKeys;
 		mutable std::mutex descriptorLock;
 		std::unordered_map<DescriptorShaderKey, DescriptorShaderState, DescriptorShaderKeyHash> descriptorShaders;
 		std::unordered_map<DescriptorShaderKey, std::unique_ptr<OwnedDescriptorVertexShader>, DescriptorShaderKeyHash> descriptorVertexShaders;

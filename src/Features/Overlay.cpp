@@ -29,14 +29,6 @@
 		}
 		return 0;
 	}
-	static void UnifiedSave(void*) {
-		Overlay::GetSingleton()->SaveOverlaySelfSettings();
-		for (auto* feature : Feature::GetFeatureList()) {
-			if (feature->loaded) {
-				feature->SaveSettings();
-			}
-		}
-	}
 void FeatureOverlay::Load()
 {
 	overlay = Overlay::GetSingleton();
@@ -52,7 +44,6 @@ void FeatureOverlay::Load()
 	{
 		OverlayPanelCallbacks cbs{};
 		cbs.render = UnifiedRender;
-		cbs.save = UnifiedSave;
 		Overlay_RegisterPanel("Community Shaders", kOverlayCategory_Rendering, &cbs);
 	}
 

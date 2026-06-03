@@ -153,6 +153,17 @@ struct LightLimitFix : Feature
 	float CameraFar = 10000.0f;
 	std::uint32_t currentLightCount = 0;
 	std::uint32_t currentStrictLightCount = 0;
+#if defined(FALLOUT_PRE_NG)
+	struct ClusterBuildCacheState
+	{
+		float LightsNear = 0.0f;
+		float LightsFar = 0.0f;
+		std::uint32_t ClusterSize[4]{};
+	};
+
+	bool clusterBuildCacheValid = false;
+	ClusterBuildCacheState clusterBuildCache{};
+#endif
 
 	// --- Settings ---
 	struct Settings
@@ -197,6 +208,24 @@ struct LightLimitFix : Feature
 		RE::BSRenderPass* a_pass,
 		std::uint32_t a_requestedLightCount,
 		bool a_strictCBBound);
+	struct PreNGDFLightResourceBindingState
+	{
+		bool strictCBBound = false;
+		bool clusterSRVsBound = false;
+		std::uint32_t lightCount = 0;
+		std::uint32_t strictLightCount = 0;
+		std::uint32_t shadowBitMask = 0;
+	};
+	PreNGDFLightResourceBindingState BindPreNGDFLightResourceNoOpPass(ID3D11DeviceContext* a_context);
+	PreNGDFLightResourceBindingState BindPreNGDFLightFullContractNoOpPass(ID3D11DeviceContext* a_context);
+	PreNGDFLightResourceBindingState BindPreNGDFLightLLFAdditivePass(ID3D11DeviceContext* a_context);
+	void TracePreNGActiveLightingBindings(
+		const char* a_source,
+		std::int32_t a_shaderType,
+		std::uint32_t a_vertexDescriptor,
+		std::uint32_t a_pixelDescriptor,
+		bool a_found,
+		std::uintptr_t a_lookupPixelShader);
 #endif
 	void CollectLightsFromScene();
 	void CollectLightsFromBSLight();
@@ -226,6 +255,11 @@ struct LightLimitFix : Feature
 	};
 
 private:
+#if defined(FALLOUT_PRE_NG)
+	PreNGDFLightResourceBindingState BindPreNGDFLightNoOpPassResources(
+		ID3D11DeviceContext* a_context,
+		const char* a_passName);
+#endif
 	// --- GPU Resources (RAII: winrt::com_ptr auto-releases on destruction) ---
 	winrt::com_ptr<ID3D11ComputeShader>          clusterBuildingCS;
 	winrt::com_ptr<ID3D11ComputeShader>          clusterCullingCS;
@@ -247,5 +281,5 @@ private:
 	winrt::com_ptr<ID3D11ShaderResourceView>     lightGridSRV;
 	winrt::com_ptr<ID3D11UnorderedAccessView>    lightGridUAV;
 
-	std::uint32_t clusterSize[3] = { 16, 16, 32 };
+	std::uint32_t clusterSize[3] = { 8, 8, 16 };
 };

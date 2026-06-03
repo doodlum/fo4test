@@ -1,15 +1,23 @@
 #include "Core/Hooks.h"
 
+#include "Core/Globals.h"
 #include "Core/ShaderCache.h"
+#include "Core/ShaderCompiler.h"
+#include "Features/LightLimitFix.h"
 
+#include <array>
+#include <atomic>
 #include <bit>
+#include <charconv>
 #include <cstdint>
+#include <cstring>
 #include <format>
 #include <mutex>
 #include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -44,6 +52,184 @@ namespace CommunityShaders::Hooks
 		using ExecuteCommandListFn = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*, ID3D11CommandList*, BOOL);
 
 		CreateDeferredContextFn createDeferredContext = nullptr;
+		constexpr const char* kPreNGShaderLookupDiagEnv = "FO4CS_LLF_PRENG_SHADER_LOOKUP_DIAG";
+		constexpr const char* kPreNGDFLightVanillaDumpEnv = "FO4CS_LLF_PRENG_DFLIGHT_VANILLA_DUMP";
+		constexpr const char* kPreNGDFLightDrawStateEnv = "FO4CS_LLF_PRENG_DFLIGHT_DRAW_STATE";
+		constexpr const char* kPreNGDFLightZeroAdditivePassEnv = "FO4CS_LLF_PRENG_DFLIGHT_ZERO_ADD_PASS";
+		constexpr const char* kPreNGDFLightResourceNoOpPassEnv = "FO4CS_LLF_PRENG_DFLIGHT_RESOURCE_NOOP_PASS";
+		constexpr const char* kPreNGDFLightFullContractNoOpPassEnv = "FO4CS_LLF_PRENG_DFLIGHT_FULL_CONTRACT_NOOP_PASS";
+		constexpr const char* kPreNGDFLightLLFAdditivePassEnv = "FO4CS_LLF_PRENG_DFLIGHT_LLF_ADD_PASS";
+		constexpr const char* kPreNGDFLightLLFAdditiveBudgetEnv = "FO4CS_LLF_PRENG_DFLIGHT_LLF_ADD_BUDGET";
+		constexpr const char* kPreNGDFLightLLFAdditivePersistentEnv = "FO4CS_LLF_PRENG_DFLIGHT_LLF_ADD_PERSISTENT";
+		constexpr const char* kPreNGDFLightLLFAdditiveFrameBudgetEnv = "FO4CS_LLF_PRENG_DFLIGHT_LLF_ADD_FRAME_BUDGET";
+		constexpr const char* kPreNGDFLightLLFAdditiveScale1024Env = "FO4CS_LLF_PRENG_DFLIGHT_LLF_ADD_SCALE_1024";
+		constexpr const char* kPreNGDFLightLLFAdditiveMaxLightsEnv = "FO4CS_LLF_PRENG_DFLIGHT_LLF_ADD_MAX_LIGHTS";
+		constexpr const char* kPreNGDFLightZeroAdditiveSource = "LightLimitFix\\DFLightZeroAdditivePS.hlsl";
+		constexpr const char* kPreNGDFLightResourceNoOpSource = "LightLimitFix\\DFLightResourceNoOpPS.hlsl";
+		constexpr const char* kPreNGDFLightFullContractNoOpSource = "LightLimitFix\\DFLightFullContractNoOpPS.hlsl";
+		constexpr const char* kPreNGDFLightLLFAdditiveSource = "LightLimitFix\\DFLightLLFAdditivePS.hlsl";
+		constexpr const char* kTraceLLFPSEnv = "FO4CS_TRACE_LLF_PS";
+		constexpr std::uint32_t kPreNGDFLightVanillaFullShadowed920AsmHash = 0xFB077F61u;
+		constexpr std::uint32_t kPreNGDFLightVanillaFullShadowed922AsmHash = 0xA2D7B576u;
+
+		bool IsTruthyPreNGEnvironmentValue(const char* a_value)
+		{
+			return std::strcmp(a_value, "1") == 0 ||
+			       std::strcmp(a_value, "true") == 0 ||
+			       std::strcmp(a_value, "TRUE") == 0 ||
+			       std::strcmp(a_value, "on") == 0 ||
+			       std::strcmp(a_value, "ON") == 0;
+		}
+
+		bool ReadPreNGRegistryEnvironmentValue(const char* a_name, HKEY a_root, const char* a_subKey, char (&a_value)[16])
+		{
+			DWORD type = 0;
+			DWORD size = static_cast<DWORD>(sizeof(a_value));
+			const auto result = RegGetValueA(
+				a_root,
+				a_subKey,
+				a_name,
+				RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ,
+				&type,
+				a_value,
+				&size);
+			if (result != ERROR_SUCCESS || size == 0) {
+				return false;
+			}
+
+			a_value[sizeof(a_value) - 1] = '\0';
+			return true;
+		}
+
+		bool ReadPreNGEnvironmentSwitch(const char* a_name)
+		{
+			char value[16]{};
+			if (ReadPreNGRegistryEnvironmentValue(a_name, HKEY_CURRENT_USER, "Environment", value)) {
+				return IsTruthyPreNGEnvironmentValue(value);
+			}
+
+			if (ReadPreNGRegistryEnvironmentValue(
+					a_name,
+					HKEY_LOCAL_MACHINE,
+					"SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment",
+					value)) {
+				return IsTruthyPreNGEnvironmentValue(value);
+			}
+
+			SetLastError(ERROR_SUCCESS);
+			const auto length = GetEnvironmentVariableA(a_name, value, static_cast<DWORD>(sizeof(value)));
+			if (length > 0) {
+				return length < sizeof(value) && IsTruthyPreNGEnvironmentValue(value);
+			}
+			if (GetLastError() != ERROR_ENVVAR_NOT_FOUND) {
+				return false;
+			}
+
+			return false;
+		}
+		bool ParsePreNGEnvironmentUIntValue(const char* a_value, std::uint32_t& a_result)
+		{
+			if (!a_value || *a_value == '\0') {
+				return false;
+			}
+
+			std::uint32_t parsed = 0;
+			const auto* const end = a_value + std::strlen(a_value);
+			const auto [ptr, ec] = std::from_chars(a_value, end, parsed);
+			if (ec != std::errc{} || ptr != end) {
+				return false;
+			}
+
+			a_result = parsed;
+			return true;
+		}
+
+		std::optional<std::uint32_t> ReadPreNGEnvironmentUInt(const char* a_name)
+		{
+			char value[16]{};
+			std::uint32_t parsed = 0;
+			if (ReadPreNGRegistryEnvironmentValue(a_name, HKEY_CURRENT_USER, "Environment", value)) {
+				return ParsePreNGEnvironmentUIntValue(value, parsed) ? std::optional<std::uint32_t>{ parsed } : std::nullopt;
+			}
+
+			if (ReadPreNGRegistryEnvironmentValue(
+					a_name,
+					HKEY_LOCAL_MACHINE,
+					"SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment",
+					value)) {
+				return ParsePreNGEnvironmentUIntValue(value, parsed) ? std::optional<std::uint32_t>{ parsed } : std::nullopt;
+			}
+
+			SetLastError(ERROR_SUCCESS);
+			const auto length = GetEnvironmentVariableA(a_name, value, static_cast<DWORD>(sizeof(value)));
+			if (length > 0) {
+				return length < sizeof(value) && ParsePreNGEnvironmentUIntValue(value, parsed) ?
+				           std::optional<std::uint32_t>{ parsed } :
+				           std::nullopt;
+			}
+			if (GetLastError() != ERROR_ENVVAR_NOT_FOUND) {
+				return std::nullopt;
+			}
+
+			return std::nullopt;
+		}
+
+		bool ShouldMapPreNGShaderObjectMetadata()
+		{
+			static const bool enabled = ReadPreNGEnvironmentSwitch(kPreNGShaderLookupDiagEnv);
+			return enabled;
+		}
+
+		bool ShouldCapturePreNGDFLightVanillaDumpBytecode()
+		{
+			static const bool enabled = ReadPreNGEnvironmentSwitch(kPreNGDFLightVanillaDumpEnv);
+			return enabled;
+		}
+
+		bool ShouldTracePreNGDFLightDrawState()
+		{
+			static const bool enabled = ReadPreNGEnvironmentSwitch(kPreNGDFLightDrawStateEnv);
+			return enabled;
+		}
+
+		bool ShouldRunPreNGDFLightZeroAdditivePass()
+		{
+			static const bool enabled = ReadPreNGEnvironmentSwitch(kPreNGDFLightZeroAdditivePassEnv);
+			return enabled;
+		}
+
+		bool ShouldRunPreNGDFLightResourceNoOpPass()
+		{
+			static const bool enabled = ReadPreNGEnvironmentSwitch(kPreNGDFLightResourceNoOpPassEnv);
+			return enabled;
+		}
+
+		bool ShouldRunPreNGDFLightFullContractNoOpPass()
+		{
+			static const bool enabled = ReadPreNGEnvironmentSwitch(kPreNGDFLightFullContractNoOpPassEnv);
+			return enabled;
+		}
+
+		bool ShouldRunPreNGDFLightLLFAdditivePass()
+		{
+			static const bool enabled = ReadPreNGEnvironmentSwitch(kPreNGDFLightLLFAdditivePassEnv);
+			return enabled;
+		}
+
+		bool ShouldPersistPreNGDFLightLLFAdditivePass()
+		{
+			static const bool enabled = ReadPreNGEnvironmentSwitch(kPreNGDFLightLLFAdditivePersistentEnv);
+			return enabled;
+		}
+
+		bool ShouldTrackPreNGDFLightDrawTargets()
+		{
+			return ShouldTracePreNGDFLightDrawState() ||
+			       ShouldRunPreNGDFLightZeroAdditivePass() ||
+			       ShouldRunPreNGDFLightResourceNoOpPass() ||
+			       ShouldRunPreNGDFLightFullContractNoOpPass() ||
+			       ShouldRunPreNGDFLightLLFAdditivePass();
+		}
 
 		struct RenderTargetInfo
 		{
@@ -107,6 +293,42 @@ namespace CommunityShaders::Hooks
 		std::unordered_map<std::uintptr_t, std::uintptr_t> llfDirectDrawTrampolines;
 		std::unordered_map<ID3D11PixelShader*, ShaderCache::ShaderMetadata> observedPixelShaderMetadata;
 		std::unordered_map<ID3D11DeviceContext*, ShaderCache::ShaderMetadata> llfBoundPixelShaderMetadataByContext;
+		std::unordered_map<ID3D11PixelShader*, ShaderCache::ShaderMetadata> dflightDrawStatePixelShaders;
+		std::unordered_map<ID3D11DeviceContext*, ShaderCache::ShaderMetadata> dflightDrawStateBoundPixelShaderByContext;
+		std::unordered_set<std::string> loggedDFLightDrawStatePixelShaders;
+		std::unordered_set<std::string> loggedDFLightDrawStateBindings;
+		std::unordered_set<std::string> loggedDFLightDrawStateDraws;
+		std::mutex dflightZeroAdditivePassLock;
+		winrt::com_ptr<ID3D11PixelShader> dflightZeroAdditivePixelShader;
+		winrt::com_ptr<ID3D11PixelShader> dflightResourceNoOpPixelShader;
+		winrt::com_ptr<ID3D11PixelShader> dflightFullContractNoOpPixelShader;
+		winrt::com_ptr<ID3D11PixelShader> dflightLLFAdditivePixelShader;
+		winrt::com_ptr<ID3D11Buffer> dflightLLFAdditiveControlsCB;
+		winrt::com_ptr<ID3D11BlendState> dflightZeroAdditiveBlendState;
+		winrt::com_ptr<ID3D11DepthStencilState> dflightZeroAdditiveDepthState;
+		bool dflightZeroAdditivePassResourcesAttempted = false;
+		bool dflightResourceNoOpPassResourcesAttempted = false;
+		bool dflightFullContractNoOpPassResourcesAttempted = false;
+		bool dflightLLFAdditivePassResourcesAttempted = false;
+		bool dflightLLFAdditiveControlsAttempted = false;
+		bool dflightResourceNoOpPassResourcesReadyLogged = false;
+		bool dflightFullContractNoOpPassResourcesReadyLogged = false;
+		bool dflightLLFAdditivePassResourcesReadyLogged = false;
+		bool dflightAdditiveDrawStatesAttempted = false;
+		std::size_t dflightResourceNoOpPixelShaderBytecodeSize = 0;
+		std::size_t dflightFullContractNoOpPixelShaderBytecodeSize = 0;
+		std::size_t dflightLLFAdditivePixelShaderBytecodeSize = 0;
+		std::atomic_uint32_t dflightZeroAdditivePassDrawCount = 0;
+		std::atomic_uint32_t dflightResourceNoOpPassDrawCount = 0;
+		std::atomic_uint32_t dflightFullContractNoOpPassDrawCount = 0;
+		std::atomic_uint32_t dflightLLFAdditivePassDrawCount = 0;
+		std::atomic_uint32_t dflightLLFAdditivePassFrameOrdinal = 0;
+		std::atomic_uint32_t dflightLLFAdditivePassFrameDrawCount = 0;
+		std::atomic_uint32_t dflightLLFAdditivePassFrameBudgetSkipCount = 0;
+		std::atomic_bool dflightZeroAdditivePassLimitLogged = false;
+		std::atomic_bool dflightResourceNoOpPassLimitLogged = false;
+		std::atomic_bool dflightFullContractNoOpPassLimitLogged = false;
+		std::atomic_bool dflightLLFAdditivePassLimitLogged = false;
 
 		constexpr std::size_t kMaxLLFStateSnapshotsPerShaderKind = 8;
 		constexpr std::size_t kMaxLLFBoundPixelShaderSurveyLogs = 96;
@@ -115,6 +337,183 @@ namespace CommunityShaders::Hooks
 		constexpr std::size_t kMaxLLFBoundPixelShaderSurveyDrawLogs = 128;
 		constexpr std::size_t kMaxLLFBoundPixelShaderNearTargetDrawLogs = 64;
 		constexpr std::size_t kLLFBoundPixelShaderInventorySummaryInterval = 128;
+		constexpr std::size_t kMaxDFLightDrawStateLogs = 24;
+		constexpr std::uint32_t kMaxDFLightZeroAdditivePassDraws = 8;
+		constexpr std::uint32_t kMaxDFLightResourceNoOpPassDraws = 8;
+		constexpr std::uint32_t kMaxDFLightFullContractNoOpPassDraws = 8;
+		constexpr std::uint32_t kDefaultDFLightLLFAdditivePassDraws = 8;
+		constexpr std::uint32_t kMinDFLightLLFAdditivePassDraws = 1;
+		constexpr std::uint32_t kMaxDFLightLLFAdditivePassDraws = 4096;
+		constexpr std::uint32_t kMaxDFLightLLFAdditivePassDrawLogs = 32;
+		constexpr std::uint32_t kDFLightLLFAdditivePassDrawLogInterval = 256;
+		constexpr std::uint32_t kDefaultDFLightLLFAdditivePassFrameDraws = 1;
+		constexpr std::uint32_t kMinDFLightLLFAdditivePassFrameDraws = 1;
+		constexpr std::uint32_t kMaxDFLightLLFAdditivePassFrameDraws = 8;
+		constexpr UINT kDFLightLLFAdditiveControlsCBSlot = 13;
+		constexpr std::uint32_t kDefaultDFLightLLFAdditiveScale1024 = 64;
+		constexpr std::uint32_t kMinDFLightLLFAdditiveScale1024 = 0;
+		constexpr std::uint32_t kMaxDFLightLLFAdditiveScale1024 = 512;
+		constexpr std::uint32_t kDefaultDFLightLLFAdditiveMaxLights = 32;
+		constexpr std::uint32_t kMinDFLightLLFAdditiveMaxLights = 1;
+		constexpr std::uint32_t kMaxDFLightLLFAdditiveMaxLights = 64;
+
+		struct alignas(16) DFLightLLFAdditiveControls
+		{
+			float scale = static_cast<float>(kDefaultDFLightLLFAdditiveScale1024) / 1024.0f;
+			std::uint32_t maxLights = kDefaultDFLightLLFAdditiveMaxLights;
+			std::uint32_t flags = 0;
+			std::uint32_t pad = 0;
+		};
+		static_assert(sizeof(DFLightLLFAdditiveControls) == 16);
+
+		std::uint32_t GetPreNGDFLightLLFAdditivePassDrawBudget()
+		{
+			static const auto budget = []() {
+				const auto configured = ReadPreNGEnvironmentUInt(kPreNGDFLightLLFAdditiveBudgetEnv);
+				auto resolved = configured.value_or(kDefaultDFLightLLFAdditivePassDraws);
+				if (resolved < kMinDFLightLLFAdditivePassDraws) {
+					resolved = kMinDFLightLLFAdditivePassDraws;
+				} else if (resolved > kMaxDFLightLLFAdditivePassDraws) {
+					resolved = kMaxDFLightLLFAdditivePassDraws;
+				}
+
+				logger::info(
+					"[LightLimitFix] PreNG DFLight LLF additive pass draw budget resolved budget={} configured={} default={} min={} max={} env={}",
+					resolved,
+					configured ? std::to_string(*configured) : std::string("unset"),
+					kDefaultDFLightLLFAdditivePassDraws,
+					kMinDFLightLLFAdditivePassDraws,
+					kMaxDFLightLLFAdditivePassDraws,
+					kPreNGDFLightLLFAdditiveBudgetEnv);
+				return resolved;
+			}();
+			return budget;
+		}
+
+		std::uint32_t GetPreNGDFLightLLFAdditivePassFrameBudget()
+		{
+			static const auto budget = []() {
+				const auto configured = ReadPreNGEnvironmentUInt(kPreNGDFLightLLFAdditiveFrameBudgetEnv);
+				auto resolved = configured.value_or(kDefaultDFLightLLFAdditivePassFrameDraws);
+				if (resolved < kMinDFLightLLFAdditivePassFrameDraws) {
+					resolved = kMinDFLightLLFAdditivePassFrameDraws;
+				} else if (resolved > kMaxDFLightLLFAdditivePassFrameDraws) {
+					resolved = kMaxDFLightLLFAdditivePassFrameDraws;
+				}
+
+				logger::info(
+					"[LightLimitFix] PreNG DFLight LLF additive pass per-frame draw budget resolved frameBudget={} configured={} default={} min={} max={} env={}",
+					resolved,
+					configured ? std::to_string(*configured) : std::string("unset"),
+					kDefaultDFLightLLFAdditivePassFrameDraws,
+					kMinDFLightLLFAdditivePassFrameDraws,
+					kMaxDFLightLLFAdditivePassFrameDraws,
+					kPreNGDFLightLLFAdditiveFrameBudgetEnv);
+				return resolved;
+			}();
+			return budget;
+		}
+
+		std::uint32_t GetPreNGDFLightLLFAdditiveScale1024()
+		{
+			static const auto scale1024 = []() {
+				const auto configured = ReadPreNGEnvironmentUInt(kPreNGDFLightLLFAdditiveScale1024Env);
+				auto resolved = configured.value_or(kDefaultDFLightLLFAdditiveScale1024);
+				if (resolved < kMinDFLightLLFAdditiveScale1024) {
+					resolved = kMinDFLightLLFAdditiveScale1024;
+				} else if (resolved > kMaxDFLightLLFAdditiveScale1024) {
+					resolved = kMaxDFLightLLFAdditiveScale1024;
+				}
+
+				logger::info(
+					"[LightLimitFix] PreNG DFLight LLF additive pass scale resolved scale1024={} configured={} default={} min={} max={} env={}",
+					resolved,
+					configured ? std::to_string(*configured) : std::string("unset"),
+					kDefaultDFLightLLFAdditiveScale1024,
+					kMinDFLightLLFAdditiveScale1024,
+					kMaxDFLightLLFAdditiveScale1024,
+					kPreNGDFLightLLFAdditiveScale1024Env);
+				return resolved;
+			}();
+			return scale1024;
+		}
+
+		std::uint32_t GetPreNGDFLightLLFAdditiveMaxLights()
+		{
+			static const auto maxLights = []() {
+				const auto configured = ReadPreNGEnvironmentUInt(kPreNGDFLightLLFAdditiveMaxLightsEnv);
+				auto resolved = configured.value_or(kDefaultDFLightLLFAdditiveMaxLights);
+				if (resolved < kMinDFLightLLFAdditiveMaxLights) {
+					resolved = kMinDFLightLLFAdditiveMaxLights;
+				} else if (resolved > kMaxDFLightLLFAdditiveMaxLights) {
+					resolved = kMaxDFLightLLFAdditiveMaxLights;
+				}
+
+				logger::info(
+					"[LightLimitFix] PreNG DFLight LLF additive pass max lights resolved maxLights={} configured={} default={} min={} max={} env={}",
+					resolved,
+					configured ? std::to_string(*configured) : std::string("unset"),
+					kDefaultDFLightLLFAdditiveMaxLights,
+					kMinDFLightLLFAdditiveMaxLights,
+					kMaxDFLightLLFAdditiveMaxLights,
+					kPreNGDFLightLLFAdditiveMaxLightsEnv);
+				return resolved;
+			}();
+			return maxLights;
+		}
+
+		DFLightLLFAdditiveControls GetPreNGDFLightLLFAdditiveControls()
+		{
+			DFLightLLFAdditiveControls controls{};
+			controls.scale = static_cast<float>(GetPreNGDFLightLLFAdditiveScale1024()) / 1024.0f;
+			controls.maxLights = GetPreNGDFLightLLFAdditiveMaxLights();
+			return controls;
+		}
+
+		bool TryReservePreNGDFLightLLFAdditivePassFrameDraw()
+		{
+			const auto frameBudget = GetPreNGDFLightLLFAdditivePassFrameBudget();
+			auto current = dflightLLFAdditivePassFrameDrawCount.load(std::memory_order_relaxed);
+			while (current < frameBudget) {
+				if (dflightLLFAdditivePassFrameDrawCount.compare_exchange_weak(
+						current,
+						current + 1,
+						std::memory_order_relaxed,
+						std::memory_order_relaxed)) {
+					return true;
+				}
+			}
+
+			const auto skipIndex = dflightLLFAdditivePassFrameBudgetSkipCount.fetch_add(1, std::memory_order_relaxed) + 1;
+			if (skipIndex <= 8 || skipIndex % 512 == 0) {
+				logger::info(
+					"[LightLimitFix] PreNG DFLight LLF additive pass per-frame draw budget reached skips={} frame={} frameBudget={} env={}",
+					skipIndex,
+					dflightLLFAdditivePassFrameOrdinal.load(std::memory_order_relaxed),
+					frameBudget,
+					kPreNGDFLightLLFAdditiveFrameBudgetEnv);
+			}
+			return false;
+		}
+
+		void AdvancePreNGDFLightLLFAdditivePassFrame()
+		{
+			if (!ShouldRunPreNGDFLightLLFAdditivePass()) {
+				return;
+			}
+
+			dflightLLFAdditivePassFrameOrdinal.fetch_add(1, std::memory_order_relaxed);
+			dflightLLFAdditivePassFrameDrawCount.store(0, std::memory_order_relaxed);
+		}
+
+		bool ShouldLogPreNGDFLightLLFAdditivePassDraw(std::uint32_t a_drawIndex, std::uint32_t a_drawLimit, bool a_persistent)
+		{
+			const auto oneBasedDrawIndex = a_drawIndex + 1;
+			return oneBasedDrawIndex <= kMaxDFLightLLFAdditivePassDrawLogs ||
+			       (!a_persistent && oneBasedDrawIndex == a_drawLimit) ||
+			       (kDFLightLLFAdditivePassDrawLogInterval > 0 &&
+			           oneBasedDrawIndex % kDFLightLLFAdditivePassDrawLogInterval == 0);
+		}
 		constexpr UINT kMaxLLFLoggedShaderResourceViews = 8;
 
 		std::string FormatBufferSlots(const ShaderCache::ShaderMetadata& a_metadata)
@@ -260,17 +659,34 @@ namespace CommunityShaders::Hooks
 				functions);
 		}
 
+		bool ShouldTraceLLFPixelCandidateDiagnostics()
+		{
+			static const bool enabled = ReadPreNGEnvironmentSwitch(kTraceLLFPSEnv);
+			return enabled;
+		}
+
 		bool ShouldEnableLightLimitFixPixelCandidateDiagnostics()
 		{
-			static const bool traceLLFEnv = GetEnvironmentVariableW(L"FO4CS_TRACE_LLF_PS", nullptr, 0) > 0;
-			return traceLLFEnv;
+			return ShouldTraceLLFPixelCandidateDiagnostics() || ShouldTrackPreNGDFLightDrawTargets();
 		}
 
 		bool ShouldTraceLLFPixelCandidates(const ShaderCache& a_cache)
 		{
 			(void)a_cache;
-			return ShouldEnableLightLimitFixPixelCandidateDiagnostics();
+			return ShouldTraceLLFPixelCandidateDiagnostics();
 		}
+
+		bool HasTextureSlot(const ShaderCache::ShaderMetadata& a_metadata, std::uint32_t a_slot)
+		{
+			for (const auto slot : a_metadata.textureSlots) {
+				if (slot == a_slot) {
+					return true;
+				}
+			}
+
+			return false;
+		}
+
 
 		bool HasTextureDimension(const ShaderCache::ShaderMetadata& a_metadata, std::uint32_t a_dimension, std::uint32_t a_slot)
 		{
@@ -325,6 +741,45 @@ namespace CommunityShaders::Hooks
 			const bool hasLightCB = a_metadata.constantBufferSizes[2] > 0;
 			const bool hasLightingTexture = (a_metadata.textureSlotMask & (1u << 5)) != 0;
 			return hasLightCB && hasLightingTexture && a_metadata.outputCount == 2;
+		}
+
+		bool IsPreNGDFLightDrawStateTarget(const ShaderCache::ShaderMetadata& a_metadata)
+		{
+			const bool vanillaFullShadowedHash =
+				a_metadata.asmHash == kPreNGDFLightVanillaFullShadowed920AsmHash ||
+				a_metadata.asmHash == kPreNGDFLightVanillaFullShadowed922AsmHash;
+			if (!vanillaFullShadowedHash) {
+				return false;
+			}
+
+			return a_metadata.constantBufferSizes[2] == 448 &&
+			       a_metadata.constantBufferSizes[12] == 496 &&
+			       a_metadata.textureSlots.size() == 5 &&
+			       a_metadata.textureSlotMask == 0x2Fu &&
+			       HasTextureSlot(a_metadata, 0) &&
+			       HasTextureSlot(a_metadata, 1) &&
+			       HasTextureSlot(a_metadata, 2) &&
+			       HasTextureSlot(a_metadata, 3) &&
+			       HasTextureSlot(a_metadata, 5) &&
+			       HasTextureDimension(a_metadata, 4, 0) &&
+			       HasTextureDimension(a_metadata, 4, 1) &&
+			       HasTextureDimension(a_metadata, 4, 2) &&
+			       HasTextureDimension(a_metadata, 4, 3) &&
+			       HasTextureDimension(a_metadata, 5, 5) &&
+			       a_metadata.textureSampleCounts[0] == 1 &&
+			       a_metadata.textureSampleCounts[1] == 1 &&
+			       a_metadata.textureSampleCounts[2] == 1 &&
+			       a_metadata.textureSampleCounts[3] == 1 &&
+			       a_metadata.textureSampleCounts[5] == 6 &&
+			       a_metadata.inputTextureCount == 5 &&
+			       a_metadata.inputCount == 1 &&
+			       a_metadata.inputMask == 0x1 &&
+			       a_metadata.outputCount == 2 &&
+			       a_metadata.outputMask == 0x3 &&
+			       a_metadata.sampleInstructionCount == 10 &&
+			       a_metadata.hasImmediateConstantBuffer &&
+			       a_metadata.immediateConstantBufferRows == 1000 &&
+			       !a_metadata.hasDiscard;
 		}
 
 		std::string FormatLightLimitFixPixelShape(const ShaderCache::ShaderMetadata& a_metadata)
@@ -469,16 +924,6 @@ namespace CommunityShaders::Hooks
 			return result;
 		}
 
-		std::optional<ShaderCache::ShaderMetadata> GetTracePixelShaderMetadata(const void* a_bytecode, SIZE_T a_bytecodeLength)
-		{
-			auto* cache = ShaderCache::GetSingleton();
-			if (!ShouldTraceLLFPixelCandidates(*cache)) {
-				return std::nullopt;
-			}
-
-			return cache->GetMetadataForBytecode(ShaderStage::Pixel, a_bytecode, a_bytecodeLength);
-		}
-
 		void TrackLightLimitFixPixelShader(ID3D11PixelShader* a_pixelShader, const ShaderCache::ShaderMetadata& a_metadata)
 		{
 			if (!a_pixelShader) {
@@ -552,6 +997,127 @@ namespace CommunityShaders::Hooks
 			}
 
 			return std::nullopt;
+		}
+
+		std::optional<ShaderCache::ShaderMetadata> GetTrackedPreNGDFLightDrawStatePixelShader(ID3D11PixelShader* a_pixelShader)
+		{
+			if (!a_pixelShader) {
+				return std::nullopt;
+			}
+
+			std::scoped_lock lock(llfCandidateLock);
+			if (auto it = dflightDrawStatePixelShaders.find(a_pixelShader); it != dflightDrawStatePixelShaders.end()) {
+				return it->second;
+			}
+
+			return std::nullopt;
+		}
+
+		void TrackPreNGDFLightDrawStatePixelShader(ID3D11Device* a_device, ID3D11PixelShader* a_pixelShader, const ShaderCache::ShaderMetadata& a_metadata)
+		{
+			if (!a_pixelShader || !ShouldTrackPreNGDFLightDrawTargets() || !IsPreNGDFLightDrawStateTarget(a_metadata)) {
+				return;
+			}
+
+			const auto key = std::format("{}:{:08X}:{:X}", a_metadata.uid, a_metadata.asmHash, ToAddress(a_pixelShader));
+			bool shouldLog = false;
+			std::size_t trackedCount = 0;
+			{
+				std::scoped_lock lock(llfCandidateLock);
+				dflightDrawStatePixelShaders[a_pixelShader] = a_metadata;
+				if (loggedDFLightDrawStatePixelShaders.size() < kMaxDFLightDrawStateLogs) {
+					shouldLog = loggedDFLightDrawStatePixelShaders.insert(key).second;
+				}
+				trackedCount = dflightDrawStatePixelShaders.size();
+			}
+
+			if (!shouldLog) {
+				return;
+			}
+
+			logger::info(
+				"[LightLimitFix] PreNG DFLight draw-state target PS observed asmHash=0x{:08X} hash=0x{:08X} uid={} device=0x{:X} shader=0x{:X} tracked={} buffers={} textures={} textureDims={} instructions={} samples={} textureSamples={} immediateRows={}",
+				a_metadata.asmHash,
+				a_metadata.hash,
+				a_metadata.uid,
+				ToAddress(a_device),
+				ToAddress(a_pixelShader),
+				trackedCount,
+				FormatBufferSlots(a_metadata),
+				FormatTextureSlots(a_metadata),
+				FormatTextureDimensions(a_metadata),
+				a_metadata.instructionCount,
+				a_metadata.sampleInstructionCount,
+				FormatTextureSampleCounts(a_metadata),
+				a_metadata.immediateConstantBufferRows);
+		}
+
+		void TrackPreNGDFLightDrawStateBoundPixelShader(ID3D11DeviceContext* a_context, ID3D11PixelShader* a_pixelShader)
+		{
+			if (!a_context || !ShouldTrackPreNGDFLightDrawTargets()) {
+				return;
+			}
+
+			const auto metadata = GetTrackedPreNGDFLightDrawStatePixelShader(a_pixelShader);
+			bool shouldLog = false;
+			std::size_t boundContextCount = 0;
+			if (metadata) {
+				const auto key = std::format("{}:{:08X}:{:X}:{:X}", metadata->uid, metadata->asmHash, ToAddress(a_context), ToAddress(a_pixelShader));
+				std::scoped_lock lock(llfCandidateLock);
+				dflightDrawStateBoundPixelShaderByContext[a_context] = *metadata;
+				if (loggedDFLightDrawStateBindings.size() < kMaxDFLightDrawStateLogs) {
+					shouldLog = loggedDFLightDrawStateBindings.insert(key).second;
+				}
+				boundContextCount = dflightDrawStateBoundPixelShaderByContext.size();
+			} else {
+				std::scoped_lock lock(llfCandidateLock);
+				dflightDrawStateBoundPixelShaderByContext.erase(a_context);
+			}
+
+			if (!metadata || !shouldLog) {
+				return;
+			}
+
+			logger::info(
+				"[LightLimitFix] PreNG DFLight draw-state target PS bound asmHash=0x{:08X} hash=0x{:08X} uid={} context=0x{:X} vtable=0x{:X} shader=0x{:X} boundContexts={} buffers={} textures={} textureDims={} textureSamples={} immediateRows={}",
+				metadata->asmHash,
+				metadata->hash,
+				metadata->uid,
+				ToAddress(a_context),
+				GetContextVTablePointer(a_context),
+				ToAddress(a_pixelShader),
+				boundContextCount,
+				FormatBufferSlots(*metadata),
+				FormatTextureSlots(*metadata),
+				FormatTextureDimensions(*metadata),
+				FormatTextureSampleCounts(*metadata),
+				metadata->immediateConstantBufferRows);
+		}
+
+		std::optional<ShaderCache::ShaderMetadata> GetBoundPreNGDFLightDrawStatePixelShader(ID3D11DeviceContext* a_context)
+		{
+			if (!a_context || !ShouldTrackPreNGDFLightDrawTargets()) {
+				return std::nullopt;
+			}
+
+			{
+				std::scoped_lock lock(llfCandidateLock);
+				if (auto it = dflightDrawStateBoundPixelShaderByContext.find(a_context); it != dflightDrawStateBoundPixelShaderByContext.end()) {
+					return it->second;
+				}
+			}
+
+			winrt::com_ptr<ID3D11PixelShader> pixelShader;
+			a_context->PSGetShader(pixelShader.put(), nullptr, nullptr);
+			if (!pixelShader) {
+				return std::nullopt;
+			}
+
+			auto metadata = GetTrackedPreNGDFLightDrawStatePixelShader(pixelShader.get());
+			if (metadata) {
+				TrackPreNGDFLightDrawStateBoundPixelShader(a_context, pixelShader.get());
+			}
+			return metadata;
 		}
 
 		void TrackLightLimitFixBoundPixelShader(ID3D11DeviceContext* a_context, ID3D11PixelShader* a_pixelShader)
@@ -1094,6 +1660,808 @@ namespace CommunityShaders::Hooks
 			return first ? "none" : result.str();
 		}
 
+		void TracePreNGDFLightDrawStateContext(ID3D11DeviceContext* a_context, const char* a_drawKind, std::string_view a_drawCounts)
+		{
+			if (!a_context || !ShouldTrackPreNGDFLightDrawTargets()) {
+				return;
+			}
+
+			const auto metadata = GetBoundPreNGDFLightDrawStatePixelShader(a_context);
+			if (!metadata) {
+				return;
+			}
+
+			D3D11_PRIMITIVE_TOPOLOGY topology{};
+			a_context->IAGetPrimitiveTopology(&topology);
+
+			D3D11_VIEWPORT viewport{};
+			UINT viewportCount = 1;
+			a_context->RSGetViewports(&viewportCount, &viewport);
+			const auto viewportDescription = FormatViewport(viewport, viewportCount);
+
+			ID3D11RenderTargetView* renderTargets[2]{};
+			a_context->OMGetRenderTargets(2, renderTargets, nullptr);
+			const auto rt0 = GetRenderTargetInfo(renderTargets[0]);
+			const auto rt1 = GetRenderTargetInfo(renderTargets[1]);
+			for (auto* renderTarget : renderTargets) {
+				if (renderTarget) {
+					renderTarget->Release();
+				}
+			}
+
+			const auto rt0Description = FormatRenderTargetInfo(rt0);
+			const auto rt1Description = FormatRenderTargetInfo(rt1);
+			const auto counts = std::string{ a_drawCounts };
+			const auto key = std::format(
+				"{:08X}:{}:{}:{}:{}:{}:{}",
+				metadata->asmHash,
+				metadata->uid,
+				a_drawKind,
+				counts,
+				static_cast<std::uint32_t>(topology),
+				viewportDescription,
+				rt0Description + ":" + rt1Description);
+
+			bool shouldLog = false;
+			{
+				std::scoped_lock lock(llfCandidateLock);
+				if (loggedDFLightDrawStateDraws.size() < kMaxDFLightDrawStateLogs) {
+					shouldLog = loggedDFLightDrawStateDraws.insert(key).second;
+				}
+			}
+
+			if (!shouldLog) {
+				return;
+			}
+
+			const auto boundConstantBuffers = FormatCurrentPixelShaderConstantBuffers(a_context, *metadata);
+			const auto boundShaderResources = FormatCurrentPixelShaderResourceViews(a_context, *metadata);
+			logger::info(
+				"[LightLimitFix] PreNG DFLight draw-state draw asmHash=0x{:08X} hash=0x{:08X} uid={} draw={} counts={} context=0x{:X} vtable=0x{:X} topology={} viewport={} rt0={} rt1={} buffers={} textures={} textureDims={} instructions={} samples={} textureSamples={} immediateRows={} boundCBs={} boundSRVs={}",
+				metadata->asmHash,
+				metadata->hash,
+				metadata->uid,
+				a_drawKind,
+				counts,
+				ToAddress(a_context),
+				GetContextVTablePointer(a_context),
+				static_cast<std::uint32_t>(topology),
+				viewportDescription,
+				rt0Description,
+				rt1Description,
+				FormatBufferSlots(*metadata),
+				FormatTextureSlots(*metadata),
+				FormatTextureDimensions(*metadata),
+				metadata->instructionCount,
+				metadata->sampleInstructionCount,
+				FormatTextureSampleCounts(*metadata),
+				metadata->immediateConstantBufferRows,
+				boundConstantBuffers,
+				boundShaderResources);
+		}
+
+		bool EnsurePreNGDFLightAdditiveNoOpDrawStates(ID3D11Device* a_device, const char* a_label)
+		{
+			if (!a_device) {
+				return false;
+			}
+
+			if (dflightZeroAdditiveBlendState && dflightZeroAdditiveDepthState) {
+				return true;
+			}
+			if (dflightAdditiveDrawStatesAttempted) {
+				return false;
+			}
+			dflightAdditiveDrawStatesAttempted = true;
+
+			D3D11_BLEND_DESC blendDesc{};
+			auto& targetBlend = blendDesc.RenderTarget[0];
+			targetBlend.BlendEnable = TRUE;
+			targetBlend.SrcBlend = D3D11_BLEND_ONE;
+			targetBlend.DestBlend = D3D11_BLEND_ONE;
+			targetBlend.BlendOp = D3D11_BLEND_OP_ADD;
+			targetBlend.SrcBlendAlpha = D3D11_BLEND_ZERO;
+			targetBlend.DestBlendAlpha = D3D11_BLEND_ONE;
+			targetBlend.BlendOpAlpha = D3D11_BLEND_OP_ADD;
+			targetBlend.RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+
+			auto hr = a_device->CreateBlendState(&blendDesc, dflightZeroAdditiveBlendState.put());
+			if (FAILED(hr)) {
+				logger::warn(
+					"[LightLimitFix] PreNG DFLight {} additive blend state create failed hr=0x{:08X} pass=held",
+					a_label,
+					static_cast<std::uint32_t>(hr));
+				return false;
+			}
+
+			D3D11_DEPTH_STENCIL_DESC depthDesc{};
+			depthDesc.DepthEnable = FALSE;
+			depthDesc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
+			depthDesc.DepthFunc = D3D11_COMPARISON_ALWAYS;
+			depthDesc.StencilEnable = FALSE;
+			depthDesc.StencilReadMask = D3D11_DEFAULT_STENCIL_READ_MASK;
+			depthDesc.StencilWriteMask = D3D11_DEFAULT_STENCIL_WRITE_MASK;
+			depthDesc.FrontFace.StencilFailOp = D3D11_STENCIL_OP_KEEP;
+			depthDesc.FrontFace.StencilDepthFailOp = D3D11_STENCIL_OP_KEEP;
+			depthDesc.FrontFace.StencilPassOp = D3D11_STENCIL_OP_KEEP;
+			depthDesc.FrontFace.StencilFunc = D3D11_COMPARISON_ALWAYS;
+			depthDesc.BackFace = depthDesc.FrontFace;
+
+			hr = a_device->CreateDepthStencilState(&depthDesc, dflightZeroAdditiveDepthState.put());
+			if (FAILED(hr)) {
+				logger::warn(
+					"[LightLimitFix] PreNG DFLight {} additive depth state create failed hr=0x{:08X} pass=held",
+					a_label,
+					static_cast<std::uint32_t>(hr));
+				return false;
+			}
+
+			return true;
+		}
+
+		bool EnsurePreNGDFLightZeroAdditivePassResources(ID3D11Device* a_device)
+		{
+			if (!a_device) {
+				return false;
+			}
+
+			std::scoped_lock lock(dflightZeroAdditivePassLock);
+			if (dflightZeroAdditivePixelShader && dflightZeroAdditiveBlendState && dflightZeroAdditiveDepthState) {
+				return true;
+			}
+			if (dflightZeroAdditivePassResourcesAttempted) {
+				return false;
+			}
+			dflightZeroAdditivePassResourcesAttempted = true;
+
+			auto bytecode = ShaderCompiler::GetSingleton()->CompileFromFile(
+				kPreNGDFLightZeroAdditiveSource,
+				"ps_5_0",
+				nullptr,
+				"main");
+			if (!bytecode) {
+				logger::warn(
+					"[LightLimitFix] PreNG DFLight zero-additive pass shader compile failed source={} pass=held",
+					kPreNGDFLightZeroAdditiveSource);
+				return false;
+			}
+
+			auto hr = createPixelShader ?
+				createPixelShader(a_device, bytecode->data(), bytecode->size(), nullptr, dflightZeroAdditivePixelShader.put()) :
+				a_device->CreatePixelShader(bytecode->data(), bytecode->size(), nullptr, dflightZeroAdditivePixelShader.put());
+			if (FAILED(hr)) {
+				logger::warn(
+					"[LightLimitFix] PreNG DFLight zero-additive pass pixel shader create failed hr=0x{:08X} pass=held",
+					static_cast<std::uint32_t>(hr));
+				return false;
+			}
+			if (!EnsurePreNGDFLightAdditiveNoOpDrawStates(a_device, "zero-additive pass")) {
+				return false;
+			}
+
+			logger::info(
+				"[LightLimitFix] PreNG DFLight zero-additive pass resources ready source={} bytecode={}",
+				kPreNGDFLightZeroAdditiveSource,
+				bytecode->size());
+			return true;
+		}
+
+		bool EnsurePreNGDFLightResourceNoOpPassResources(ID3D11Device* a_device)
+		{
+			if (!a_device) {
+				return false;
+			}
+
+			std::scoped_lock lock(dflightZeroAdditivePassLock);
+			if (dflightResourceNoOpPixelShader && dflightZeroAdditiveBlendState && dflightZeroAdditiveDepthState) {
+				if (!dflightResourceNoOpPassResourcesReadyLogged) {
+					logger::info(
+						"[LightLimitFix] PreNG DFLight resource no-op pass resources ready source={} bytecode={}",
+						kPreNGDFLightResourceNoOpSource,
+						dflightResourceNoOpPixelShaderBytecodeSize);
+					dflightResourceNoOpPassResourcesReadyLogged = true;
+				}
+				return true;
+			}
+
+			if (!dflightResourceNoOpPixelShader) {
+				if (dflightResourceNoOpPassResourcesAttempted) {
+					return false;
+				}
+				dflightResourceNoOpPassResourcesAttempted = true;
+
+				auto bytecode = ShaderCompiler::GetSingleton()->CompileFromFile(
+					kPreNGDFLightResourceNoOpSource,
+					"ps_5_0",
+					nullptr,
+					"main");
+				if (!bytecode) {
+					logger::warn(
+						"[LightLimitFix] PreNG DFLight resource no-op pass shader compile failed source={} pass=held",
+						kPreNGDFLightResourceNoOpSource);
+					return false;
+				}
+
+				const auto hr = createPixelShader ?
+					createPixelShader(a_device, bytecode->data(), bytecode->size(), nullptr, dflightResourceNoOpPixelShader.put()) :
+					a_device->CreatePixelShader(bytecode->data(), bytecode->size(), nullptr, dflightResourceNoOpPixelShader.put());
+				if (FAILED(hr)) {
+					logger::warn(
+						"[LightLimitFix] PreNG DFLight resource no-op pass pixel shader create failed hr=0x{:08X} pass=held",
+						static_cast<std::uint32_t>(hr));
+					return false;
+				}
+				dflightResourceNoOpPixelShaderBytecodeSize = bytecode->size();
+			}
+
+			if (!EnsurePreNGDFLightAdditiveNoOpDrawStates(a_device, "resource no-op pass")) {
+				return false;
+			}
+			if (!dflightResourceNoOpPassResourcesReadyLogged) {
+				logger::info(
+					"[LightLimitFix] PreNG DFLight resource no-op pass resources ready source={} bytecode={}",
+					kPreNGDFLightResourceNoOpSource,
+					dflightResourceNoOpPixelShaderBytecodeSize);
+				dflightResourceNoOpPassResourcesReadyLogged = true;
+			}
+			return true;
+		}
+
+		bool EnsurePreNGDFLightFullContractNoOpPassResources(ID3D11Device* a_device)
+		{
+			if (!a_device) {
+				return false;
+			}
+
+			std::scoped_lock lock(dflightZeroAdditivePassLock);
+			if (dflightFullContractNoOpPixelShader && dflightZeroAdditiveBlendState && dflightZeroAdditiveDepthState) {
+				if (!dflightFullContractNoOpPassResourcesReadyLogged) {
+					logger::info(
+						"[LightLimitFix] PreNG DFLight full contract no-op pass resources ready source={} bytecode={}",
+						kPreNGDFLightFullContractNoOpSource,
+						dflightFullContractNoOpPixelShaderBytecodeSize);
+					dflightFullContractNoOpPassResourcesReadyLogged = true;
+				}
+				return true;
+			}
+
+			if (!dflightFullContractNoOpPixelShader) {
+				if (dflightFullContractNoOpPassResourcesAttempted) {
+					return false;
+				}
+				dflightFullContractNoOpPassResourcesAttempted = true;
+
+				auto bytecode = ShaderCompiler::GetSingleton()->CompileFromFile(
+					kPreNGDFLightFullContractNoOpSource,
+					"ps_5_0",
+					nullptr,
+					"main");
+				if (!bytecode) {
+					logger::warn(
+						"[LightLimitFix] PreNG DFLight full contract no-op pass shader compile failed source={} pass=held",
+						kPreNGDFLightFullContractNoOpSource);
+					return false;
+				}
+
+				const auto hr = createPixelShader ?
+					createPixelShader(a_device, bytecode->data(), bytecode->size(), nullptr, dflightFullContractNoOpPixelShader.put()) :
+					a_device->CreatePixelShader(bytecode->data(), bytecode->size(), nullptr, dflightFullContractNoOpPixelShader.put());
+				if (FAILED(hr)) {
+					logger::warn(
+						"[LightLimitFix] PreNG DFLight full contract no-op pass pixel shader create failed hr=0x{:08X} pass=held",
+						static_cast<std::uint32_t>(hr));
+					return false;
+				}
+				dflightFullContractNoOpPixelShaderBytecodeSize = bytecode->size();
+			}
+
+			if (!EnsurePreNGDFLightAdditiveNoOpDrawStates(a_device, "full contract no-op pass")) {
+				return false;
+			}
+			if (!dflightFullContractNoOpPassResourcesReadyLogged) {
+				logger::info(
+					"[LightLimitFix] PreNG DFLight full contract no-op pass resources ready source={} bytecode={}",
+					kPreNGDFLightFullContractNoOpSource,
+					dflightFullContractNoOpPixelShaderBytecodeSize);
+				dflightFullContractNoOpPassResourcesReadyLogged = true;
+			}
+			return true;
+		}
+
+		bool EnsurePreNGDFLightLLFAdditivePassResources(ID3D11Device* a_device)
+		{
+			if (!a_device) {
+				return false;
+			}
+
+			std::scoped_lock lock(dflightZeroAdditivePassLock);
+			if (dflightLLFAdditivePixelShader && dflightZeroAdditiveBlendState && dflightZeroAdditiveDepthState && dflightLLFAdditiveControlsCB) {
+				if (!dflightLLFAdditivePassResourcesReadyLogged) {
+					logger::info(
+						"[LightLimitFix] PreNG DFLight LLF additive pass resources ready source={} bytecode={}",
+						kPreNGDFLightLLFAdditiveSource,
+						dflightLLFAdditivePixelShaderBytecodeSize);
+					dflightLLFAdditivePassResourcesReadyLogged = true;
+				}
+				return true;
+			}
+
+			if (!dflightLLFAdditivePixelShader) {
+				if (dflightLLFAdditivePassResourcesAttempted) {
+					return false;
+				}
+				dflightLLFAdditivePassResourcesAttempted = true;
+
+				auto bytecode = ShaderCompiler::GetSingleton()->CompileFromFile(
+					kPreNGDFLightLLFAdditiveSource,
+					"ps_5_0",
+					nullptr,
+					"main");
+				if (!bytecode) {
+					logger::warn(
+						"[LightLimitFix] PreNG DFLight LLF additive pass shader compile failed source={} pass=held",
+						kPreNGDFLightLLFAdditiveSource);
+					return false;
+				}
+
+				const auto hr = createPixelShader ?
+					createPixelShader(a_device, bytecode->data(), bytecode->size(), nullptr, dflightLLFAdditivePixelShader.put()) :
+					a_device->CreatePixelShader(bytecode->data(), bytecode->size(), nullptr, dflightLLFAdditivePixelShader.put());
+				if (FAILED(hr)) {
+					logger::warn(
+						"[LightLimitFix] PreNG DFLight LLF additive pass pixel shader create failed hr=0x{:08X} pass=held",
+						static_cast<std::uint32_t>(hr));
+					return false;
+				}
+				dflightLLFAdditivePixelShaderBytecodeSize = bytecode->size();
+			}
+
+			if (!EnsurePreNGDFLightAdditiveNoOpDrawStates(a_device, "LLF additive pass")) {
+				return false;
+			}
+			if (!dflightLLFAdditiveControlsCB) {
+				if (dflightLLFAdditiveControlsAttempted) {
+					return false;
+				}
+				dflightLLFAdditiveControlsAttempted = true;
+
+				D3D11_BUFFER_DESC desc{};
+				desc.ByteWidth = sizeof(DFLightLLFAdditiveControls);
+				desc.Usage = D3D11_USAGE_DEFAULT;
+				desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+
+				const auto controls = GetPreNGDFLightLLFAdditiveControls();
+				D3D11_SUBRESOURCE_DATA initialData{};
+				initialData.pSysMem = &controls;
+				const auto hr = a_device->CreateBuffer(&desc, &initialData, dflightLLFAdditiveControlsCB.put());
+				if (FAILED(hr)) {
+					logger::warn(
+						"[LightLimitFix] PreNG DFLight LLF additive pass controls CB create failed hr=0x{:08X} pass=held",
+						static_cast<std::uint32_t>(hr));
+					return false;
+				}
+			}
+			if (!dflightLLFAdditivePassResourcesReadyLogged) {
+				logger::info(
+					"[LightLimitFix] PreNG DFLight LLF additive pass resources ready source={} bytecode={}",
+					kPreNGDFLightLLFAdditiveSource,
+					dflightLLFAdditivePixelShaderBytecodeSize);
+				dflightLLFAdditivePassResourcesReadyLogged = true;
+			}
+			return true;
+		}
+
+		void RunPreNGDFLightZeroAdditivePass(
+			ID3D11DeviceContext* a_context,
+			DrawIndexedFn a_originalDrawIndexed,
+			UINT a_indexCount,
+			UINT a_startIndexLocation,
+			INT a_baseVertexLocation)
+		{
+			if (!a_context || !a_originalDrawIndexed || !ShouldRunPreNGDFLightZeroAdditivePass()) {
+				return;
+			}
+
+			const auto metadata = GetBoundPreNGDFLightDrawStatePixelShader(a_context);
+			if (!metadata) {
+				return;
+			}
+
+			winrt::com_ptr<ID3D11Device> device;
+			a_context->GetDevice(device.put());
+			if (!device || !EnsurePreNGDFLightZeroAdditivePassResources(device.get())) {
+				return;
+			}
+
+			const auto drawIndex = dflightZeroAdditivePassDrawCount.fetch_add(1);
+			if (drawIndex >= kMaxDFLightZeroAdditivePassDraws) {
+				if (!dflightZeroAdditivePassLimitLogged.exchange(true)) {
+					logger::info(
+						"[LightLimitFix] PreNG DFLight zero-additive pass draw limit reached limit={}",
+						kMaxDFLightZeroAdditivePassDraws);
+				}
+				return;
+			}
+
+			winrt::com_ptr<ID3D11PixelShader> oldPixelShader;
+			std::array<ID3D11ClassInstance*, D3D11_SHADER_MAX_INTERFACES> oldClassInstances{};
+			UINT oldClassInstanceCount = static_cast<UINT>(oldClassInstances.size());
+			a_context->PSGetShader(oldPixelShader.put(), oldClassInstances.data(), &oldClassInstanceCount);
+
+			winrt::com_ptr<ID3D11BlendState> oldBlendState;
+			FLOAT oldBlendFactor[4]{};
+			UINT oldSampleMask = 0;
+			a_context->OMGetBlendState(oldBlendState.put(), oldBlendFactor, &oldSampleMask);
+
+			winrt::com_ptr<ID3D11DepthStencilState> oldDepthState;
+			UINT oldStencilRef = 0;
+			a_context->OMGetDepthStencilState(oldDepthState.put(), &oldStencilRef);
+
+			FLOAT additiveBlendFactor[4]{};
+			a_context->PSSetShader(dflightZeroAdditivePixelShader.get(), nullptr, 0);
+			a_context->OMSetBlendState(dflightZeroAdditiveBlendState.get(), additiveBlendFactor, 0xFFFFFFFFu);
+			a_context->OMSetDepthStencilState(dflightZeroAdditiveDepthState.get(), 0);
+
+			a_originalDrawIndexed(a_context, a_indexCount, a_startIndexLocation, a_baseVertexLocation);
+
+			a_context->PSSetShader(
+				oldPixelShader.get(),
+				oldClassInstanceCount > 0 ? oldClassInstances.data() : nullptr,
+				oldClassInstanceCount);
+			a_context->OMSetBlendState(oldBlendState.get(), oldBlendFactor, oldSampleMask);
+			a_context->OMSetDepthStencilState(oldDepthState.get(), oldStencilRef);
+
+			for (UINT index = 0; index < oldClassInstanceCount; ++index) {
+				if (oldClassInstances[index]) {
+					oldClassInstances[index]->Release();
+				}
+			}
+
+			logger::info(
+				"[LightLimitFix] PreNG DFLight zero-additive pass draw asmHash=0x{:08X} hash=0x{:08X} uid={} drawIndex={} indexCount={} startIndex={} baseVertex={} context=0x{:X} vtable=0x{:X}",
+				metadata->asmHash,
+				metadata->hash,
+				metadata->uid,
+				drawIndex + 1,
+				a_indexCount,
+				a_startIndexLocation,
+				a_baseVertexLocation,
+				ToAddress(a_context),
+				GetContextVTablePointer(a_context));
+		}
+
+		void RunPreNGDFLightResourceNoOpPass(
+			ID3D11DeviceContext* a_context,
+			DrawIndexedFn a_originalDrawIndexed,
+			UINT a_indexCount,
+			UINT a_startIndexLocation,
+			INT a_baseVertexLocation)
+		{
+			if (!a_context || !a_originalDrawIndexed || !ShouldRunPreNGDFLightResourceNoOpPass()) {
+				return;
+			}
+
+			const auto metadata = GetBoundPreNGDFLightDrawStatePixelShader(a_context);
+			if (!metadata || !globals::features::lightLimitFix.loaded) {
+				return;
+			}
+
+			winrt::com_ptr<ID3D11Device> device;
+			a_context->GetDevice(device.put());
+			if (!device || !EnsurePreNGDFLightResourceNoOpPassResources(device.get())) {
+				return;
+			}
+			if (dflightResourceNoOpPassDrawCount.load(std::memory_order_relaxed) >= kMaxDFLightResourceNoOpPassDraws) {
+				if (!dflightResourceNoOpPassLimitLogged.exchange(true)) {
+					logger::info(
+						"[LightLimitFix] PreNG DFLight resource no-op pass draw limit reached limit={}",
+						kMaxDFLightResourceNoOpPassDraws);
+				}
+				return;
+			}
+
+			winrt::com_ptr<ID3D11PixelShader> oldPixelShader;
+			std::array<ID3D11ClassInstance*, D3D11_SHADER_MAX_INTERFACES> oldClassInstances{};
+			UINT oldClassInstanceCount = static_cast<UINT>(oldClassInstances.size());
+			a_context->PSGetShader(oldPixelShader.put(), oldClassInstances.data(), &oldClassInstanceCount);
+
+			winrt::com_ptr<ID3D11BlendState> oldBlendState;
+			FLOAT oldBlendFactor[4]{};
+			UINT oldSampleMask = 0;
+			a_context->OMGetBlendState(oldBlendState.put(), oldBlendFactor, &oldSampleMask);
+
+			winrt::com_ptr<ID3D11DepthStencilState> oldDepthState;
+			UINT oldStencilRef = 0;
+			a_context->OMGetDepthStencilState(oldDepthState.put(), &oldStencilRef);
+
+			winrt::com_ptr<ID3D11Buffer> oldStrictCB;
+			a_context->PSGetConstantBuffers(3, 1, oldStrictCB.put());
+			std::array<ID3D11ShaderResourceView*, 3> oldClusterSRVs{};
+			a_context->PSGetShaderResources(35, static_cast<UINT>(oldClusterSRVs.size()), oldClusterSRVs.data());
+
+			FLOAT additiveBlendFactor[4]{};
+			a_context->PSSetShader(dflightResourceNoOpPixelShader.get(), nullptr, 0);
+			a_context->OMSetBlendState(dflightZeroAdditiveBlendState.get(), additiveBlendFactor, 0xFFFFFFFFu);
+			a_context->OMSetDepthStencilState(dflightZeroAdditiveDepthState.get(), 0);
+
+			const auto resourceState = globals::features::lightLimitFix.BindPreNGDFLightResourceNoOpPass(a_context);
+			if (resourceState.strictCBBound && resourceState.clusterSRVsBound) {
+				const auto drawIndex = dflightResourceNoOpPassDrawCount.fetch_add(1);
+				if (drawIndex < kMaxDFLightResourceNoOpPassDraws) {
+					a_originalDrawIndexed(a_context, a_indexCount, a_startIndexLocation, a_baseVertexLocation);
+					logger::info(
+						"[LightLimitFix] PreNG DFLight resource no-op pass draw asmHash=0x{:08X} hash=0x{:08X} uid={} drawIndex={} indexCount={} startIndex={} baseVertex={} context=0x{:X} vtable=0x{:X} lights={} strict={} shadowMask=0x{:08X}",
+						metadata->asmHash,
+						metadata->hash,
+						metadata->uid,
+						drawIndex + 1,
+						a_indexCount,
+						a_startIndexLocation,
+						a_baseVertexLocation,
+						ToAddress(a_context),
+						GetContextVTablePointer(a_context),
+						resourceState.lightCount,
+						resourceState.strictLightCount,
+						resourceState.shadowBitMask);
+				} else if (!dflightResourceNoOpPassLimitLogged.exchange(true)) {
+					logger::info(
+						"[LightLimitFix] PreNG DFLight resource no-op pass draw limit reached limit={}",
+						kMaxDFLightResourceNoOpPassDraws);
+				}
+			}
+
+			a_context->PSSetShader(
+				oldPixelShader.get(),
+				oldClassInstanceCount > 0 ? oldClassInstances.data() : nullptr,
+				oldClassInstanceCount);
+			a_context->OMSetBlendState(oldBlendState.get(), oldBlendFactor, oldSampleMask);
+			a_context->OMSetDepthStencilState(oldDepthState.get(), oldStencilRef);
+			ID3D11Buffer* oldStrictCBRaw = oldStrictCB.get();
+			a_context->PSSetConstantBuffers(3, 1, &oldStrictCBRaw);
+			a_context->PSSetShaderResources(35, static_cast<UINT>(oldClusterSRVs.size()), oldClusterSRVs.data());
+
+			for (UINT index = 0; index < oldClassInstanceCount; ++index) {
+				if (oldClassInstances[index]) {
+					oldClassInstances[index]->Release();
+				}
+			}
+			for (auto* oldSRV : oldClusterSRVs) {
+				if (oldSRV) {
+					oldSRV->Release();
+				}
+			}
+		}
+
+		void RunPreNGDFLightFullContractNoOpPass(
+			ID3D11DeviceContext* a_context,
+			DrawIndexedFn a_originalDrawIndexed,
+			UINT a_indexCount,
+			UINT a_startIndexLocation,
+			INT a_baseVertexLocation)
+		{
+			if (!a_context || !a_originalDrawIndexed || !ShouldRunPreNGDFLightFullContractNoOpPass()) {
+				return;
+			}
+
+			const auto metadata = GetBoundPreNGDFLightDrawStatePixelShader(a_context);
+			if (!metadata || !globals::features::lightLimitFix.loaded) {
+				return;
+			}
+
+			winrt::com_ptr<ID3D11Device> device;
+			a_context->GetDevice(device.put());
+			if (!device || !EnsurePreNGDFLightFullContractNoOpPassResources(device.get())) {
+				return;
+			}
+			if (dflightFullContractNoOpPassDrawCount.load(std::memory_order_relaxed) >= kMaxDFLightFullContractNoOpPassDraws) {
+				if (!dflightFullContractNoOpPassLimitLogged.exchange(true)) {
+					logger::info(
+						"[LightLimitFix] PreNG DFLight full contract no-op pass draw limit reached limit={}",
+						kMaxDFLightFullContractNoOpPassDraws);
+				}
+				return;
+			}
+
+			winrt::com_ptr<ID3D11PixelShader> oldPixelShader;
+			std::array<ID3D11ClassInstance*, D3D11_SHADER_MAX_INTERFACES> oldClassInstances{};
+			UINT oldClassInstanceCount = static_cast<UINT>(oldClassInstances.size());
+			a_context->PSGetShader(oldPixelShader.put(), oldClassInstances.data(), &oldClassInstanceCount);
+
+			winrt::com_ptr<ID3D11BlendState> oldBlendState;
+			FLOAT oldBlendFactor[4]{};
+			UINT oldSampleMask = 0;
+			a_context->OMGetBlendState(oldBlendState.put(), oldBlendFactor, &oldSampleMask);
+
+			winrt::com_ptr<ID3D11DepthStencilState> oldDepthState;
+			UINT oldStencilRef = 0;
+			a_context->OMGetDepthStencilState(oldDepthState.put(), &oldStencilRef);
+
+			winrt::com_ptr<ID3D11Buffer> oldStrictCB;
+			a_context->PSGetConstantBuffers(3, 1, oldStrictCB.put());
+			std::array<ID3D11ShaderResourceView*, 3> oldClusterSRVs{};
+			a_context->PSGetShaderResources(35, static_cast<UINT>(oldClusterSRVs.size()), oldClusterSRVs.data());
+
+			FLOAT additiveBlendFactor[4]{};
+			a_context->PSSetShader(dflightFullContractNoOpPixelShader.get(), nullptr, 0);
+			a_context->OMSetBlendState(dflightZeroAdditiveBlendState.get(), additiveBlendFactor, 0xFFFFFFFFu);
+			a_context->OMSetDepthStencilState(dflightZeroAdditiveDepthState.get(), 0);
+
+			const auto resourceState = globals::features::lightLimitFix.BindPreNGDFLightFullContractNoOpPass(a_context);
+			if (resourceState.strictCBBound && resourceState.clusterSRVsBound) {
+				const auto drawIndex = dflightFullContractNoOpPassDrawCount.fetch_add(1);
+				if (drawIndex < kMaxDFLightFullContractNoOpPassDraws) {
+					a_originalDrawIndexed(a_context, a_indexCount, a_startIndexLocation, a_baseVertexLocation);
+					logger::info(
+						"[LightLimitFix] PreNG DFLight full contract no-op pass draw asmHash=0x{:08X} hash=0x{:08X} uid={} drawIndex={} indexCount={} startIndex={} baseVertex={} context=0x{:X} vtable=0x{:X} lights={} strict={} shadowMask=0x{:08X}",
+						metadata->asmHash,
+						metadata->hash,
+						metadata->uid,
+						drawIndex + 1,
+						a_indexCount,
+						a_startIndexLocation,
+						a_baseVertexLocation,
+						ToAddress(a_context),
+						GetContextVTablePointer(a_context),
+						resourceState.lightCount,
+						resourceState.strictLightCount,
+						resourceState.shadowBitMask);
+				} else if (!dflightFullContractNoOpPassLimitLogged.exchange(true)) {
+					logger::info(
+						"[LightLimitFix] PreNG DFLight full contract no-op pass draw limit reached limit={}",
+						kMaxDFLightFullContractNoOpPassDraws);
+				}
+			}
+
+			a_context->PSSetShader(
+				oldPixelShader.get(),
+				oldClassInstanceCount > 0 ? oldClassInstances.data() : nullptr,
+				oldClassInstanceCount);
+			a_context->OMSetBlendState(oldBlendState.get(), oldBlendFactor, oldSampleMask);
+			a_context->OMSetDepthStencilState(oldDepthState.get(), oldStencilRef);
+			ID3D11Buffer* oldStrictCBRaw = oldStrictCB.get();
+			a_context->PSSetConstantBuffers(3, 1, &oldStrictCBRaw);
+			a_context->PSSetShaderResources(35, static_cast<UINT>(oldClusterSRVs.size()), oldClusterSRVs.data());
+
+			for (UINT index = 0; index < oldClassInstanceCount; ++index) {
+				if (oldClassInstances[index]) {
+					oldClassInstances[index]->Release();
+				}
+			}
+			for (auto* oldSRV : oldClusterSRVs) {
+				if (oldSRV) {
+					oldSRV->Release();
+				}
+			}
+		}
+
+		void RunPreNGDFLightLLFAdditivePass(
+			ID3D11DeviceContext* a_context,
+			DrawIndexedFn a_originalDrawIndexed,
+			UINT a_indexCount,
+			UINT a_startIndexLocation,
+			INT a_baseVertexLocation)
+		{
+			if (!a_context || !a_originalDrawIndexed || !ShouldRunPreNGDFLightLLFAdditivePass()) {
+				return;
+			}
+
+			const auto drawLimit = GetPreNGDFLightLLFAdditivePassDrawBudget();
+			const bool persistent = ShouldPersistPreNGDFLightLLFAdditivePass();
+			const auto metadata = GetBoundPreNGDFLightDrawStatePixelShader(a_context);
+			if (!metadata || !globals::features::lightLimitFix.loaded) {
+				return;
+			}
+
+			if (!persistent && dflightLLFAdditivePassDrawCount.load(std::memory_order_relaxed) >= drawLimit) {
+				if (!dflightLLFAdditivePassLimitLogged.exchange(true)) {
+					logger::info(
+						"[LightLimitFix] PreNG DFLight LLF additive pass draw limit reached limit={}",
+						drawLimit);
+				}
+				return;
+			}
+
+			if (!TryReservePreNGDFLightLLFAdditivePassFrameDraw()) {
+				return;
+			}
+
+			winrt::com_ptr<ID3D11Device> device;
+			a_context->GetDevice(device.put());
+			if (!device || !EnsurePreNGDFLightLLFAdditivePassResources(device.get())) {
+				return;
+			}
+			if (!persistent && dflightLLFAdditivePassDrawCount.load(std::memory_order_relaxed) >= drawLimit) {
+				if (!dflightLLFAdditivePassLimitLogged.exchange(true)) {
+					logger::info(
+						"[LightLimitFix] PreNG DFLight LLF additive pass draw limit reached limit={}",
+						drawLimit);
+				}
+				return;
+			}
+
+			winrt::com_ptr<ID3D11PixelShader> oldPixelShader;
+			std::array<ID3D11ClassInstance*, D3D11_SHADER_MAX_INTERFACES> oldClassInstances{};
+			UINT oldClassInstanceCount = static_cast<UINT>(oldClassInstances.size());
+			a_context->PSGetShader(oldPixelShader.put(), oldClassInstances.data(), &oldClassInstanceCount);
+
+			winrt::com_ptr<ID3D11BlendState> oldBlendState;
+			FLOAT oldBlendFactor[4]{};
+			UINT oldSampleMask = 0;
+			a_context->OMGetBlendState(oldBlendState.put(), oldBlendFactor, &oldSampleMask);
+
+			winrt::com_ptr<ID3D11DepthStencilState> oldDepthState;
+			UINT oldStencilRef = 0;
+			a_context->OMGetDepthStencilState(oldDepthState.put(), &oldStencilRef);
+
+			winrt::com_ptr<ID3D11Buffer> oldStrictCB;
+			a_context->PSGetConstantBuffers(3, 1, oldStrictCB.put());
+			winrt::com_ptr<ID3D11Buffer> oldControlsCB;
+			a_context->PSGetConstantBuffers(kDFLightLLFAdditiveControlsCBSlot, 1, oldControlsCB.put());
+			std::array<ID3D11ShaderResourceView*, 3> oldClusterSRVs{};
+			a_context->PSGetShaderResources(35, static_cast<UINT>(oldClusterSRVs.size()), oldClusterSRVs.data());
+
+			FLOAT additiveBlendFactor[4]{};
+			a_context->PSSetShader(dflightLLFAdditivePixelShader.get(), nullptr, 0);
+			a_context->OMSetBlendState(dflightZeroAdditiveBlendState.get(), additiveBlendFactor, 0xFFFFFFFFu);
+			a_context->OMSetDepthStencilState(dflightZeroAdditiveDepthState.get(), 0);
+
+			const auto controls = GetPreNGDFLightLLFAdditiveControls();
+			a_context->UpdateSubresource(dflightLLFAdditiveControlsCB.get(), 0, nullptr, &controls, 0, 0);
+			ID3D11Buffer* controlsCB = dflightLLFAdditiveControlsCB.get();
+			a_context->PSSetConstantBuffers(kDFLightLLFAdditiveControlsCBSlot, 1, &controlsCB);
+
+			const auto resourceState = globals::features::lightLimitFix.BindPreNGDFLightLLFAdditivePass(a_context);
+			if (resourceState.strictCBBound && resourceState.clusterSRVsBound) {
+				const auto drawIndex = dflightLLFAdditivePassDrawCount.fetch_add(1);
+				if (persistent || drawIndex < drawLimit) {
+					a_originalDrawIndexed(a_context, a_indexCount, a_startIndexLocation, a_baseVertexLocation);
+					if (ShouldLogPreNGDFLightLLFAdditivePassDraw(drawIndex, drawLimit, persistent)) {
+						logger::info(
+							"[LightLimitFix] PreNG DFLight LLF additive pass draw asmHash=0x{:08X} hash=0x{:08X} uid={} drawIndex={} indexCount={} startIndex={} baseVertex={} context=0x{:X} vtable=0x{:X} lights={} strict={} shadowMask=0x{:08X}",
+							metadata->asmHash,
+							metadata->hash,
+							metadata->uid,
+							drawIndex + 1,
+							a_indexCount,
+							a_startIndexLocation,
+							a_baseVertexLocation,
+							ToAddress(a_context),
+							GetContextVTablePointer(a_context),
+							resourceState.lightCount,
+							resourceState.strictLightCount,
+							resourceState.shadowBitMask);
+					}
+				} else if (!dflightLLFAdditivePassLimitLogged.exchange(true)) {
+					logger::info(
+						"[LightLimitFix] PreNG DFLight LLF additive pass draw limit reached limit={}",
+						drawLimit);
+				}
+			}
+
+			a_context->PSSetShader(
+				oldPixelShader.get(),
+				oldClassInstanceCount > 0 ? oldClassInstances.data() : nullptr,
+				oldClassInstanceCount);
+			a_context->OMSetBlendState(oldBlendState.get(), oldBlendFactor, oldSampleMask);
+			a_context->OMSetDepthStencilState(oldDepthState.get(), oldStencilRef);
+			ID3D11Buffer* oldStrictCBRaw = oldStrictCB.get();
+			a_context->PSSetConstantBuffers(3, 1, &oldStrictCBRaw);
+			ID3D11Buffer* oldControlsCBRaw = oldControlsCB.get();
+			a_context->PSSetConstantBuffers(kDFLightLLFAdditiveControlsCBSlot, 1, &oldControlsCBRaw);
+			a_context->PSSetShaderResources(35, static_cast<UINT>(oldClusterSRVs.size()), oldClusterSRVs.data());
+
+			for (UINT index = 0; index < oldClassInstanceCount; ++index) {
+				if (oldClassInstances[index]) {
+					oldClassInstances[index]->Release();
+				}
+			}
+			for (auto* oldSRV : oldClusterSRVs) {
+				if (oldSRV) {
+					oldSRV->Release();
+				}
+			}
+		}
+
 		void TraceLightLimitFixStateContext(ID3D11DeviceContext* a_context, const char* a_stateKind, std::string_view a_stateDetails)
 		{
 			if (!a_context || !ShouldTraceLLFPixelCandidates(*ShaderCache::GetSingleton())) {
@@ -1400,6 +2768,7 @@ namespace CommunityShaders::Hooks
 			const auto hooks = GetDrawContextHooksForContext(a_context);
 			if (hooks.psSetShader) {
 				hooks.psSetShader(a_context, a_pixelShader, a_classInstances, a_classInstancesCount);
+				TrackPreNGDFLightDrawStateBoundPixelShader(a_context, a_pixelShader);
 				TraceLightLimitFixBoundPixelShaderInventory(a_context, a_pixelShader);
 				TrackLightLimitFixBoundPixelShader(a_context, a_pixelShader);
 				TraceLightLimitFixPixelShaderBinding(a_context, a_pixelShader);
@@ -1439,9 +2808,17 @@ namespace CommunityShaders::Hooks
 				a_context,
 				"DrawIndexed",
 				std::format("indexCount={} startIndex={} baseVertex={}", a_indexCount, a_startIndexLocation, a_baseVertexLocation));
+			TracePreNGDFLightDrawStateContext(
+				a_context,
+				"DrawIndexed",
+				std::format("indexCount={} startIndex={} baseVertex={}", a_indexCount, a_startIndexLocation, a_baseVertexLocation));
 			const auto hooks = GetDrawContextHooksForContext(a_context);
 			if (hooks.drawIndexed) {
 				hooks.drawIndexed(a_context, a_indexCount, a_startIndexLocation, a_baseVertexLocation);
+				RunPreNGDFLightLLFAdditivePass(a_context, hooks.drawIndexed, a_indexCount, a_startIndexLocation, a_baseVertexLocation);
+				RunPreNGDFLightFullContractNoOpPass(a_context, hooks.drawIndexed, a_indexCount, a_startIndexLocation, a_baseVertexLocation);
+				RunPreNGDFLightResourceNoOpPass(a_context, hooks.drawIndexed, a_indexCount, a_startIndexLocation, a_baseVertexLocation);
+				RunPreNGDFLightZeroAdditivePass(a_context, hooks.drawIndexed, a_indexCount, a_startIndexLocation, a_baseVertexLocation);
 			} else {
 				TraceMissingContextOriginal(a_context, "DrawIndexed");
 			}
@@ -1451,6 +2828,10 @@ namespace CommunityShaders::Hooks
 		{
 			TraceLightLimitFixDrawHookHealth("Draw");
 			TraceLightLimitFixDrawContext(
+				a_context,
+				"Draw",
+				std::format("vertexCount={} startVertex={}", a_vertexCount, a_startVertexLocation));
+			TracePreNGDFLightDrawStateContext(
 				a_context,
 				"Draw",
 				std::format("vertexCount={} startVertex={}", a_vertexCount, a_startVertexLocation));
@@ -1466,6 +2847,16 @@ namespace CommunityShaders::Hooks
 		{
 			TraceLightLimitFixDrawHookHealth("DrawIndexedInstanced");
 			TraceLightLimitFixDrawContext(
+				a_context,
+				"DrawIndexedInstanced",
+				std::format(
+					"indexCountPerInstance={} instanceCount={} startIndex={} baseVertex={} startInstance={}",
+					a_indexCountPerInstance,
+					a_instanceCount,
+					a_startIndexLocation,
+					a_baseVertexLocation,
+					a_startInstanceLocation));
+			TracePreNGDFLightDrawStateContext(
 				a_context,
 				"DrawIndexedInstanced",
 				std::format(
@@ -1495,6 +2886,15 @@ namespace CommunityShaders::Hooks
 					a_instanceCount,
 					a_startVertexLocation,
 					a_startInstanceLocation));
+			TracePreNGDFLightDrawStateContext(
+				a_context,
+				"DrawInstanced",
+				std::format(
+					"vertexCountPerInstance={} instanceCount={} startVertex={} startInstance={}",
+					a_vertexCountPerInstance,
+					a_instanceCount,
+					a_startVertexLocation,
+					a_startInstanceLocation));
 			const auto hooks = GetDrawContextHooksForContext(a_context);
 			if (hooks.drawInstanced) {
 				hooks.drawInstanced(a_context, a_vertexCountPerInstance, a_instanceCount, a_startVertexLocation, a_startInstanceLocation);
@@ -1507,6 +2907,7 @@ namespace CommunityShaders::Hooks
 		{
 			TraceLightLimitFixDrawHookHealth("DrawAuto");
 			TraceLightLimitFixDrawContext(a_context, "DrawAuto", "auto=true");
+			TracePreNGDFLightDrawStateContext(a_context, "DrawAuto", "auto=true");
 			const auto hooks = GetDrawContextHooksForContext(a_context);
 			if (hooks.drawAuto) {
 				hooks.drawAuto(a_context);
@@ -1522,6 +2923,10 @@ namespace CommunityShaders::Hooks
 				a_context,
 				"DrawIndexedInstancedIndirect",
 				std::format("argsBuffer={} alignedByteOffset={}", static_cast<const void*>(a_bufferForArgs), a_alignedByteOffsetForArgs));
+			TracePreNGDFLightDrawStateContext(
+				a_context,
+				"DrawIndexedInstancedIndirect",
+				std::format("argsBuffer={} alignedByteOffset={}", static_cast<const void*>(a_bufferForArgs), a_alignedByteOffsetForArgs));
 			const auto hooks = GetDrawContextHooksForContext(a_context);
 			if (hooks.drawIndexedInstancedIndirect) {
 				hooks.drawIndexedInstancedIndirect(a_context, a_bufferForArgs, a_alignedByteOffsetForArgs);
@@ -1534,6 +2939,10 @@ namespace CommunityShaders::Hooks
 		{
 			TraceLightLimitFixDrawHookHealth("DrawInstancedIndirect");
 			TraceLightLimitFixDrawContext(
+				a_context,
+				"DrawInstancedIndirect",
+				std::format("argsBuffer={} alignedByteOffset={}", static_cast<const void*>(a_bufferForArgs), a_alignedByteOffsetForArgs));
+			TracePreNGDFLightDrawStateContext(
 				a_context,
 				"DrawInstancedIndirect",
 				std::format("argsBuffer={} alignedByteOffset={}", static_cast<const void*>(a_bufferForArgs), a_alignedByteOffsetForArgs));
@@ -1630,7 +3039,7 @@ namespace CommunityShaders::Hooks
 		template <class Fn, class HookFn>
 		Fn InstallLightLimitFixDirectDrawDiagnostic(Fn a_original, HookFn a_hook, const char* a_drawKind, std::size_t& a_detourCount)
 		{
-			if (!a_original || !ShouldTraceLLFPixelCandidates(*ShaderCache::GetSingleton())) {
+			if (!a_original || !ShouldEnableLightLimitFixPixelCandidateDiagnostics()) {
 				return a_original;
 			}
 
@@ -1818,17 +3227,35 @@ namespace CommunityShaders::Hooks
 
 		HRESULT STDMETHODCALLTYPE CreatePixelShaderHook(ID3D11Device* a_device, const void* a_bytecode, SIZE_T a_bytecodeLength, ID3D11ClassLinkage* a_classLinkage, ID3D11PixelShader** a_pixelShader)
 		{
-			ShaderCache::GetSingleton()->ObserveShader(ShaderStage::Pixel, a_bytecode, a_bytecodeLength);
+			auto* shaderCache = ShaderCache::GetSingleton();
+			shaderCache->ObserveShader(ShaderStage::Pixel, a_bytecode, a_bytecodeLength);
 #if defined(FALLOUT_PRE_NG)
-			const auto traceMetadata = GetTracePixelShaderMetadata(a_bytecode, a_bytecodeLength);
+			const bool tracePixelCandidates = ShouldTraceLLFPixelCandidates(*shaderCache);
+			const bool mapShaderObjects = ShouldMapPreNGShaderObjectMetadata();
+			const bool captureDFLightVanillaDumpBytecode = ShouldCapturePreNGDFLightVanillaDumpBytecode();
+			const bool trackDFLightDrawTargets = ShouldTrackPreNGDFLightDrawTargets();
+			std::optional<ShaderCache::ShaderMetadata> diagnosticMetadata;
+			if (tracePixelCandidates || mapShaderObjects || captureDFLightVanillaDumpBytecode || trackDFLightDrawTargets) {
+				diagnosticMetadata = shaderCache->GetMetadataForBytecode(ShaderStage::Pixel, a_bytecode, a_bytecodeLength);
+			}
 #endif
 			const auto result = createPixelShader(a_device, a_bytecode, a_bytecodeLength, a_classLinkage, a_pixelShader);
 #if defined(FALLOUT_PRE_NG)
-			if (SUCCEEDED(result) && a_pixelShader && *a_pixelShader && traceMetadata) {
-				TrackObservedPixelShader(*a_pixelShader, *traceMetadata);
-				if (IsLightLimitFixPixelTrackedCandidate(*traceMetadata)) {
-					TrackLightLimitFixPixelShader(*a_pixelShader, *traceMetadata);
-					TraceLightLimitFixPixelCandidate(a_device, *a_pixelShader, *traceMetadata);
+			if (SUCCEEDED(result) && a_pixelShader && *a_pixelShader && diagnosticMetadata) {
+				if (captureDFLightVanillaDumpBytecode) {
+					shaderCache->ObserveD3DShaderObjectBytecode(ShaderStage::Pixel, ToAddress(*a_pixelShader), *diagnosticMetadata, a_bytecode, a_bytecodeLength);
+				} else if (mapShaderObjects) {
+					shaderCache->ObserveD3DShaderObject(ShaderStage::Pixel, ToAddress(*a_pixelShader), *diagnosticMetadata);
+				}
+				if (tracePixelCandidates) {
+					TrackObservedPixelShader(*a_pixelShader, *diagnosticMetadata);
+					if (IsLightLimitFixPixelTrackedCandidate(*diagnosticMetadata)) {
+						TrackLightLimitFixPixelShader(*a_pixelShader, *diagnosticMetadata);
+						TraceLightLimitFixPixelCandidate(a_device, *a_pixelShader, *diagnosticMetadata);
+					}
+				}
+				if (trackDFLightDrawTargets) {
+					TrackPreNGDFLightDrawStatePixelShader(a_device, *a_pixelShader, *diagnosticMetadata);
 				}
 			}
 #endif
@@ -1882,6 +3309,51 @@ namespace CommunityShaders::Hooks
 		logger::info("[CommunityShaders] D3D11 shader observation hooks installed");
 
 #if defined(FALLOUT_PRE_NG)
+		if (ShouldCapturePreNGDFLightVanillaDumpBytecode()) {
+			logger::info(
+				"[LightLimitFix] PreNG DFLight vanilla shader bytecode capture active; set {}=0 to hold it after the targeted dump run",
+				kPreNGDFLightVanillaDumpEnv);
+		}
+		if (ShouldTracePreNGDFLightDrawState()) {
+			logger::info(
+				"[LightLimitFix] PreNG DFLight draw-state capture active; set {}=0 after the short targeted run",
+				kPreNGDFLightDrawStateEnv);
+		}
+		if (ShouldRunPreNGDFLightZeroAdditivePass()) {
+			logger::info(
+				"[LightLimitFix] PreNG DFLight zero-additive pass active; set {}=0 after the short targeted run",
+				kPreNGDFLightZeroAdditivePassEnv);
+		}
+		if (ShouldRunPreNGDFLightResourceNoOpPass()) {
+			logger::info(
+				"[LightLimitFix] PreNG DFLight resource no-op pass active; set {}=0 after the short targeted run",
+				kPreNGDFLightResourceNoOpPassEnv);
+		}
+		if (ShouldRunPreNGDFLightFullContractNoOpPass()) {
+			logger::info(
+				"[LightLimitFix] PreNG DFLight full contract no-op pass active; set {}=0 after the short targeted run",
+				kPreNGDFLightFullContractNoOpPassEnv);
+		}
+		if (ShouldRunPreNGDFLightLLFAdditivePass()) {
+			const auto drawLimit = GetPreNGDFLightLLFAdditivePassDrawBudget();
+			const auto frameBudget = GetPreNGDFLightLLFAdditivePassFrameBudget();
+			const auto scale1024 = GetPreNGDFLightLLFAdditiveScale1024();
+			const auto maxLights = GetPreNGDFLightLLFAdditiveMaxLights();
+			const bool persistent = ShouldPersistPreNGDFLightLLFAdditivePass();
+			logger::info(
+				"[LightLimitFix] PreNG DFLight LLF additive pass active drawBudget={} frameBudget={} scale1024={} maxLights={} persistent={} budgetEnv={} frameBudgetEnv={} scaleEnv={} maxLightsEnv={} persistentEnv={}; set {}=0 after the targeted run",
+				drawLimit,
+				frameBudget,
+				scale1024,
+				maxLights,
+				persistent ? "on" : "off",
+				kPreNGDFLightLLFAdditiveBudgetEnv,
+				kPreNGDFLightLLFAdditiveFrameBudgetEnv,
+				kPreNGDFLightLLFAdditiveScale1024Env,
+				kPreNGDFLightLLFAdditiveMaxLightsEnv,
+				kPreNGDFLightLLFAdditivePersistentEnv,
+				kPreNGDFLightLLFAdditivePassEnv);
+		}
 		if (ShouldEnableLightLimitFixPixelCandidateDiagnostics()) {
 			observedD3D11Device = a_device;
 			winrt::com_ptr<ID3D11DeviceContext> context;
@@ -1894,7 +3366,14 @@ namespace CommunityShaders::Hooks
 				logger::warn("[LightLimitFix] PreNG immediate context unavailable during draw diagnostics install");
 			}
 		} else {
-			logger::info("[LightLimitFix] PreNG support-only PS candidate diagnostics held; set FO4CS_TRACE_LLF_PS=1 to enable shader-path evidence gathering");
+			logger::info(
+				"[LightLimitFix] PreNG support-only PS candidate diagnostics held; set {}=1 for broad shader-path evidence, {}=1 for narrow DFLight draw-state evidence, {}=1 for zero-output DFLight additive pass proof, {}=1 for DFLight LLF-resource no-op pass proof, {}=1 for DFLight vanilla+LLF full-contract no-op pass proof, or {}=1 for DFLight LLF-only additive pass proof",
+				kTraceLLFPSEnv,
+				kPreNGDFLightDrawStateEnv,
+				kPreNGDFLightZeroAdditivePassEnv,
+				kPreNGDFLightResourceNoOpPassEnv,
+				kPreNGDFLightFullContractNoOpPassEnv,
+				kPreNGDFLightLLFAdditivePassEnv);
 		}
 #endif
 	}
@@ -1902,6 +3381,7 @@ namespace CommunityShaders::Hooks
 	void OnFrame()
 	{
 #if defined(FALLOUT_PRE_NG)
+		AdvancePreNGDFLightLLFAdditivePassFrame();
 		if (ShouldEnableLightLimitFixPixelCandidateDiagnostics()) {
 			if (!llfOnFrameLogged) {
 				llfOnFrameLogged = true;

@@ -1,15 +1,24 @@
 #include "Core/BSShaderHooks.h"
 #include "Core/CommunityShaders.h"
 #include "Core/Feature.h"
+#include "Core/Globals.h"
 #include "Core/ShaderCompiler.h"
 #include "Core/ShaderCache.h"
+#include "Features/LightLimitFix.h"
 
+#include <algorithm>
 #include <atomic>
+#include <charconv>
+#include <cctype>
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <mutex>
+#include <utility>
 #include <vector>
 #include <string>
+#include <string_view>
+#include <winrt/base.h>
 
 namespace CommunityShaders
 {
@@ -41,12 +50,28 @@ namespace CommunityShaders
 	static constexpr std::uintptr_t kPreNGCurrentDomainShaderEntryVA = 0x146732E20ull;
 	static constexpr std::uintptr_t kPreNGCurrentPixelShaderEntryVA = 0x146732E28ull;
 	static constexpr std::int32_t kPreNGBSLightingShaderType = 8;
+	static constexpr std::int32_t kPreNGDFLightingShaderType = 4;
+	static constexpr std::string_view kPreNGDFLightingFxpName = "dflight";
 	static constexpr std::size_t kPreNGMaxShaderLookupDiagnostics = 48;
+	static constexpr std::uint32_t kPreNGMaxShaderLookupHeavyDiagnostics = 16;
 	static constexpr std::size_t kPreNGMaxDescriptorMutationDiagnostics = 64;
 	static constexpr std::size_t kPreNGMaxDescriptorBindDiagnostics = 64;
+	static constexpr const char* kPreNGShaderLookupDiagEnv = "FO4CS_LLF_PRENG_SHADER_LOOKUP_DIAG";
 	static constexpr const char* kPreNGDescriptorMutateEnv = "FO4CS_LLF_PRENG_DESCRIPTOR_MUTATE";
+	static constexpr const char* kPreNGDescriptorCompileEnv = "FO4CS_LLF_PRENG_DESCRIPTOR_COMPILE";
 	static constexpr const char* kPreNGDescriptorBindEnv = "FO4CS_LLF_PRENG_DESCRIPTOR_BIND";
+	static constexpr const char* kPreNGDFLightFullShadowedBindEnv = "FO4CS_LLF_PRENG_DFLIGHT_FULL_SHADOWED_BIND";
+	static constexpr const char* kPreNGDFLightFullShadowedBindBudgetEnv = "FO4CS_LLF_PRENG_DFLIGHT_FULL_SHADOWED_BIND_BUDGET";
+	static constexpr const char* kPreNGDFLightVanillaDumpEnv = "FO4CS_LLF_PRENG_DFLIGHT_VANILLA_DUMP";
 	static constexpr std::size_t kPreNGMaxFxpFilenameLength = 96;
+	static constexpr std::uint32_t kPreNGDFLightFullShadowedPixelDesc920 = 0x09200202u;
+	static constexpr std::uint32_t kPreNGDFLightFullShadowedPixelDesc922 = 0x09220202u;
+	static constexpr std::uint32_t kPreNGDefaultDFLightFullShadowedCandidateBindBudget = 16;
+	static constexpr std::uint32_t kPreNGMinDFLightFullShadowedCandidateBindBudget = 1;
+	static constexpr std::uint32_t kPreNGMaxDFLightFullShadowedCandidateBindBudget = 2048;
+	static constexpr std::uint32_t kPreNGMaxDFLightFullShadowedCandidateBindLogs = 16;
+	static constexpr std::size_t kPreNGMaxDFLightVanillaDumpDiagnostics = 8;
+	static constexpr std::string_view kPreNGDFLightFullShadowedCandidateSource = "LightLimitFix\\DFLightFullShadowedPS.hlsl";
 #endif
 	static constexpr std::uint64_t kStableFrame = 5;
 
@@ -145,15 +170,6 @@ namespace CommunityShaders
 	bool ReadPreNGEnvironmentSwitch(const char* a_name)
 	{
 		char value[16]{};
-		SetLastError(ERROR_SUCCESS);
-		const auto length = GetEnvironmentVariableA(a_name, value, static_cast<DWORD>(sizeof(value)));
-		if (length > 0) {
-			return length < sizeof(value) && IsTruthyPreNGEnvironmentValue(value);
-		}
-		if (GetLastError() != ERROR_ENVVAR_NOT_FOUND) {
-			return false;
-		}
-
 		if (ReadPreNGRegistryEnvironmentValue(a_name, HKEY_CURRENT_USER, "Environment", value)) {
 			return IsTruthyPreNGEnvironmentValue(value);
 		}
@@ -166,7 +182,138 @@ namespace CommunityShaders
 			return IsTruthyPreNGEnvironmentValue(value);
 		}
 
+		SetLastError(ERROR_SUCCESS);
+		const auto length = GetEnvironmentVariableA(a_name, value, static_cast<DWORD>(sizeof(value)));
+		if (length > 0) {
+			return length < sizeof(value) && IsTruthyPreNGEnvironmentValue(value);
+		}
+		if (GetLastError() != ERROR_ENVVAR_NOT_FOUND) {
+			return false;
+		}
+
 		return false;
+	}
+
+	enum class PreNGEnvironmentValueSource
+	{
+		kNone,
+		kProcess,
+		kUserRegistry,
+		kMachineRegistry
+	};
+
+	struct PreNGEnvironmentUIntState
+	{
+		std::uint32_t value = 0;
+		PreNGEnvironmentValueSource source = PreNGEnvironmentValueSource::kNone;
+		bool present = false;
+		bool valid = false;
+	};
+
+	const char* PreNGEnvironmentValueSourceName(PreNGEnvironmentValueSource a_source)
+	{
+		switch (a_source) {
+		case PreNGEnvironmentValueSource::kProcess:
+			return "process";
+		case PreNGEnvironmentValueSource::kUserRegistry:
+			return "user-reg";
+		case PreNGEnvironmentValueSource::kMachineRegistry:
+			return "machine-reg";
+		default:
+			return "none";
+		}
+	}
+
+	bool ParsePreNGEnvironmentUIntValue(const char* a_value, std::uint32_t& a_result)
+	{
+		if (!a_value || *a_value == '\0') {
+			return false;
+		}
+
+		const char* end = a_value;
+		while (*end != '\0') {
+			++end;
+		}
+
+		const auto parsed = std::from_chars(a_value, end, a_result, 10);
+		return parsed.ec == std::errc{} && parsed.ptr == end;
+	}
+
+	PreNGEnvironmentUIntState MakePreNGEnvironmentUIntState(
+		const char* a_value,
+		PreNGEnvironmentValueSource a_source,
+		bool a_available)
+	{
+		PreNGEnvironmentUIntState state{};
+		state.source = a_source;
+		state.present = true;
+		if (!a_available) {
+			return state;
+		}
+
+		state.valid = ParsePreNGEnvironmentUIntValue(a_value, state.value);
+		return state;
+	}
+
+	PreNGEnvironmentUIntState ReadPreNGEnvironmentUInt(const char* a_name)
+	{
+		char value[16]{};
+		if (ReadPreNGRegistryEnvironmentValue(a_name, HKEY_CURRENT_USER, "Environment", value)) {
+			return MakePreNGEnvironmentUIntState(value, PreNGEnvironmentValueSource::kUserRegistry, true);
+		}
+
+		if (ReadPreNGRegistryEnvironmentValue(
+				a_name,
+				HKEY_LOCAL_MACHINE,
+				"SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment",
+				value)) {
+			return MakePreNGEnvironmentUIntState(value, PreNGEnvironmentValueSource::kMachineRegistry, true);
+		}
+
+		SetLastError(ERROR_SUCCESS);
+		const auto length = GetEnvironmentVariableA(a_name, value, static_cast<DWORD>(sizeof(value)));
+		if (length > 0) {
+			return MakePreNGEnvironmentUIntState(
+				value,
+				PreNGEnvironmentValueSource::kProcess,
+				length < sizeof(value));
+		}
+		if (GetLastError() != ERROR_ENVVAR_NOT_FOUND) {
+			return MakePreNGEnvironmentUIntState("", PreNGEnvironmentValueSource::kProcess, false);
+		}
+
+		return {};
+	}
+
+	std::uint32_t GetPreNGDFLightFullShadowedCandidateBindBudget()
+	{
+		static const std::uint32_t budget = [] {
+			const auto state = ReadPreNGEnvironmentUInt(kPreNGDFLightFullShadowedBindBudgetEnv);
+			auto resolved = kPreNGDefaultDFLightFullShadowedCandidateBindBudget;
+			auto clamped = false;
+			if (state.present && state.valid) {
+				const auto requested = state.value;
+				resolved = std::clamp(
+					requested,
+					kPreNGMinDFLightFullShadowedCandidateBindBudget,
+					kPreNGMaxDFLightFullShadowedCandidateBindBudget);
+				clamped = resolved != requested;
+			}
+
+			logger::info(
+				"[BSShaderHooks] PreNG DFLight full-shadowed candidate bind budget resolved {}={} source={} present={} valid={} clamped={} default={} range={}..{}",
+				kPreNGDFLightFullShadowedBindBudgetEnv,
+				resolved,
+				PreNGEnvironmentValueSourceName(state.source),
+				state.present,
+				state.valid,
+				clamped,
+				kPreNGDefaultDFLightFullShadowedCandidateBindBudget,
+				kPreNGMinDFLightFullShadowedCandidateBindBudget,
+				kPreNGMaxDFLightFullShadowedCandidateBindBudget);
+			return resolved;
+		}();
+		return budget;
 	}
 
 	bool ShouldBindPreNGDescriptorShaders()
@@ -178,6 +325,30 @@ namespace CommunityShaders
 	bool ShouldMutatePreNGDescriptorShaders()
 	{
 		static const bool enabled = ReadPreNGEnvironmentSwitch(kPreNGDescriptorMutateEnv);
+		return enabled;
+	}
+
+	bool ShouldEnablePreNGShaderLookupDiagnostic()
+	{
+		static const bool enabled = ReadPreNGEnvironmentSwitch(kPreNGShaderLookupDiagEnv);
+		return enabled;
+	}
+
+	bool ShouldCompilePreNGDescriptorShadersForDiagnostic()
+	{
+		static const bool enabled = ReadPreNGEnvironmentSwitch(kPreNGDescriptorCompileEnv);
+		return enabled;
+	}
+
+	bool ShouldBindPreNGDFLightFullShadowedCandidate()
+	{
+		static const bool enabled = ReadPreNGEnvironmentSwitch(kPreNGDFLightFullShadowedBindEnv);
+		return enabled;
+	}
+
+	bool ShouldDumpPreNGDFLightVanillaShader()
+	{
+		static const bool enabled = ReadPreNGEnvironmentSwitch(kPreNGDFLightVanillaDumpEnv);
 		return enabled;
 	}
 
@@ -247,6 +418,129 @@ namespace CommunityShaders
 		return result + "<truncated>";
 	}
 
+	std::string NormalizePreNGFxpFilename(std::string_view a_fxpFilename)
+	{
+		std::string normalized{ a_fxpFilename };
+		for (auto& ch : normalized) {
+			const auto byte = static_cast<unsigned char>(ch);
+			ch = byte == '\\' ? '/' : static_cast<char>(std::tolower(byte));
+		}
+		return normalized;
+	}
+
+	bool IsPreNGDFLightFxpName(std::string_view a_fxpFilename)
+	{
+		auto normalized = NormalizePreNGFxpFilename(a_fxpFilename);
+		if (normalized.empty() || normalized.front() == '<' || normalized.find('<') != std::string::npos) {
+			return false;
+		}
+
+		if (const auto slash = normalized.find_last_of('/'); slash != std::string::npos) {
+			normalized.erase(0, slash + 1);
+		}
+		for (const auto extension : { std::string_view{ ".hlsl" }, std::string_view{ ".fxp" }, std::string_view{ ".fx" } }) {
+			if (normalized.ends_with(extension)) {
+				normalized.resize(normalized.size() - extension.size());
+				break;
+			}
+		}
+
+		return normalized == kPreNGDFLightingFxpName;
+	}
+
+	bool IsPreNGLightingDescriptorShader(std::int32_t a_shaderType, std::string_view a_fxpFilename)
+	{
+		return a_shaderType == kPreNGBSLightingShaderType ||
+		       (a_shaderType == kPreNGDFLightingShaderType && IsPreNGDFLightFxpName(a_fxpFilename));
+	}
+
+	bool IsPreNGLightingDescriptorShader(const RE::BSShader* a_shader)
+	{
+		if (!a_shader) {
+			return false;
+		}
+
+		const auto fxpFilename = ReadPreNGCString(a_shader->fxpFilename, kPreNGMaxFxpFilenameLength);
+		return IsPreNGLightingDescriptorShader(static_cast<std::int32_t>(a_shader->shaderType), fxpFilename);
+	}
+
+	bool CanActivelyReplacePreNGLightingDescriptorShader(std::int32_t a_shaderType)
+	{
+		return a_shaderType == kPreNGBSLightingShaderType;
+	}
+
+	bool CanActivelyReplacePreNGLightingDescriptorShader(const RE::BSShader* a_shader)
+	{
+		return a_shader &&
+		       CanActivelyReplacePreNGLightingDescriptorShader(static_cast<std::int32_t>(a_shader->shaderType));
+	}
+
+	bool IsPreNGDFLightFullShadowedPixelDescriptor(std::uint32_t a_descriptor)
+	{
+		return a_descriptor == kPreNGDFLightFullShadowedPixelDesc920 ||
+		       a_descriptor == kPreNGDFLightFullShadowedPixelDesc922;
+	}
+
+	bool IsPreNGDFLightFullShadowedCandidateLookup(RE::BSShader* a_shader, std::int32_t a_pixelDescriptor)
+	{
+		if (!a_shader || a_shader->shaderType != kPreNGDFLightingShaderType) {
+			return false;
+		}
+
+		const auto fxpFilename = ReadPreNGCString(a_shader->fxpFilename, kPreNGMaxFxpFilenameLength);
+		return IsPreNGDFLightFxpName(fxpFilename) &&
+		       IsPreNGDFLightFullShadowedPixelDescriptor(static_cast<std::uint32_t>(a_pixelDescriptor));
+	}
+
+	struct PreNGDFLightFullShadowedCandidateState
+	{
+		bool attempted = false;
+		RE::BSGraphics::PixelShader entry{};
+		winrt::com_ptr<ID3D11PixelShader> shader;
+		std::vector<std::byte> bytecode;
+	};
+
+	struct PreNGDFLightVanillaDumpKey
+	{
+		std::uint32_t pixelDescriptor = 0;
+		std::uintptr_t pixelD3D = 0;
+	};
+
+	PreNGDFLightFullShadowedCandidateState s_preNGDFLightFullShadowedCandidate920;
+	PreNGDFLightFullShadowedCandidateState s_preNGDFLightFullShadowedCandidate922;
+	std::mutex s_preNGDFLightFullShadowedCandidateLock;
+	std::atomic_uint32_t s_preNGDFLightFullShadowedBindAttempts = 0;
+	std::atomic_uint32_t s_preNGDFLightFullShadowedBoundCount = 0;
+	std::atomic_bool s_preNGDFLightFullShadowedBindLimitLogged = false;
+	std::mutex s_preNGDFLightVanillaDumpLock;
+	std::vector<PreNGDFLightVanillaDumpKey> s_preNGDFLightVanillaDumpKeys;
+	std::atomic_uint32_t s_preNGDFLightVanillaDumpAttempts = 0;
+	std::atomic_bool s_preNGDFLightVanillaDumpLimitLogged = false;
+
+	PreNGDFLightFullShadowedCandidateState& GetPreNGDFLightFullShadowedCandidateState(std::uint32_t a_descriptor)
+	{
+		return a_descriptor == kPreNGDFLightFullShadowedPixelDesc920 ?
+			s_preNGDFLightFullShadowedCandidate920 :
+			s_preNGDFLightFullShadowedCandidate922;
+	}
+
+	bool ShouldDumpPreNGDFLightVanillaObject(std::uint32_t a_pixelDescriptor, std::uintptr_t a_pixelD3D)
+	{
+		std::scoped_lock lock(s_preNGDFLightVanillaDumpLock);
+		for (const auto& key : s_preNGDFLightVanillaDumpKeys) {
+			if (key.pixelDescriptor == a_pixelDescriptor && key.pixelD3D == a_pixelD3D) {
+				return false;
+			}
+		}
+
+		if (s_preNGDFLightVanillaDumpKeys.size() >= kPreNGMaxDFLightVanillaDumpDiagnostics) {
+			return false;
+		}
+
+		s_preNGDFLightVanillaDumpKeys.push_back({ a_pixelDescriptor, a_pixelD3D });
+		return true;
+	}
+
 	struct PreNGShaderLookupDiagnosticKey
 	{
 		std::int32_t shaderType = 0;
@@ -273,6 +567,35 @@ namespace CommunityShaders
 	std::atomic_uint32_t s_preNGBSShaderLookupLightingEntryCalls = 0;
 	std::atomic_uint32_t s_preNGBSShaderLookupNullEntryCalls = 0;
 	std::atomic_uint32_t s_preNGBSLightingShaderLookupCalls = 0;
+	std::atomic_bool s_preNGShaderLookupHeavyDiagnosticsComplete = false;
+	std::atomic_bool s_preNGShaderLookupHeavyDiagnosticsLogged = false;
+
+	bool ShouldBypassPreNGShaderLookupHeavyDiagnostics()
+	{
+		return s_preNGShaderLookupHeavyDiagnosticsComplete.load(std::memory_order_relaxed);
+	}
+
+	void MaybeCompletePreNGShaderLookupHeavyDiagnostics()
+	{
+		const auto lightingCalls = s_preNGBSLightingShaderLookupCalls.load(std::memory_order_relaxed);
+		if (lightingCalls < kPreNGMaxShaderLookupHeavyDiagnostics) {
+			return;
+		}
+
+		s_preNGShaderLookupHeavyDiagnosticsComplete.store(true, std::memory_order_relaxed);
+		if (!s_preNGShaderLookupHeavyDiagnosticsLogged.exchange(true, std::memory_order_relaxed)) {
+			std::size_t uniqueLookups = 0;
+			{
+				std::scoped_lock lock(s_preNGShaderLookupDiagnosticLock);
+				uniqueLookups = s_preNGShaderLookupDiagnosticKeys.size();
+			}
+			logger::info(
+				"[BSShaderHooks] PreNG shader lookup heavy diagnostic complete; bypassing hot-path metadata/audit work after lightingCalls={} uniqueLookups={} max={}; shader replacement remains held",
+				lightingCalls,
+				uniqueLookups,
+				kPreNGMaxShaderLookupHeavyDiagnostics);
+		}
+	}
 
 	bool IsPreNGPowerOfTwo(std::uint32_t a_value)
 	{
@@ -305,7 +628,8 @@ namespace CommunityShaders
 		const auto totalCalls = ++s_preNGBSShaderLookupEntryCalls;
 		const bool isNull = a_shader == nullptr;
 		const auto shaderType = isNull ? -1 : static_cast<std::int32_t>(a_shader->shaderType);
-		const bool isLighting = shaderType == kPreNGBSLightingShaderType;
+		const auto fxpFilename = isNull ? std::string("<null>") : ReadPreNGCString(a_shader->fxpFilename, kPreNGMaxFxpFilenameLength);
+		const bool isLighting = !isNull && IsPreNGLightingDescriptorShader(shaderType, fxpFilename);
 		const auto lightingCalls = isLighting ? ++s_preNGBSShaderLookupLightingEntryCalls : s_preNGBSShaderLookupLightingEntryCalls.load();
 		const auto nullCalls = isNull ? ++s_preNGBSShaderLookupNullEntryCalls : s_preNGBSShaderLookupNullEntryCalls.load();
 
@@ -313,7 +637,6 @@ namespace CommunityShaders
 			return;
 		}
 
-		const auto fxpFilename = isNull ? std::string("<null>") : ReadPreNGCString(a_shader->fxpFilename, kPreNGMaxFxpFilenameLength);
 		const bool mutated = a_originalVertexDescriptor != a_lookupVertexDescriptor ||
 		                     a_originalPixelDescriptor != a_lookupPixelDescriptor;
 
@@ -404,7 +727,7 @@ namespace CommunityShaders
 		const char* a_mutateState,
 		const char* a_reason)
 	{
-		if (!a_shader || a_shader->shaderType != kPreNGBSLightingShaderType) {
+		if (!IsPreNGLightingDescriptorShader(a_shader)) {
 			return;
 		}
 
@@ -486,7 +809,7 @@ namespace CommunityShaders
 		std::int32_t a_pixelDescriptor,
 		bool a_found)
 	{
-		if (!a_shader || a_shader->shaderType != kPreNGBSLightingShaderType) {
+		if (!IsPreNGLightingDescriptorShader(a_shader)) {
 			return;
 		}
 
@@ -543,6 +866,14 @@ namespace CommunityShaders
 			pixelD3D,
 			descriptorBridgeAvailable ? "available" : "missing",
 			descriptorCacheState);
+
+		globals::features::lightLimitFix.TracePreNGActiveLightingBindings(
+			"shader-lookup",
+			static_cast<std::int32_t>(a_shader->shaderType),
+			vertexDescriptor,
+			pixelDescriptor,
+			a_found,
+			pixelD3D);
 	}
 
 	void LogPreNGDescriptorBind(
@@ -558,7 +889,7 @@ namespace CommunityShaders
 		const char* a_bindState,
 		const char* a_reason)
 	{
-		if (!a_shader || a_shader->shaderType != kPreNGBSLightingShaderType) {
+		if (!IsPreNGLightingDescriptorShader(a_shader)) {
 			return;
 		}
 
@@ -599,6 +930,265 @@ namespace CommunityShaders
 			compileState,
 			a_bindState,
 			a_reason);
+	}
+
+	void DumpPreNGDFLightVanillaShader(
+		RE::BSShader* a_shader,
+		std::int32_t a_vertexDescriptor,
+		std::int32_t a_hullDescriptor,
+		std::int32_t a_domainDescriptor,
+		std::int32_t a_pixelDescriptor,
+		std::uint8_t a_lookupResult)
+	{
+		const auto attempt = ++s_preNGDFLightVanillaDumpAttempts;
+		const auto pixelDescriptor = static_cast<std::uint32_t>(a_pixelDescriptor);
+		const auto fxpFilename = a_shader ?
+			ReadPreNGCString(a_shader->fxpFilename, kPreNGMaxFxpFilenameLength) :
+			std::string("<null>");
+
+		auto logDump = [&](const char* a_state, const char* a_reason, std::uintptr_t a_pixelEntry, std::uintptr_t a_pixelD3D) {
+			const bool forceLog = std::strcmp(a_reason, "dump-limit-reached") == 0;
+			if (!forceLog && attempt > 16 && !IsPreNGPowerOfTwo(attempt)) {
+				return;
+			}
+
+			logger::info(
+				"[BSShaderHooks] PreNG DFLight vanilla shader dump attempts={} shaderType={} fxp={} vsDesc=0x{:X} hsDesc=0x{:X} dsDesc=0x{:X} psDesc=0x{:X} lookupResult={} currentPS=0x{:X} psD3D=0x{:X} dump={} reason={} maxDumps={}",
+				attempt,
+				a_shader ? static_cast<std::int32_t>(a_shader->shaderType) : -1,
+				fxpFilename,
+				static_cast<std::uint32_t>(a_vertexDescriptor),
+				static_cast<std::uint32_t>(a_hullDescriptor),
+				static_cast<std::uint32_t>(a_domainDescriptor),
+				pixelDescriptor,
+				a_lookupResult,
+				a_pixelEntry,
+				a_pixelD3D,
+				a_state,
+				a_reason,
+				kPreNGMaxDFLightVanillaDumpDiagnostics);
+		};
+
+		if (a_lookupResult == 0) {
+			logDump("failed", "vanilla-lookup-miss", 0, 0);
+			return;
+		}
+
+		const auto pixelEntry = ReadPreNGPointer(PreNGRuntimeAddress(kPreNGCurrentPixelShaderEntryVA));
+		const auto pixelD3D = ReadPreNGShaderEntryD3DObject(pixelEntry);
+		if (pixelEntry == 0 || pixelD3D == 0) {
+			logDump("failed", "current-ps-unavailable", pixelEntry, pixelD3D);
+			return;
+		}
+
+		if (!ShouldDumpPreNGDFLightVanillaObject(pixelDescriptor, pixelD3D)) {
+			bool dumpLimitReached = false;
+			{
+				std::scoped_lock lock(s_preNGDFLightVanillaDumpLock);
+				dumpLimitReached = s_preNGDFLightVanillaDumpKeys.size() >= kPreNGMaxDFLightVanillaDumpDiagnostics;
+			}
+			if (dumpLimitReached && !s_preNGDFLightVanillaDumpLimitLogged.exchange(true, std::memory_order_relaxed)) {
+				logDump("held", "dump-limit-reached", pixelEntry, pixelD3D);
+			}
+			return;
+		}
+
+		const auto label = std::format(
+			"DFLightFullShadowed_PS0x{:08X}_VS0x{:08X}",
+			pixelDescriptor,
+			static_cast<std::uint32_t>(a_vertexDescriptor));
+		const auto dumped = ShaderCache::GetSingleton()->DumpObservedD3DShaderObject(ShaderStage::Pixel, pixelD3D, label);
+		logDump(dumped ? "dumped" : "failed", dumped ? "targeted-vanilla-dump-written" : "bytecode-not-observed", pixelEntry, pixelD3D);
+	}
+
+	RE::BSGraphics::PixelShader* GetPreNGDFLightFullShadowedCandidatePixelShader(std::uint32_t a_descriptor)
+	{
+		std::scoped_lock lock(s_preNGDFLightFullShadowedCandidateLock);
+		auto& state = GetPreNGDFLightFullShadowedCandidateState(a_descriptor);
+		if (state.shader && state.entry.shader) {
+			return std::addressof(state.entry);
+		}
+		if (state.attempted) {
+			return nullptr;
+		}
+		state.attempted = true;
+
+		auto* device = Runtime::GetSingleton()->GetDevice();
+		if (!device) {
+			logger::warn(
+				"[BSShaderHooks] PreNG DFLight full-shadowed candidate PS create failed descriptor=0x{:X} source={} reason=device-unavailable",
+				a_descriptor,
+				kPreNGDFLightFullShadowedCandidateSource);
+			return nullptr;
+		}
+
+		std::vector<std::pair<std::string, std::string>> defineStorage;
+		for (auto* feature : Feature::GetFeatureList()) {
+			if (!feature || !feature->loaded) {
+				continue;
+			}
+			auto name = feature->GetShaderDefineName();
+			if (!name.empty()) {
+				defineStorage.emplace_back(std::move(name), "1");
+			}
+		}
+		defineStorage.emplace_back("FO4CS_DFLIGHT_FULL_SHADOWED_CANDIDATE", "1");
+
+		std::vector<D3D_SHADER_MACRO> defines;
+		defines.reserve(defineStorage.size() + 1);
+		for (auto& [name, value] : defineStorage) {
+			defines.push_back({ name.c_str(), value.c_str() });
+		}
+		defines.push_back({});
+
+		auto bytecode = ShaderCompiler::GetSingleton()->CompileFromFile(
+			kPreNGDFLightFullShadowedCandidateSource,
+			"ps_5_0",
+			defines.data(),
+			"main");
+		if (!bytecode) {
+			logger::warn(
+				"[BSShaderHooks] PreNG DFLight full-shadowed candidate PS create failed descriptor=0x{:X} source={} reason=compile-failed",
+				a_descriptor,
+				kPreNGDFLightFullShadowedCandidateSource);
+			return nullptr;
+		}
+
+		ID3D11PixelShader* shader = nullptr;
+		const auto hr = device->CreatePixelShader(bytecode->data(), bytecode->size(), nullptr, &shader);
+		if (FAILED(hr) || !shader) {
+			logger::warn(
+				"[BSShaderHooks] PreNG DFLight full-shadowed candidate PS create failed descriptor=0x{:X} source={} bytecode={} hr=0x{:08X} reason=CreatePixelShader-failed",
+				a_descriptor,
+				kPreNGDFLightFullShadowedCandidateSource,
+				bytecode->size(),
+				static_cast<std::uint32_t>(hr));
+			return nullptr;
+		}
+
+		state.shader.attach(shader);
+		state.bytecode = std::move(*bytecode);
+		state.entry.id = a_descriptor;
+		state.entry.shader = state.shader.get();
+
+		auto* shaderCache = ShaderCache::GetSingleton();
+		const auto metadata = shaderCache->GetMetadataForBytecode(
+			ShaderStage::Pixel,
+			state.bytecode.data(),
+			state.bytecode.size());
+		if (metadata) {
+			shaderCache->ObserveD3DShaderObject(ShaderStage::Pixel, reinterpret_cast<std::uintptr_t>(state.shader.get()), *metadata);
+		}
+
+		logger::info(
+			"[BSShaderHooks] PreNG DFLight full-shadowed candidate PS created descriptor=0x{:X} source={} bytecode={} psD3D=0x{:X} metadata={} asm=0x{:08X} hash=0x{:08X}; replacement=narrow bind=held",
+			a_descriptor,
+			kPreNGDFLightFullShadowedCandidateSource,
+			state.bytecode.size(),
+			reinterpret_cast<std::uintptr_t>(state.shader.get()),
+			metadata ? metadata->uid : "<none>",
+			metadata ? metadata->asmHash : 0,
+			metadata ? metadata->hash : 0);
+
+		return std::addressof(state.entry);
+	}
+
+	bool TryBindPreNGDFLightFullShadowedCandidate(
+		RE::BSShader* a_shader,
+		std::int32_t a_vertexDescriptor,
+		std::int32_t a_hullDescriptor,
+		std::int32_t a_domainDescriptor,
+		std::int32_t a_pixelDescriptor,
+		std::uint8_t a_lookupResult)
+	{
+		const auto attempt = ++s_preNGDFLightFullShadowedBindAttempts;
+		const auto bindBudget = GetPreNGDFLightFullShadowedCandidateBindBudget();
+		const bool shouldLog = attempt <= kPreNGMaxDFLightFullShadowedCandidateBindLogs || IsPreNGPowerOfTwo(attempt);
+		const auto pixelDescriptor = static_cast<std::uint32_t>(a_pixelDescriptor);
+		const auto fxpFilename = a_shader ?
+			ReadPreNGCString(a_shader->fxpFilename, kPreNGMaxFxpFilenameLength) :
+			std::string("<null>");
+
+		auto logBind = [&](const char* a_state, const char* a_reason, RE::BSGraphics::PixelShader* a_pixelShader, std::uintptr_t a_pixelD3D, std::uint32_t a_bindIndex) {
+			const bool forceLog = std::strcmp(a_reason, "proof-bind-limit-reached") == 0;
+			if (!shouldLog && !forceLog) {
+				return;
+			}
+			logger::info(
+				"[BSShaderHooks] PreNG DFLight full-shadowed candidate bind attempts={} binds={} shaderType={} fxp={} vsDesc=0x{:X} hsDesc=0x{:X} dsDesc=0x{:X} psDesc=0x{:X} psEntry=0x{:X} psD3D=0x{:X} lookupResult={} customBind={} reason={} maxProofBinds={}",
+				attempt,
+				a_bindIndex,
+				a_shader ? static_cast<std::int32_t>(a_shader->shaderType) : -1,
+				fxpFilename,
+				static_cast<std::uint32_t>(a_vertexDescriptor),
+				static_cast<std::uint32_t>(a_hullDescriptor),
+				static_cast<std::uint32_t>(a_domainDescriptor),
+				pixelDescriptor,
+				reinterpret_cast<std::uintptr_t>(a_pixelShader),
+				a_pixelD3D,
+				a_lookupResult,
+				a_state,
+				a_reason,
+				bindBudget);
+		};
+
+		if (a_lookupResult == 0) {
+			logBind("failed", "vanilla-lookup-miss", nullptr, 0, s_preNGDFLightFullShadowedBoundCount.load(std::memory_order_relaxed));
+			return false;
+		}
+
+		const auto bindIndex = s_preNGDFLightFullShadowedBoundCount.fetch_add(1, std::memory_order_relaxed) + 1;
+		if (bindIndex > bindBudget) {
+			if (!s_preNGDFLightFullShadowedBindLimitLogged.exchange(true, std::memory_order_relaxed)) {
+				logBind("held", "proof-bind-limit-reached", nullptr, 0, bindIndex - 1);
+			}
+			return false;
+		}
+
+		auto* pixelShader = GetPreNGDFLightFullShadowedCandidatePixelShader(pixelDescriptor);
+		const auto pixelD3D = pixelShader && pixelShader->shader ? reinterpret_cast<std::uintptr_t>(pixelShader->shader) : 0;
+		if (!pixelShader || !pixelD3D) {
+			logBind("failed", "candidate-ps-unavailable", pixelShader, pixelD3D, bindIndex);
+			return false;
+		}
+
+		const auto vertexEntry = ReadPreNGPointer(PreNGRuntimeAddress(kPreNGCurrentVertexShaderEntryVA));
+		const auto hullEntry = ReadPreNGPointer(PreNGRuntimeAddress(kPreNGCurrentHullShaderEntryVA));
+		const auto domainEntry = ReadPreNGPointer(PreNGRuntimeAddress(kPreNGCurrentDomainShaderEntryVA));
+		if (vertexEntry == 0) {
+			logBind("failed", "current-vs-entry-unavailable", pixelShader, pixelD3D, bindIndex);
+			return false;
+		}
+
+		const auto bindAddr = PreNGRuntimeAddress(kPreNGBindShadersVA);
+		const auto pixelGlobal = PreNGRuntimeAddress(kPreNGCurrentPixelShaderEntryVA);
+		if (!IsReadableMemory(bindAddr, 16) || !IsWritableMemory(pixelGlobal, sizeof(std::uintptr_t))) {
+			logBind("failed", "bind-helper-or-pixel-global-unavailable", pixelShader, pixelD3D, bindIndex);
+			return false;
+		}
+
+		const auto pixelEntry = reinterpret_cast<std::uintptr_t>(pixelShader);
+		if (!WritePreNGValue(pixelGlobal, pixelEntry)) {
+			logBind("failed", "pixel-global-write-failed", pixelShader, pixelD3D, bindIndex);
+			return false;
+		}
+
+		using PreNGBindShadersFn = void* (*)(std::uintptr_t, std::uintptr_t, std::uintptr_t, std::uintptr_t, std::uintptr_t);
+		auto bindShaders = reinterpret_cast<PreNGBindShadersFn>(bindAddr);
+		bindShaders(PreNGRuntimeAddress(kPreNGRendererStateVA), vertexEntry, hullEntry, domainEntry, pixelEntry);
+		logBind("bound", "full-shadowed-candidate-bound", pixelShader, pixelD3D, bindIndex);
+
+		if (shouldLog && globals::features::lightLimitFix.loaded) {
+			globals::features::lightLimitFix.TracePreNGActiveLightingBindings(
+				"dflight-full-shadowed-candidate-bind",
+				a_shader ? static_cast<std::int32_t>(a_shader->shaderType) : -1,
+				static_cast<std::uint32_t>(a_vertexDescriptor),
+				pixelDescriptor,
+				true,
+				pixelD3D);
+		}
+
+		return true;
 	}
 
 	bool TryBindPreNGDescriptorShaders(
@@ -713,25 +1303,51 @@ namespace CommunityShaders
 			if (!func) {
 				return 0;
 			}
+			const bool shaderLookupDiagnosticActive =
+				ShouldEnablePreNGShaderLookupDiagnostic() &&
+				!ShouldBypassPreNGShaderLookupHeavyDiagnostics();
+			const bool dflightFullShadowedCandidate =
+				ShouldBindPreNGDFLightFullShadowedCandidate() &&
+				IsPreNGDFLightFullShadowedCandidateLookup(a_shader, a_pixelDescriptor);
+			const bool dflightVanillaDump =
+				ShouldDumpPreNGDFLightVanillaShader() &&
+				IsPreNGDFLightFullShadowedCandidateLookup(a_shader, a_pixelDescriptor);
+			if (!shaderLookupDiagnosticActive && !dflightFullShadowedCandidate && !dflightVanillaDump) {
+				return func(a_shader, a_vertexDescriptor, a_hullDescriptor, a_domainDescriptor, a_pixelDescriptor);
+			}
 
 			auto lookupVertexDescriptor = a_vertexDescriptor;
 			auto lookupPixelDescriptor = a_pixelDescriptor;
-			if (a_shader && a_shader->shaderType == kPreNGBSLightingShaderType) {
+			const bool isLightingDescriptor = IsPreNGLightingDescriptorShader(a_shader);
+			const bool canActivelyReplaceDescriptor =
+				shaderLookupDiagnosticActive && CanActivelyReplacePreNGLightingDescriptorShader(a_shader);
+			if (shaderLookupDiagnosticActive && isLightingDescriptor) {
 				if (ShouldMutatePreNGDescriptorShaders()) {
-					lookupVertexDescriptor = static_cast<std::int32_t>(
-						NormalizePreNGLightingVertexDescriptor(static_cast<std::uint32_t>(a_vertexDescriptor)));
-					lookupPixelDescriptor = static_cast<std::int32_t>(
-						NormalizePreNGLightingPixelDescriptor(static_cast<std::uint32_t>(a_pixelDescriptor)));
-					const auto changed = lookupVertexDescriptor != a_vertexDescriptor ||
-					                     lookupPixelDescriptor != a_pixelDescriptor;
-					LogPreNGDescriptorMutation(
-						a_shader,
-						a_vertexDescriptor,
-						a_pixelDescriptor,
-						lookupVertexDescriptor,
-						lookupPixelDescriptor,
-						"applied",
-						changed ? "fo4-lighting-normalized" : "fo4-lighting-normalized-unchanged");
+					if (canActivelyReplaceDescriptor) {
+						lookupVertexDescriptor = static_cast<std::int32_t>(
+							NormalizePreNGLightingVertexDescriptor(static_cast<std::uint32_t>(a_vertexDescriptor)));
+						lookupPixelDescriptor = static_cast<std::int32_t>(
+							NormalizePreNGLightingPixelDescriptor(static_cast<std::uint32_t>(a_pixelDescriptor)));
+						const auto changed = lookupVertexDescriptor != a_vertexDescriptor ||
+						                     lookupPixelDescriptor != a_pixelDescriptor;
+						LogPreNGDescriptorMutation(
+							a_shader,
+							a_vertexDescriptor,
+							a_pixelDescriptor,
+							lookupVertexDescriptor,
+							lookupPixelDescriptor,
+							"applied",
+							changed ? "fo4-lighting-normalized" : "fo4-lighting-normalized-unchanged");
+					} else {
+						LogPreNGDescriptorMutation(
+							a_shader,
+							a_vertexDescriptor,
+							a_pixelDescriptor,
+							lookupVertexDescriptor,
+							lookupPixelDescriptor,
+							"held",
+							"active-descriptor-path-held");
+					}
 				} else {
 					LogPreNGDescriptorMutation(
 						a_shader,
@@ -750,23 +1366,47 @@ namespace CommunityShaders
 				a_hullDescriptor,
 				a_domainDescriptor,
 				lookupPixelDescriptor);
-			TracePreNGShaderLookupEntry(
-				a_shader,
-				a_vertexDescriptor,
-				a_hullDescriptor,
-				a_domainDescriptor,
-				a_pixelDescriptor,
-				lookupVertexDescriptor,
-				lookupPixelDescriptor,
-				result != 0);
-			TracePreNGShaderLookup(
-				a_shader,
-				lookupVertexDescriptor,
-				a_hullDescriptor,
-				a_domainDescriptor,
-				lookupPixelDescriptor,
-				result != 0);
-			if (result != 0 || !a_shader || a_shader->shaderType != kPreNGBSLightingShaderType) {
+			if (shaderLookupDiagnosticActive) {
+				TracePreNGShaderLookupEntry(
+					a_shader,
+					a_vertexDescriptor,
+					a_hullDescriptor,
+					a_domainDescriptor,
+					a_pixelDescriptor,
+					lookupVertexDescriptor,
+					lookupPixelDescriptor,
+					result != 0);
+				TracePreNGShaderLookup(
+					a_shader,
+					lookupVertexDescriptor,
+					a_hullDescriptor,
+					a_domainDescriptor,
+					lookupPixelDescriptor,
+					result != 0);
+				MaybeCompletePreNGShaderLookupHeavyDiagnostics();
+			}
+			if (dflightVanillaDump) {
+				DumpPreNGDFLightVanillaShader(
+					a_shader,
+					lookupVertexDescriptor,
+					a_hullDescriptor,
+					a_domainDescriptor,
+					lookupPixelDescriptor,
+					result);
+			}
+			if (dflightFullShadowedCandidate) {
+				TryBindPreNGDFLightFullShadowedCandidate(
+					a_shader,
+					lookupVertexDescriptor,
+					a_hullDescriptor,
+					a_domainDescriptor,
+					lookupPixelDescriptor,
+					result);
+			}
+			if (!shaderLookupDiagnosticActive) {
+				return result;
+			}
+			if (result != 0 || !canActivelyReplaceDescriptor) {
 				return result;
 			}
 
@@ -805,14 +1445,23 @@ namespace CommunityShaders
 		}
 
 		const auto thunk = reinterpret_cast<std::uintptr_t>(PreNGBSShaderLookup::thunk);
+		const auto original = reinterpret_cast<std::uintptr_t>(PreNGBSShaderLookup::func);
+		const bool branchTargetReadable = branchTarget != 0 && IsReadableMemory(branchTarget, 16);
+		const bool directThunk = branchTarget == thunk;
+		const bool detoursTrampoline = original != 0 && branchTargetReadable && branchTarget != thunk;
+		const bool patchVerified = directThunk || detoursTrampoline;
 		logger::info(
-			"[BSShaderHooks] PreNG shader lookup detour patch check lookup=0x{:X} readable={} opcode=0x{:02X} branchTarget=0x{:X} thunk=0x{:X} patchVerified={}",
+			"[BSShaderHooks] PreNG shader lookup detour patch check lookup=0x{:X} readable={} opcode=0x{:02X} branchTarget=0x{:X} thunk=0x{:X} patchVerified={} branchTargetReadable={} directThunk={} detoursTrampoline={} original=0x{:X}",
 			a_lookupAddr,
 			readable,
 			opcode,
 			branchTarget,
 			thunk,
-			branchTarget == thunk);
+			patchVerified,
+			branchTargetReadable,
+			directThunk,
+			detoursTrampoline,
+			original);
 	}
 #endif
 
@@ -937,7 +1586,7 @@ namespace CommunityShaders
 	                        std::uint32_t& a_pixelDescriptor)
 	{
 #if defined(FALLOUT_PRE_NG)
-		if (a_shader.shaderType != kPreNGBSLightingShaderType || !ShouldMutatePreNGDescriptorShaders()) {
+		if (!CanActivelyReplacePreNGLightingDescriptorShader(&a_shader) || !ShouldMutatePreNGDescriptorShaders()) {
 			return;
 		}
 
@@ -983,19 +1632,34 @@ namespace CommunityShaders
 		             kStableFrame);
 
 #if defined(FALLOUT_PRE_NG)
-		if (preNGShaderPathValid) {
+		const bool preNGShaderLookupDiagEnabled = ShouldEnablePreNGShaderLookupDiagnostic();
+		const bool preNGDFLightFullShadowedBindEnabled = ShouldBindPreNGDFLightFullShadowedCandidate();
+		const bool preNGDFLightVanillaDumpEnabled = ShouldDumpPreNGDFLightVanillaShader();
+		if (preNGShaderPathValid && (preNGShaderLookupDiagEnabled || preNGDFLightFullShadowedBindEnabled || preNGDFLightVanillaDumpEnabled)) {
 			const auto lookupAddr = PreNGRuntimeAddress(kPreNGBSShaderLookupVA);
 			PreNGBSShaderLookup::func = reinterpret_cast<decltype(PreNGBSShaderLookup::func)>(
 				Detours::X64::DetourFunction(
 					lookupAddr,
 					reinterpret_cast<std::uintptr_t>(PreNGBSShaderLookup::thunk)));
 			logger::info(
-				"[BSShaderHooks] Detoured PreNG shader lookup diagnostic/bind at 0x{:X}; original=0x{:X}; shader replacement remains held",
+				"[BSShaderHooks] Detoured PreNG shader lookup diagnostic/bind/dump at 0x{:X}; original=0x{:X}; lookupDiag={} dflightFullShadowedBind={} dflightVanillaDump={} shader replacement remains held except narrow DFLight proof gate",
 				lookupAddr,
-				reinterpret_cast<std::uintptr_t>(PreNGBSShaderLookup::func));
+				reinterpret_cast<std::uintptr_t>(PreNGBSShaderLookup::func),
+				preNGShaderLookupDiagEnabled,
+				preNGDFLightFullShadowedBindEnabled,
+				preNGDFLightVanillaDumpEnabled);
 			LogPreNGShaderLookupDetourPatch(lookupAddr);
-		} else {
+		} else if (!preNGShaderPathValid) {
 			logger::warn("[BSShaderHooks] PreNG shader lookup diagnostic skipped; active shader path validation failed");
+		} else {
+			logger::info(
+				"[BSShaderHooks] PreNG shader lookup diagnostic held; set {}=1 to enable descriptor path tracing/bind diagnostics, {}=1 for the narrow DFLight full-shadowed candidate bind proof, or {}=1 for vanilla DFLight shader dump; mutateGate={} compileGate={} bindGate={}; shader replacement remains held",
+				kPreNGShaderLookupDiagEnv,
+				kPreNGDFLightFullShadowedBindEnv,
+				kPreNGDFLightVanillaDumpEnv,
+				ShouldMutatePreNGDescriptorShaders() ? "on" : "off",
+				ShouldCompilePreNGDescriptorShadersForDiagnostic() ? "on" : "off",
+				ShouldBindPreNGDescriptorShaders() ? "on" : "off");
 		}
 #endif
 	}

@@ -56,6 +56,17 @@ namespace CommunityShaders
 		bool ReadDescriptorCompileSwitch()
 		{
 			char value[16]{};
+			if (ReadDescriptorCompileRegistryValue(HKEY_CURRENT_USER, "Environment", value)) {
+				return IsTruthyDescriptorEnvironmentValue(value);
+			}
+
+			if (ReadDescriptorCompileRegistryValue(
+					HKEY_LOCAL_MACHINE,
+					"SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment",
+					value)) {
+				return IsTruthyDescriptorEnvironmentValue(value);
+			}
+
 			SetLastError(ERROR_SUCCESS);
 			const auto length = GetEnvironmentVariableA(
 				kDescriptorCompileEnv,
@@ -66,17 +77,6 @@ namespace CommunityShaders
 			}
 			if (GetLastError() != ERROR_ENVVAR_NOT_FOUND) {
 				return false;
-			}
-
-			if (ReadDescriptorCompileRegistryValue(HKEY_CURRENT_USER, "Environment", value)) {
-				return IsTruthyDescriptorEnvironmentValue(value);
-			}
-
-			if (ReadDescriptorCompileRegistryValue(
-					HKEY_LOCAL_MACHINE,
-					"SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment",
-					value)) {
-				return IsTruthyDescriptorEnvironmentValue(value);
 			}
 
 			return false;
@@ -94,6 +94,11 @@ namespace CommunityShaders
 		{
 			return a_value.size() >= a_prefix.size() &&
 			       a_value.substr(0, a_prefix.size()) == a_prefix;
+		}
+
+		bool CanActivelyCompilePreNGLightingDescriptorShader(std::int32_t a_shaderType)
+		{
+			return a_shaderType == kPreNGBSLightingShaderType;
 		}
 
 		std::string BuildFeatureDefineList(const std::vector<D3D_SHADER_MACRO>& a_defines)
@@ -472,7 +477,7 @@ namespace CommunityShaders
 			return nullptr;
 		}
 
-		if (a_shader.shaderType != kPreNGBSLightingShaderType) {
+		if (!CanActivelyCompilePreNGLightingDescriptorShader(a_shader.shaderType)) {
 			LogDescriptorCompileEvent(stage, a_shader, a_descriptor, "MakeAndAddVertexShader", "skipped", "unsupported-shaderType");
 			return nullptr;
 		}
@@ -568,7 +573,7 @@ namespace CommunityShaders
 			return nullptr;
 		}
 
-		if (a_shader.shaderType != kPreNGBSLightingShaderType) {
+		if (!CanActivelyCompilePreNGLightingDescriptorShader(a_shader.shaderType)) {
 			LogDescriptorCompileEvent(stage, a_shader, a_descriptor, "MakeAndAddPixelShader", "skipped", "unsupported-shaderType");
 			return nullptr;
 		}
@@ -724,6 +729,128 @@ namespace CommunityShaders
 			bytecodeToMetadata[bytecodeHash] = metadata;
 		}
 		return metadata;
+	}
+
+	void ShaderCache::ObserveD3DShaderObject(ShaderStage a_stage, std::uintptr_t a_d3dObject, const ShaderMetadata& a_metadata)
+	{
+		if (a_d3dObject == 0) {
+			return;
+		}
+
+		std::scoped_lock lock(observedLock);
+		d3dShaderObjectToMetadata.insert_or_assign(D3DShaderObjectKey{ a_stage, a_d3dObject }, a_metadata);
+	}
+
+	void ShaderCache::ObserveD3DShaderObjectBytecode(ShaderStage a_stage, std::uintptr_t a_d3dObject, const ShaderMetadata& a_metadata, const void* a_bytecode, SIZE_T a_bytecodeLength)
+	{
+		if (a_d3dObject == 0 || !a_bytecode || a_bytecodeLength == 0) {
+			return;
+		}
+
+		const auto bytes = std::span{ static_cast<const std::byte*>(a_bytecode), a_bytecodeLength };
+		D3DShaderObjectBytecode observed;
+		observed.metadata = a_metadata;
+		observed.bytecodeHash = HashShaderBytecode(a_bytecode, a_bytecodeLength);
+		observed.bytecode.assign(bytes.begin(), bytes.end());
+
+		std::scoped_lock lock(observedLock);
+		const D3DShaderObjectKey key{ a_stage, a_d3dObject };
+		d3dShaderObjectToMetadata.insert_or_assign(key, a_metadata);
+		d3dShaderObjectToBytecode.insert_or_assign(key, std::move(observed));
+	}
+
+	std::optional<ShaderCache::ShaderMetadata> ShaderCache::GetMetadataForD3DShaderObject(ShaderStage a_stage, std::uintptr_t a_d3dObject)
+	{
+		if (a_d3dObject == 0) {
+			return std::nullopt;
+		}
+
+		std::scoped_lock lock(observedLock);
+		if (auto it = d3dShaderObjectToMetadata.find(D3DShaderObjectKey{ a_stage, a_d3dObject }); it != d3dShaderObjectToMetadata.end()) {
+			return it->second;
+		}
+
+		return std::nullopt;
+	}
+
+	bool ShaderCache::DumpObservedD3DShaderObject(ShaderStage a_stage, std::uintptr_t a_d3dObject, std::string_view a_label)
+	{
+		if (a_d3dObject == 0) {
+			return false;
+		}
+
+		D3DShaderObjectBytecode observed;
+		const std::string label{ a_label };
+		{
+			std::scoped_lock lock(observedLock);
+			const D3DShaderObjectKey objectKey{ a_stage, a_d3dObject };
+			const auto it = d3dShaderObjectToBytecode.find(objectKey);
+			if (it == d3dShaderObjectToBytecode.end()) {
+				return false;
+			}
+
+			const auto dumpKey = std::format("{}:{:X}:{}", GetStageName(a_stage), a_d3dObject, label.empty() ? it->second.metadata.uid : label);
+			if (!dumpedD3DShaderObjectKeys.insert(dumpKey).second) {
+				return true;
+			}
+
+			observed = it->second;
+		}
+
+		const auto dumpDirectory = GetDumpDirectory() / "LightLimitFix" / "DFLight" / GetStageName(a_stage);
+		std::error_code ec;
+		std::filesystem::create_directories(dumpDirectory, ec);
+		if (ec) {
+			logger::warn("[CommunityShaders] Failed to create targeted shader dump directory {}: {}", dumpDirectory.string(), ec.message());
+			return false;
+		}
+
+		const auto stem = label.empty() ?
+			observed.metadata.uid :
+			std::format("{}_{}", label, observed.metadata.uid);
+		const auto binPath = dumpDirectory / std::format("{}.bin", stem);
+		std::ofstream bin{ binPath, std::ios::binary };
+		bin.write(reinterpret_cast<const char*>(observed.bytecode.data()), static_cast<std::streamsize>(observed.bytecode.size()));
+
+		winrt::com_ptr<ID3DBlob> disassembly;
+		if (SUCCEEDED(D3DDisassemble(observed.bytecode.data(), observed.bytecode.size(), 0, nullptr, disassembly.put()))) {
+			const auto disassemblyText = std::string_view{
+				static_cast<const char*>(disassembly->GetBufferPointer()),
+				disassembly->GetBufferSize()
+			};
+			const auto asmPath = dumpDirectory / std::format("{}.asm", stem);
+			std::ofstream asmFile{ asmPath, std::ios::binary };
+			asmFile.write(disassemblyText.data(), static_cast<std::streamsize>(disassemblyText.size()));
+		} else {
+			logger::warn("[CommunityShaders] Failed to disassemble targeted {} shader {}", GetStageName(a_stage), observed.bytecodeHash);
+		}
+
+		WriteMetadataFiles(dumpDirectory, a_stage, observed.metadata);
+
+		const auto capturePath = dumpDirectory / std::format("{}.capture.txt", stem);
+		std::ofstream captureFile{ capturePath };
+		captureFile << "[targetedShaderDump]\n";
+		captureFile << "label=" << stem << "\n";
+		captureFile << std::format("d3dObject=0x{:X}\n", a_d3dObject);
+		captureFile << "stage=" << GetStageName(a_stage) << "\n";
+		captureFile << "bytecodeHash=" << observed.bytecodeHash << "\n";
+		captureFile << "shaderUID=" << observed.metadata.uid << "\n";
+		captureFile << std::format("hash=0x{:08X}\n", observed.metadata.hash);
+		captureFile << std::format("asmHash=0x{:08X}\n", observed.metadata.asmHash);
+		captureFile << "bytecodeSize=" << observed.bytecode.size() << "\n";
+		captureFile << "[/targetedShaderDump]\n";
+
+		logger::info(
+			"[CommunityShaders] Targeted observed {} shader dumped label={} d3dObject=0x{:X} uid={} hash={} asm=0x{:08X} size={} path={}",
+			GetStageName(a_stage),
+			stem,
+			a_d3dObject,
+			observed.metadata.uid,
+			observed.bytecodeHash,
+			observed.metadata.asmHash,
+			observed.bytecode.size(),
+			dumpDirectory.string());
+		return true;
 	}
 
 	void ShaderCache::TraceShaderCreation(ShaderStage a_stage, SIZE_T a_len, std::string_view a_hash)

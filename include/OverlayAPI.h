@@ -37,7 +37,9 @@ struct OverlayPanelCallbacks {
 	// Return non-zero if any setting was modified (triggers save reminder).
 	int (*render)(void* userData);
 
-	// Persist current settings to INI file.
+	// Persist current settings to INI file. The host appends a per-panel
+	// "Save Settings" button when this is set; aggregate panels that render
+	// their own "Save All Settings" button must leave this null.
 	void (*save)(void* userData);
 
 	// Optional: called when the overlay menu opens.
