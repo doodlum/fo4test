@@ -9,6 +9,7 @@
 #include <vector>
 
 #include <d3dcompiler.h>
+#include <RE/FO4Runtime.h>
 
 #include "DX12SwapChain.h"
 #include "DirectXMath.h"
@@ -1516,20 +1517,22 @@ void Upscaling::InstallHooks()
 		InstallUpscalerRenderBackendHooks();
 
 #if defined(FALLOUT_POST_NG)
-	stl::detour_thunk<WindowSizeChanged>(REL::ID(2276824));
-	stl::write_thunk_call<SetUseDynamicResolutionViewportAsDefaultViewport>(REL::ID(2318322).address() + 0xC5);
-	stl::detour_thunk<DrawWorld_Forward>(REL::ID(2318315));
-	stl::write_thunk_call<DrawWorld_Reticle>(REL::ID(2318315).address() + 0x53D);
+	namespace F4Hooks = RE::FO4Runtime::PostNG::Hooks;
+	stl::detour_thunk<WindowSizeChanged>(F4Hooks::UPSCALER_WINDOW_SIZE_CHANGED);
+	stl::write_thunk_call<SetUseDynamicResolutionViewportAsDefaultViewport>(F4Hooks::UPSCALER_SET_DEFAULT_VIEWPORT_CALL.address());
+	stl::detour_thunk<DrawWorld_Forward>(F4Hooks::UPSCALER_DRAW_WORLD_FORWARD);
+	stl::write_thunk_call<DrawWorld_Reticle>(F4Hooks::UPSCALER_DRAW_WORLD_RETICLE_CALL.address());
 #else
+	namespace F4Hooks = RE::FO4Runtime::PreNG::Hooks;
 	// Fix game initialising twice
-	stl::detour_thunk<WindowSizeChanged>(REL::ID(212827));
+	stl::detour_thunk<WindowSizeChanged>(F4Hooks::UPSCALER_WINDOW_SIZE_CHANGED);
 
 	// Watch frame presentation
-	stl::write_thunk_call<SetUseDynamicResolutionViewportAsDefaultViewport>(REL::ID(587723).address() + 0xE1);
+	stl::write_thunk_call<SetUseDynamicResolutionViewportAsDefaultViewport>(F4Hooks::UPSCALER_SET_DEFAULT_VIEWPORT_CALL.address());
 
 	// Fix reticles on motion vectors and depth
-	stl::detour_thunk<DrawWorld_Forward>(REL::ID(656535));
-	stl::write_thunk_call<DrawWorld_Reticle>(REL::ID(338205).address() + 0x253);
+	stl::detour_thunk<DrawWorld_Forward>(F4Hooks::UPSCALER_DRAW_WORLD_FORWARD);
+	stl::write_thunk_call<DrawWorld_Reticle>(F4Hooks::UPSCALER_DRAW_WORLD_RETICLE_CALL.address());
 #endif
 
 	logger::debug("[Upscaler] Installed hooks");

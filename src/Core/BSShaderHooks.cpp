@@ -19,6 +19,7 @@
 #include <string>
 #include <string_view>
 #include <winrt/base.h>
+#include <RE/FO4Runtime.h>
 
 namespace CommunityShaders
 {
@@ -33,24 +34,11 @@ namespace CommunityShaders
 	//   calls, we enqueue the BSShader* and drain the queue once per
 	//   frame when the device is ready (≥ kStableFrame frames).
 	//
-	// PreNG shader-path offsets (verified via FO4 1.10.163 static analysis):
-	//   BSLightingShader vtable      @ 0x14309AAB8
-	//   SetupTechnique vfunc 0x02    @ 0x14289CEC0
-	//   Descriptor shader lookup     @ 0x142891DB0
-	//   Unified VS/PS bind helper    @ 0x141D10400
+	// PreNG shader-path runtime API lives in RE::FO4Runtime::PreNG.
 #if defined(FALLOUT_PRE_NG)
-	static constexpr std::uintptr_t kPreNGStaticImageBase = 0x140000000ull;
-	static constexpr std::uintptr_t kPreNGBSLightingShaderVTableVA = 0x14309AAB8ull;
-	static constexpr std::uintptr_t kPreNGBSLightingShaderSetupTechniqueVA = 0x14289CEC0ull;
-	static constexpr std::uintptr_t kPreNGBSShaderLookupVA = 0x142891DB0ull;
-	static constexpr std::uintptr_t kPreNGBindShadersVA = 0x141D10400ull;
-	static constexpr std::uintptr_t kPreNGRendererStateVA = 0x1461E0900ull;
-	static constexpr std::uintptr_t kPreNGCurrentVertexShaderEntryVA = 0x146732E10ull;
-	static constexpr std::uintptr_t kPreNGCurrentHullShaderEntryVA = 0x146732E18ull;
-	static constexpr std::uintptr_t kPreNGCurrentDomainShaderEntryVA = 0x146732E20ull;
-	static constexpr std::uintptr_t kPreNGCurrentPixelShaderEntryVA = 0x146732E28ull;
-	static constexpr std::int32_t kPreNGBSLightingShaderType = 8;
-	static constexpr std::int32_t kPreNGDFLightingShaderType = 4;
+	namespace F4Runtime = RE::FO4Runtime;
+	static constexpr std::int32_t kPreNGBSLightingShaderType = static_cast<std::int32_t>(F4Runtime::PreNG::BS_LIGHTING_SHADER_TYPE);
+	static constexpr std::int32_t kPreNGDFLightingShaderType = static_cast<std::int32_t>(F4Runtime::PreNG::DF_LIGHTING_SHADER_TYPE);
 	static constexpr std::string_view kPreNGDFLightingFxpName = "dflight";
 	static constexpr std::size_t kPreNGMaxShaderLookupDiagnostics = 48;
 	static constexpr std::uint32_t kPreNGMaxShaderLookupHeavyDiagnostics = 16;
@@ -66,7 +54,7 @@ namespace CommunityShaders
 	static constexpr std::size_t kPreNGMaxFxpFilenameLength = 96;
 	static constexpr std::uint32_t kPreNGDFLightFullShadowedPixelDesc920 = 0x09200202u;
 	static constexpr std::uint32_t kPreNGDFLightFullShadowedPixelDesc922 = 0x09220202u;
-	static constexpr std::uint32_t kPreNGDefaultDFLightFullShadowedCandidateBindBudget = 16;
+	static constexpr std::uint32_t kPreNGDefaultDFLightFullShadowedCandidateBindBudget = 1;
 	static constexpr std::uint32_t kPreNGMinDFLightFullShadowedCandidateBindBudget = 1;
 	static constexpr std::uint32_t kPreNGMaxDFLightFullShadowedCandidateBindBudget = 2048;
 	static constexpr std::uint32_t kPreNGMaxDFLightFullShadowedCandidateBindLogs = 16;
@@ -81,61 +69,20 @@ namespace CommunityShaders
 	static ID3D11PixelShader* CompileReplacementPS(
 		ID3D11Device*, const RE::BSShader&, std::uint32_t);
 #if defined(FALLOUT_PRE_NG)
-	std::uintptr_t PreNGRuntimeAddress(std::uintptr_t a_staticVA)
-	{
-		return static_cast<std::uintptr_t>(REL::Module::get().base()) + (a_staticVA - kPreNGStaticImageBase);
-	}
-
 	bool IsReadableMemory(std::uintptr_t a_address, std::size_t a_size)
 	{
-		MEMORY_BASIC_INFORMATION mbi{};
-		if (VirtualQuery(reinterpret_cast<const void*>(a_address), &mbi, sizeof(mbi)) == 0) {
-			return false;
-		}
-
-		const auto regionBegin = reinterpret_cast<std::uintptr_t>(mbi.BaseAddress);
-		const auto regionEnd = regionBegin + mbi.RegionSize;
-		const auto readEnd = a_address + a_size;
-		if (readEnd < a_address || mbi.State != MEM_COMMIT || a_address < regionBegin || readEnd > regionEnd) {
-			return false;
-		}
-
-		return (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) == 0;
+		return F4Runtime::IsReadableAddress(a_address, a_size);
 	}
 
 	bool IsWritableMemory(std::uintptr_t a_address, std::size_t a_size)
 	{
-		MEMORY_BASIC_INFORMATION mbi{};
-		if (VirtualQuery(reinterpret_cast<const void*>(a_address), &mbi, sizeof(mbi)) == 0) {
-			return false;
-		}
-
-		const auto regionBegin = reinterpret_cast<std::uintptr_t>(mbi.BaseAddress);
-		const auto regionEnd = regionBegin + mbi.RegionSize;
-		const auto writeEnd = a_address + a_size;
-		if (writeEnd < a_address || mbi.State != MEM_COMMIT || a_address < regionBegin || writeEnd > regionEnd) {
-			return false;
-		}
-		if ((mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) != 0) {
-			return false;
-		}
-
-		const auto protect = mbi.Protect & 0xFF;
-		return protect == PAGE_READWRITE ||
-		       protect == PAGE_WRITECOPY ||
-		       protect == PAGE_EXECUTE_READWRITE ||
-		       protect == PAGE_EXECUTE_WRITECOPY;
+		return F4Runtime::IsWritableAddress(a_address, a_size);
 	}
 
 	template <class T>
 	bool WritePreNGValue(std::uintptr_t a_address, const T& a_value)
 	{
-		if (!IsWritableMemory(a_address, sizeof(T))) {
-			return false;
-		}
-
-		std::memcpy(reinterpret_cast<void*>(a_address), &a_value, sizeof(T));
-		return true;
+		return F4Runtime::WriteValue(a_address, a_value);
 	}
 
 	bool IsTruthyPreNGEnvironmentValue(const char* a_value)
@@ -354,42 +301,28 @@ namespace CommunityShaders
 
 	std::uint32_t NormalizePreNGLightingVertexDescriptor(std::uint32_t a_descriptor)
 	{
-		return a_descriptor & 0x3F0F;
+		return F4Runtime::PreNG::NormalizeLightingVertexDescriptor(a_descriptor);
 	}
 
 	std::uint32_t NormalizePreNGLightingPixelDescriptor(std::uint32_t a_descriptor)
 	{
-		if ((a_descriptor & 4u) == 0) {
-			a_descriptor &= ~2u;
-		}
-		return a_descriptor | 1u;
+		return F4Runtime::PreNG::NormalizeLightingPixelDescriptor(a_descriptor);
 	}
 
 	template <class T>
 	bool ReadPreNGValue(std::uintptr_t a_address, T& a_value)
 	{
-		if (!IsReadableMemory(a_address, sizeof(T))) {
-			return false;
-		}
-
-		std::memcpy(&a_value, reinterpret_cast<const void*>(a_address), sizeof(T));
-		return true;
+		return F4Runtime::ReadValue(a_address, a_value);
 	}
 
 	std::uintptr_t ReadPreNGPointer(std::uintptr_t a_address)
 	{
-		std::uintptr_t value = 0;
-		ReadPreNGValue(a_address, value);
-		return value;
+		return F4Runtime::ReadPointer(a_address);
 	}
 
 	std::uintptr_t ReadPreNGShaderEntryD3DObject(std::uintptr_t a_entry)
 	{
-		if (a_entry == 0) {
-			return 0;
-		}
-
-		return ReadPreNGPointer(a_entry + 0x8);
+		return F4Runtime::ReadPreNGShaderEntryD3DObject(a_entry);
 	}
 
 	std::string ReadPreNGCString(const char* a_value, std::size_t a_maxLength)
@@ -826,10 +759,10 @@ namespace CommunityShaders
 			return;
 		}
 
-		const auto vertexEntry = ReadPreNGPointer(PreNGRuntimeAddress(kPreNGCurrentVertexShaderEntryVA));
-		const auto hullEntry = ReadPreNGPointer(PreNGRuntimeAddress(kPreNGCurrentHullShaderEntryVA));
-		const auto domainEntry = ReadPreNGPointer(PreNGRuntimeAddress(kPreNGCurrentDomainShaderEntryVA));
-		const auto pixelEntry = ReadPreNGPointer(PreNGRuntimeAddress(kPreNGCurrentPixelShaderEntryVA));
+		const auto vertexEntry = ReadPreNGPointer(F4Runtime::PreNG::CURRENT_VERTEX_SHADER_ENTRY.address());
+		const auto hullEntry = ReadPreNGPointer(F4Runtime::PreNG::CURRENT_HULL_SHADER_ENTRY.address());
+		const auto domainEntry = ReadPreNGPointer(F4Runtime::PreNG::CURRENT_DOMAIN_SHADER_ENTRY.address());
+		const auto pixelEntry = ReadPreNGPointer(F4Runtime::PreNG::CURRENT_PIXEL_SHADER_ENTRY.address());
 		const auto vertexD3D = ReadPreNGShaderEntryD3DObject(vertexEntry);
 		const auto pixelD3D = ReadPreNGShaderEntryD3DObject(pixelEntry);
 		const auto vertexDescriptor = static_cast<std::uint32_t>(a_vertexDescriptor);
@@ -974,7 +907,7 @@ namespace CommunityShaders
 			return;
 		}
 
-		const auto pixelEntry = ReadPreNGPointer(PreNGRuntimeAddress(kPreNGCurrentPixelShaderEntryVA));
+		const auto pixelEntry = ReadPreNGPointer(F4Runtime::PreNG::CURRENT_PIXEL_SHADER_ENTRY.address());
 		const auto pixelD3D = ReadPreNGShaderEntryD3DObject(pixelEntry);
 		if (pixelEntry == 0 || pixelD3D == 0) {
 			logDump("failed", "current-ps-unavailable", pixelEntry, pixelD3D);
@@ -1152,16 +1085,16 @@ namespace CommunityShaders
 			return false;
 		}
 
-		const auto vertexEntry = ReadPreNGPointer(PreNGRuntimeAddress(kPreNGCurrentVertexShaderEntryVA));
-		const auto hullEntry = ReadPreNGPointer(PreNGRuntimeAddress(kPreNGCurrentHullShaderEntryVA));
-		const auto domainEntry = ReadPreNGPointer(PreNGRuntimeAddress(kPreNGCurrentDomainShaderEntryVA));
+		const auto vertexEntry = ReadPreNGPointer(F4Runtime::PreNG::CURRENT_VERTEX_SHADER_ENTRY.address());
+		const auto hullEntry = ReadPreNGPointer(F4Runtime::PreNG::CURRENT_HULL_SHADER_ENTRY.address());
+		const auto domainEntry = ReadPreNGPointer(F4Runtime::PreNG::CURRENT_DOMAIN_SHADER_ENTRY.address());
 		if (vertexEntry == 0) {
 			logBind("failed", "current-vs-entry-unavailable", pixelShader, pixelD3D, bindIndex);
 			return false;
 		}
 
-		const auto bindAddr = PreNGRuntimeAddress(kPreNGBindShadersVA);
-		const auto pixelGlobal = PreNGRuntimeAddress(kPreNGCurrentPixelShaderEntryVA);
+		const auto bindAddr = F4Runtime::PreNG::BIND_SHADERS.address();
+		const auto pixelGlobal = F4Runtime::PreNG::CURRENT_PIXEL_SHADER_ENTRY.address();
 		if (!IsReadableMemory(bindAddr, 16) || !IsWritableMemory(pixelGlobal, sizeof(std::uintptr_t))) {
 			logBind("failed", "bind-helper-or-pixel-global-unavailable", pixelShader, pixelD3D, bindIndex);
 			return false;
@@ -1175,7 +1108,7 @@ namespace CommunityShaders
 
 		using PreNGBindShadersFn = void* (*)(std::uintptr_t, std::uintptr_t, std::uintptr_t, std::uintptr_t, std::uintptr_t);
 		auto bindShaders = reinterpret_cast<PreNGBindShadersFn>(bindAddr);
-		bindShaders(PreNGRuntimeAddress(kPreNGRendererStateVA), vertexEntry, hullEntry, domainEntry, pixelEntry);
+		bindShaders(F4Runtime::PreNG::RENDERER_STATE.address(), vertexEntry, hullEntry, domainEntry, pixelEntry);
 		logBind("bound", "full-shadowed-candidate-bound", pixelShader, pixelD3D, bindIndex);
 
 		if (shouldLog && globals::features::lightLimitFix.loaded) {
@@ -1200,8 +1133,8 @@ namespace CommunityShaders
 		RE::BSGraphics::VertexShader* a_vertexShader,
 		RE::BSGraphics::PixelShader* a_pixelShader)
 	{
-		const auto hullEntry = ReadPreNGPointer(PreNGRuntimeAddress(kPreNGCurrentHullShaderEntryVA));
-		const auto domainEntry = ReadPreNGPointer(PreNGRuntimeAddress(kPreNGCurrentDomainShaderEntryVA));
+		const auto hullEntry = ReadPreNGPointer(F4Runtime::PreNG::CURRENT_HULL_SHADER_ENTRY.address());
+		const auto domainEntry = ReadPreNGPointer(F4Runtime::PreNG::CURRENT_DOMAIN_SHADER_ENTRY.address());
 
 		if (!ShouldBindPreNGDescriptorShaders()) {
 			LogPreNGDescriptorBind(
@@ -1232,14 +1165,14 @@ namespace CommunityShaders
 			return false;
 		}
 
-		const auto bindAddr = PreNGRuntimeAddress(kPreNGBindShadersVA);
+		const auto bindAddr = F4Runtime::PreNG::BIND_SHADERS.address();
 		if (!IsReadableMemory(bindAddr, 16)) {
 			LogPreNGDescriptorBind(a_shader, a_vertexDescriptor, a_hullDescriptor, a_domainDescriptor, a_pixelDescriptor, a_vertexShader, a_pixelShader, hullEntry, domainEntry, "failed", "bind-helper-unreadable");
 			return false;
 		}
 
-		const auto vertexGlobal = PreNGRuntimeAddress(kPreNGCurrentVertexShaderEntryVA);
-		const auto pixelGlobal = PreNGRuntimeAddress(kPreNGCurrentPixelShaderEntryVA);
+		const auto vertexGlobal = F4Runtime::PreNG::CURRENT_VERTEX_SHADER_ENTRY.address();
+		const auto pixelGlobal = F4Runtime::PreNG::CURRENT_PIXEL_SHADER_ENTRY.address();
 		if (!IsWritableMemory(vertexGlobal, sizeof(std::uintptr_t)) || !IsWritableMemory(pixelGlobal, sizeof(std::uintptr_t))) {
 			LogPreNGDescriptorBind(a_shader, a_vertexDescriptor, a_hullDescriptor, a_domainDescriptor, a_pixelDescriptor, a_vertexShader, a_pixelShader, hullEntry, domainEntry, "failed", "shader-global-unwritable");
 			return false;
@@ -1254,16 +1187,16 @@ namespace CommunityShaders
 
 		using PreNGBindShadersFn = void* (*)(std::uintptr_t, std::uintptr_t, std::uintptr_t, std::uintptr_t, std::uintptr_t);
 		auto bindShaders = reinterpret_cast<PreNGBindShadersFn>(bindAddr);
-		bindShaders(PreNGRuntimeAddress(kPreNGRendererStateVA), vertexEntry, hullEntry, domainEntry, pixelEntry);
+		bindShaders(F4Runtime::PreNG::RENDERER_STATE.address(), vertexEntry, hullEntry, domainEntry, pixelEntry);
 		LogPreNGDescriptorBind(a_shader, a_vertexDescriptor, a_hullDescriptor, a_domainDescriptor, a_pixelDescriptor, a_vertexShader, a_pixelShader, hullEntry, domainEntry, "bound", "owned-entry-bound");
 		return true;
 	}
 
 	bool ValidatePreNGShaderPath(std::uintptr_t a_imageBase, std::uintptr_t a_vtableAddr)
 	{
-		const auto setupTechnique = PreNGRuntimeAddress(kPreNGBSLightingShaderSetupTechniqueVA);
-		const auto shaderLookup = PreNGRuntimeAddress(kPreNGBSShaderLookupVA);
-		const auto bindShaders = PreNGRuntimeAddress(kPreNGBindShadersVA);
+		const auto setupTechnique = F4Runtime::PreNG::BS_LIGHTING_SHADER_SETUP_TECHNIQUE.address();
+		const auto shaderLookup = F4Runtime::PreNG::BS_SHADER_LOOKUP.address();
+		const auto bindShaders = F4Runtime::PreNG::BIND_SHADERS.address();
 		const bool vtableReadable = IsReadableMemory(a_vtableAddr + (0x02 * sizeof(std::uintptr_t)), sizeof(std::uintptr_t));
 		const bool setupReadable = IsReadableMemory(setupTechnique, 16);
 		const bool lookupReadable = IsReadableMemory(shaderLookup, 16);
@@ -1603,14 +1536,10 @@ namespace CommunityShaders
 
 	void BSShaderHooks::Install()
 	{
-#if defined(FALLOUT_POST_AE)
-		auto imageBase = REX::FModule::GetExecutingModule().GetBaseAddress();
-#else
-		auto imageBase = REL::Module::get().base();
-#endif
+		const auto imageBase = RE::FO4Runtime::ModuleBase();
 
 #if defined(FALLOUT_PRE_NG)
-		const auto vtableAddr = PreNGRuntimeAddress(kPreNGBSLightingShaderVTableVA);
+		const auto vtableAddr = F4Runtime::PreNG::BS_LIGHTING_SHADER_VTABLE.address();
 		const bool preNGShaderPathValid = ValidatePreNGShaderPath(imageBase, vtableAddr);
 #else
 		auto vtableReloc = REL::Relocation<std::uintptr_t>(
@@ -1636,7 +1565,7 @@ namespace CommunityShaders
 		const bool preNGDFLightFullShadowedBindEnabled = ShouldBindPreNGDFLightFullShadowedCandidate();
 		const bool preNGDFLightVanillaDumpEnabled = ShouldDumpPreNGDFLightVanillaShader();
 		if (preNGShaderPathValid && (preNGShaderLookupDiagEnabled || preNGDFLightFullShadowedBindEnabled || preNGDFLightVanillaDumpEnabled)) {
-			const auto lookupAddr = PreNGRuntimeAddress(kPreNGBSShaderLookupVA);
+			const auto lookupAddr = F4Runtime::PreNG::BS_SHADER_LOOKUP.address();
 			PreNGBSShaderLookup::func = reinterpret_cast<decltype(PreNGBSShaderLookup::func)>(
 				Detours::X64::DetourFunction(
 					lookupAddr,

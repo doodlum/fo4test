@@ -4,7 +4,11 @@
 #include "Core/Feature.h"
 #include "Core/ShaderCompiler.h"
 #include "Core/State.h"
+#if defined(FALLOUT_POST_AE)
+#include "RE/B/BSShader.h"
+#else
 #include "RE/Bethesda/BSShader.h"
+#endif
 
 #include <d3dcompiler.h>
 
@@ -23,6 +27,28 @@ namespace CommunityShaders
 	{
 		constexpr const char* kDescriptorCompileEnv = "FO4CS_LLF_PRENG_DESCRIPTOR_COMPILE";
 		constexpr std::int32_t kPreNGBSLightingShaderType = 8;
+
+#if defined(FALLOUT_POST_NG)
+		REX::W32::ID3D11VertexShader* ToREVertexShader(ID3D11VertexShader* a_shader)
+		{
+			return reinterpret_cast<REX::W32::ID3D11VertexShader*>(a_shader);
+		}
+
+		REX::W32::ID3D11PixelShader* ToREPixelShader(ID3D11PixelShader* a_shader)
+		{
+			return reinterpret_cast<REX::W32::ID3D11PixelShader*>(a_shader);
+		}
+#else
+		ID3D11VertexShader* ToREVertexShader(ID3D11VertexShader* a_shader)
+		{
+			return a_shader;
+		}
+
+		ID3D11PixelShader* ToREPixelShader(ID3D11PixelShader* a_shader)
+		{
+			return a_shader;
+		}
+#endif
 
 		bool IsTruthyDescriptorEnvironmentValue(const char* a_value)
 		{
@@ -539,7 +565,7 @@ namespace CommunityShaders
 		owned->d3dShader.attach(shader);
 		owned->bytecode = std::move(*bytecode);
 		owned->entry.id = a_descriptor;
-		owned->entry.shader = owned->d3dShader.get();
+		owned->entry.shader = ToREVertexShader(owned->d3dShader.get());
 		owned->entry.byteCodeSize = static_cast<std::uint32_t>(owned->bytecode.size());
 		owned->entry.shaderDesc = a_descriptor;
 
@@ -635,7 +661,7 @@ namespace CommunityShaders
 		owned->d3dShader.attach(shader);
 		owned->bytecode = std::move(*bytecode);
 		owned->entry.id = a_descriptor;
-		owned->entry.shader = owned->d3dShader.get();
+		owned->entry.shader = ToREPixelShader(owned->d3dShader.get());
 
 		RE::BSGraphics::PixelShader* entry = nullptr;
 		std::size_t bytecodeSize = 0;

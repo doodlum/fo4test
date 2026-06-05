@@ -1,7 +1,11 @@
 #pragma once
 
 #include <d3d11.h>
+#if defined(FALLOUT_POST_AE)
+#include "RE/B/BSGraphics.h"
+#else
 #include "RE/Bethesda/BSGraphics.h"
+#endif
 #include <atomic>
 #include <cstdint>
 #include <memory>

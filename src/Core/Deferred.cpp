@@ -6,6 +6,7 @@
 #include "Core/Feature.h"
 #include "Core/ShaderCache.h"
 #include "Core/State.h"
+#include <RE/FO4Runtime.h>
 
 #include <filesystem>
 #include <fstream>
@@ -336,18 +337,15 @@ void Deferred::Hooks::Install()
 		return;
 	}
 #if defined(FALLOUT_POST_NG)
-	// PostNG / PostAE REL::ID namespace (~2.27M - 2.32M range).
+	namespace F4Hooks = RE::FO4Runtime::PostNG::Hooks;
+
 	// Each REL::ID is pre-validated via HasRELID() before the detour call.
 	// Missing IDs are logged and skipped rather than crashing the process.
 
 	int installed = 0, skipped = 0;
-	for (auto [name, id] : {
-		std::pair{"Main_RenderWorld", 2318315ull},
-		std::pair{"Main_RenderShadowMaps", 2318298ull},
-		std::pair{"Main_RenderWorld_Start", 2318312ull},
-		std::pair{"Main_RenderWorld_BlendedDecals", 2318306ull},
-		std::pair{"Renderer_ResetState", 2276833ull},
-	}) {
+	for (const auto& hook : F4Hooks::DEFERRED_PIPELINE) {
+		const auto name = hook.name;
+		const auto id = hook.id.id();
 		if (!GetRELOffset(id).has_value()) {
 			logger::warn("[Deferred] REL::ID({}) not in address library — skipping {} hook", id, name);
 			skipped++;
@@ -358,37 +356,27 @@ void Deferred::Hooks::Install()
 	}
 
 	if (installed > 0) {
-		stl::detour_thunk<Main_RenderWorld>(REL::ID(2318315));
-		stl::detour_thunk<Main_RenderShadowMaps>(REL::ID(2318298));
-		stl::detour_thunk<Main_RenderWorld_Start>(REL::ID(2318312));
-		stl::detour_thunk<Main_RenderWorld_BlendedDecals>(REL::ID(2318306));
-		stl::detour_thunk<Renderer_ResetState>(REL::ID(2276833));
+		stl::detour_thunk<Main_RenderWorld>(F4Hooks::DEFERRED_MAIN_RENDER_WORLD);
+		stl::detour_thunk<Main_RenderShadowMaps>(F4Hooks::DEFERRED_MAIN_RENDER_SHADOW_MAPS);
+		stl::detour_thunk<Main_RenderWorld_Start>(F4Hooks::DEFERRED_MAIN_RENDER_WORLD_START);
+		stl::detour_thunk<Main_RenderWorld_BlendedDecals>(F4Hooks::DEFERRED_MAIN_RENDER_WORLD_BLENDED_DECALS);
+		stl::detour_thunk<Renderer_ResetState>(F4Hooks::DEFERRED_RENDERER_RESET_STATE);
 	} else {
 		logger::warn("[Deferred] No pipeline hooks installed ({} IDs missing from address library)", skipped);
 	}
 
 #else
+		namespace F4Hooks = RE::FO4Runtime::PreNG::Hooks;
+
 		// PreNG (1.10.163) — REL::ID offsets resolved from version-1-10-163-0.bin.
 		// Uses GetRELOffset() + detour_thunk_at() to bypass F4SE runtime ID resolution,
 		// which returns incorrect addresses for PreNG (different ID→RVA mapping internally).
-		//
-		// Verified .bin offsets (2026-05-09):
-		//   Main_RenderShadowMaps:        ID 620025  → base+0x2850B1B
-		//   Main_RenderWorld_Start:       ID 1108521 → base+0x28529B0
-		//   Main_RenderWorld_BlendedDecals: ID 465756  → base+0x2851BBC
-		//   Renderer_ResetState:          ID 153957  → base+0x1EB7BA0
-		//   Main_RenderWorld:             ID 656535  → base+0x2856B70 (disabled: conflicts with PreUI_Forward)
-		//
-		auto base = REL::Module::get().base();
+		const auto base = RE::FO4Runtime::ModuleBase();
 		int installed = 0, skipped = 0;
 
-		struct HookEntry { const char* name; std::uint64_t id; };
-		for (auto [name, id] : {
-			HookEntry{"Main_RenderShadowMaps", 620025},
-			HookEntry{"Main_RenderWorld_Start", 1108521},
-			HookEntry{"Main_RenderWorld_BlendedDecals", 465756},
-			HookEntry{"Renderer_ResetState", 153957},
-		}) {
+		for (const auto& hook : F4Hooks::DEFERRED_PIPELINE) {
+			const auto name = hook.name;
+			const auto id = hook.id.id();
 			auto rva = GetRELOffset(id);
 			if (!rva) {
 				logger::warn("[Deferred] PreNG REL::ID({}) not in .bin — skipping {}", id, name);
@@ -405,21 +393,18 @@ void Deferred::Hooks::Install()
 				// Scans +/-128 bytes around each target RVA for 0xE8 (CALL) opcodes.
 				// Logs exact CALL addresses for future write_thunk_call hooks.
 				logger::info("[Deferred] --- CALL scanner (target area) ---");
-				for (auto [name, rva_val] : {
-					std::pair{"ShadowMaps", 0x2850B1Bull},
-					std::pair{"BlendedDecals", 0x2851BBCull},
-					std::pair{"World_Start", 0x28529B0ull},
-					std::pair{"ResetState", 0x1EB7BA0ull},
-				}) {
+				for (const auto& target : F4Hooks::DEFERRED_SCAN_TARGETS) {
+					const auto name = target.name;
+					const auto rva_val = target.location.rva;
 					logger::info("[Deferred]   {} (@+0x{:X}):", name, rva_val);
 					for (int off = -512; off <= 512; off++) {
 						auto ptr = reinterpret_cast<const uint8_t*>(base + rva_val + off);
 						if (*ptr == 0xE8 || *ptr == 0xE9) {
 							int32_t rel = *reinterpret_cast<const int32_t*>(ptr + 1);
-							auto target = base + rva_val + off + 5 + rel;
+							auto jumpTarget = base + rva_val + off + 5 + rel;
 							const char* kind = (*ptr == 0xE8) ? "CALL" : "JMP ";
 							logger::info("[Deferred]       +{: 4d} | 0x{:X} -> {} 0x{:X}",
-								off, base + rva_val + off, kind, target);
+								off, base + rva_val + off, kind, jumpTarget);
 						}
 					}
 				}

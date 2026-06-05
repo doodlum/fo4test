@@ -15,13 +15,15 @@
 // FO4 Adaptation Notes (vs Skyrim CS):
 //   - BSShader::SetupGeometry is at vfunc index 7 (FO4 added SetupMaterialSecondary)
 //   - FO4 uses BSShaderManager::ShaderEnum (kLighting=8, kEffect=0, kWater=0xA)
-//   - PreNG static export validates BSLightingShader::SetupGeometry as
-//     sub_14289DD10(this, pass); the vanilla point-light writer is called at
-//     sub_14289DD10+0x3AF (0x14289E0BF) and targets sub_14289F550.
+//   - PreNG SetupGeometry/point-light callsite addresses and layout offsets live
+//     behind RE::FO4Runtime typed runtime accessors in CommonLibF4.
 //   - Skyrim LLF binds clustered SRVs from Prepass and uses the internal
-//     point-light setup call path for strict-light CB data. FO4 still needs the
-//     equivalent guarded internal-call hook before PreNG SetupGeometry hooks can
-//     be enabled.
+//     point-light setup call path for strict-light CB data. FO4 PreNG keeps
+//     SetupGeometry evidence behind an explicit runtime gate until the integrated
+//     shader consumer is ready.
+//   - DFLight no-op/additive passes are proof tools only. The implementation
+//     direction is a vanilla-equivalent shader consumer in the normal lighting
+//     path, not an extra additive DFLight refresh pass.
 
 struct LightLimitFix : Feature
 {
@@ -216,6 +218,10 @@ struct LightLimitFix : Feature
 		std::uint32_t strictLightCount = 0;
 		std::uint32_t shadowBitMask = 0;
 	};
+	PreNGDFLightResourceBindingState BindPreNGDFLightDrawStateStrictLightCB(ID3D11DeviceContext* a_context);
+	PreNGDFLightResourceBindingState BindPreNGDFLightDrawStateClusterSRVs(
+		ID3D11DeviceContext* a_context,
+		bool a_strictCBBound);
 	PreNGDFLightResourceBindingState BindPreNGDFLightResourceNoOpPass(ID3D11DeviceContext* a_context);
 	PreNGDFLightResourceBindingState BindPreNGDFLightFullContractNoOpPass(ID3D11DeviceContext* a_context);
 	PreNGDFLightResourceBindingState BindPreNGDFLightLLFAdditivePass(ID3D11DeviceContext* a_context);
@@ -225,7 +231,8 @@ struct LightLimitFix : Feature
 		std::uint32_t a_vertexDescriptor,
 		std::uint32_t a_pixelDescriptor,
 		bool a_found,
-		std::uintptr_t a_lookupPixelShader);
+		std::uintptr_t a_lookupPixelShader,
+		ID3D11DeviceContext* a_contextOverride = nullptr);
 #endif
 	void CollectLightsFromScene();
 	void CollectLightsFromBSLight();
@@ -251,11 +258,12 @@ struct LightLimitFix : Feature
 			static inline REL::Relocation<decltype(thunk)> func;
 		};
 
-		static void Install();
+		static void Install(bool a_includeEffectShader = true);
 	};
 
 private:
 #if defined(FALLOUT_PRE_NG)
+	bool UpdatePreNGStrictLightDataCB(ID3D11DeviceContext* a_context);
 	PreNGDFLightResourceBindingState BindPreNGDFLightNoOpPassResources(
 		ID3D11DeviceContext* a_context,
 		const char* a_passName);

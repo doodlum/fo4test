@@ -56,9 +56,12 @@ namespace CommunityShaders::Hooks
 		constexpr const char* kPreNGDFLightVanillaDumpEnv = "FO4CS_LLF_PRENG_DFLIGHT_VANILLA_DUMP";
 		constexpr const char* kPreNGDFLightDrawStateEnv = "FO4CS_LLF_PRENG_DFLIGHT_DRAW_STATE";
 		constexpr const char* kPreNGDFLightZeroAdditivePassEnv = "FO4CS_LLF_PRENG_DFLIGHT_ZERO_ADD_PASS";
+		constexpr const char* kPreNGDFLightDrawStateStrictCBBindEnv = "FO4CS_LLF_PRENG_DFLIGHT_BIND_STRICT_CB";
+		constexpr const char* kPreNGDFLightDrawStateClusterSRVBindEnv = "FO4CS_LLF_PRENG_DFLIGHT_BIND_CLUSTER_SRVS";
 		constexpr const char* kPreNGDFLightResourceNoOpPassEnv = "FO4CS_LLF_PRENG_DFLIGHT_RESOURCE_NOOP_PASS";
 		constexpr const char* kPreNGDFLightFullContractNoOpPassEnv = "FO4CS_LLF_PRENG_DFLIGHT_FULL_CONTRACT_NOOP_PASS";
 		constexpr const char* kPreNGDFLightLLFAdditivePassEnv = "FO4CS_LLF_PRENG_DFLIGHT_LLF_ADD_PASS";
+		constexpr const char* kPreNGDFLightLegacyAdditiveProofEnv = "FO4CS_LLF_PRENG_DFLIGHT_LEGACY_ADDITIVE_PROOF";
 		constexpr const char* kPreNGDFLightLLFAdditiveBudgetEnv = "FO4CS_LLF_PRENG_DFLIGHT_LLF_ADD_BUDGET";
 		constexpr const char* kPreNGDFLightLLFAdditivePersistentEnv = "FO4CS_LLF_PRENG_DFLIGHT_LLF_ADD_PERSISTENT";
 		constexpr const char* kPreNGDFLightLLFAdditiveFrameBudgetEnv = "FO4CS_LLF_PRENG_DFLIGHT_LLF_ADD_FRAME_BUDGET";
@@ -198,6 +201,18 @@ namespace CommunityShaders::Hooks
 			return enabled;
 		}
 
+		bool ShouldBindPreNGDFLightDrawStateStrictCB()
+		{
+			static const bool enabled = ReadPreNGEnvironmentSwitch(kPreNGDFLightDrawStateStrictCBBindEnv);
+			return enabled;
+		}
+
+		bool ShouldBindPreNGDFLightDrawStateClusterSRVs()
+		{
+			static const bool enabled = ReadPreNGEnvironmentSwitch(kPreNGDFLightDrawStateClusterSRVBindEnv);
+			return enabled;
+		}
+
 		bool ShouldRunPreNGDFLightResourceNoOpPass()
 		{
 			static const bool enabled = ReadPreNGEnvironmentSwitch(kPreNGDFLightResourceNoOpPassEnv);
@@ -212,20 +227,34 @@ namespace CommunityShaders::Hooks
 
 		bool ShouldRunPreNGDFLightLLFAdditivePass()
 		{
-			static const bool enabled = ReadPreNGEnvironmentSwitch(kPreNGDFLightLLFAdditivePassEnv);
+			static const bool enabled = [] {
+				const bool requested = ReadPreNGEnvironmentSwitch(kPreNGDFLightLLFAdditivePassEnv);
+				const bool legacyProofAllowed = ReadPreNGEnvironmentSwitch(kPreNGDFLightLegacyAdditiveProofEnv);
+				if (requested && !legacyProofAllowed) {
+					logger::warn(
+						"[LightLimitFix] PreNG DFLight LLF additive pass held in draw hooks; this legacy proof path is not the Skyrim-CS LLF direction. Set {}=1 only to reproduce the old additive proof.",
+						kPreNGDFLightLegacyAdditiveProofEnv);
+				} else if (requested) {
+					logger::warn(
+						"[LightLimitFix] PreNG DFLight LLF additive legacy proof enabled in draw hooks; do not use this path for final LLF validation.");
+				}
+				return requested && legacyProofAllowed;
+			}();
 			return enabled;
 		}
 
 		bool ShouldPersistPreNGDFLightLLFAdditivePass()
 		{
 			static const bool enabled = ReadPreNGEnvironmentSwitch(kPreNGDFLightLLFAdditivePersistentEnv);
-			return enabled;
+			return ShouldRunPreNGDFLightLLFAdditivePass() && enabled;
 		}
 
 		bool ShouldTrackPreNGDFLightDrawTargets()
 		{
 			return ShouldTracePreNGDFLightDrawState() ||
 			       ShouldRunPreNGDFLightZeroAdditivePass() ||
+			       ShouldBindPreNGDFLightDrawStateStrictCB() ||
+			       ShouldBindPreNGDFLightDrawStateClusterSRVs() ||
 			       ShouldRunPreNGDFLightResourceNoOpPass() ||
 			       ShouldRunPreNGDFLightFullContractNoOpPass() ||
 			       ShouldRunPreNGDFLightLLFAdditivePass();
@@ -743,15 +772,8 @@ namespace CommunityShaders::Hooks
 			return hasLightCB && hasLightingTexture && a_metadata.outputCount == 2;
 		}
 
-		bool IsPreNGDFLightDrawStateTarget(const ShaderCache::ShaderMetadata& a_metadata)
+		bool IsPreNGDFLightVanillaFullShadowedShape(const ShaderCache::ShaderMetadata& a_metadata)
 		{
-			const bool vanillaFullShadowedHash =
-				a_metadata.asmHash == kPreNGDFLightVanillaFullShadowed920AsmHash ||
-				a_metadata.asmHash == kPreNGDFLightVanillaFullShadowed922AsmHash;
-			if (!vanillaFullShadowedHash) {
-				return false;
-			}
-
 			return a_metadata.constantBufferSizes[2] == 448 &&
 			       a_metadata.constantBufferSizes[12] == 496 &&
 			       a_metadata.textureSlots.size() == 5 &&
@@ -780,6 +802,52 @@ namespace CommunityShaders::Hooks
 			       a_metadata.hasImmediateConstantBuffer &&
 			       a_metadata.immediateConstantBufferRows == 1000 &&
 			       !a_metadata.hasDiscard;
+		}
+
+		bool IsPreNGDFLightLLFConsumerCandidateShape(const ShaderCache::ShaderMetadata& a_metadata)
+		{
+			return a_metadata.constantBufferSizes[2] == 448 &&
+			       a_metadata.constantBufferSizes[3] > 0 &&
+			       a_metadata.constantBufferSizes[12] == 496 &&
+			       a_metadata.textureSlots.size() >= 8 &&
+			       HasTextureSlot(a_metadata, 0) &&
+			       HasTextureSlot(a_metadata, 1) &&
+			       HasTextureSlot(a_metadata, 2) &&
+			       HasTextureSlot(a_metadata, 3) &&
+			       HasTextureSlot(a_metadata, 5) &&
+			       HasTextureSlot(a_metadata, 35) &&
+			       HasTextureSlot(a_metadata, 36) &&
+			       HasTextureSlot(a_metadata, 37) &&
+			       HasTextureDimension(a_metadata, 4, 0) &&
+			       HasTextureDimension(a_metadata, 4, 1) &&
+			       HasTextureDimension(a_metadata, 4, 2) &&
+			       HasTextureDimension(a_metadata, 4, 3) &&
+			       HasTextureDimension(a_metadata, 5, 5) &&
+			       a_metadata.textureSampleCounts[0] == 1 &&
+			       a_metadata.textureSampleCounts[1] == 1 &&
+			       a_metadata.textureSampleCounts[2] == 1 &&
+			       a_metadata.textureSampleCounts[3] == 1 &&
+			       a_metadata.textureSampleCounts[5] == 6 &&
+			       a_metadata.textureSampleCounts[35] > 0 &&
+			       a_metadata.textureSampleCounts[36] > 0 &&
+			       a_metadata.textureSampleCounts[37] > 0 &&
+			       a_metadata.inputTextureCount >= 8 &&
+			       a_metadata.inputCount == 1 &&
+			       a_metadata.inputMask == 0x1 &&
+			       a_metadata.outputCount == 2 &&
+			       a_metadata.outputMask == 0x3 &&
+			       a_metadata.sampleInstructionCount >= 10 &&
+			       !a_metadata.hasDiscard;
+		}
+
+		bool IsPreNGDFLightDrawStateTarget(const ShaderCache::ShaderMetadata& a_metadata)
+		{
+			const bool vanillaFullShadowedHash =
+				a_metadata.asmHash == kPreNGDFLightVanillaFullShadowed920AsmHash ||
+				a_metadata.asmHash == kPreNGDFLightVanillaFullShadowed922AsmHash;
+
+			return (vanillaFullShadowedHash && IsPreNGDFLightVanillaFullShadowedShape(a_metadata)) ||
+			       IsPreNGDFLightLLFConsumerCandidateShape(a_metadata);
 		}
 
 		std::string FormatLightLimitFixPixelShape(const ShaderCache::ShaderMetadata& a_metadata)
@@ -1671,6 +1739,11 @@ namespace CommunityShaders::Hooks
 				return;
 			}
 
+			if (globals::features::lightLimitFix.loaded) {
+				const auto strictState = globals::features::lightLimitFix.BindPreNGDFLightDrawStateStrictLightCB(a_context);
+				globals::features::lightLimitFix.BindPreNGDFLightDrawStateClusterSRVs(a_context, strictState.strictCBBound);
+			}
+
 			D3D11_PRIMITIVE_TOPOLOGY topology{};
 			a_context->IAGetPrimitiveTopology(&topology);
 
@@ -1708,6 +1781,20 @@ namespace CommunityShaders::Hooks
 				if (loggedDFLightDrawStateDraws.size() < kMaxDFLightDrawStateLogs) {
 					shouldLog = loggedDFLightDrawStateDraws.insert(key).second;
 				}
+			}
+
+			winrt::com_ptr<ID3D11PixelShader> pixelShader;
+			a_context->PSGetShader(pixelShader.put(), nullptr, nullptr);
+			const auto pixelShaderAddress = ToAddress(pixelShader.get());
+			if (globals::features::lightLimitFix.loaded) {
+				globals::features::lightLimitFix.TracePreNGActiveLightingBindings(
+					"dflight-draw-state",
+					4,
+					0,
+					0,
+					pixelShaderAddress != 0,
+					pixelShaderAddress,
+					a_context);
 			}
 
 			if (!shouldLog) {
@@ -3247,6 +3334,11 @@ namespace CommunityShaders::Hooks
 				} else if (mapShaderObjects) {
 					shaderCache->ObserveD3DShaderObject(ShaderStage::Pixel, ToAddress(*a_pixelShader), *diagnosticMetadata);
 				}
+				const bool dflightDrawStateTarget =
+					trackDFLightDrawTargets && IsPreNGDFLightDrawStateTarget(*diagnosticMetadata);
+				if (dflightDrawStateTarget && !captureDFLightVanillaDumpBytecode && !mapShaderObjects) {
+					shaderCache->ObserveD3DShaderObject(ShaderStage::Pixel, ToAddress(*a_pixelShader), *diagnosticMetadata);
+				}
 				if (tracePixelCandidates) {
 					TrackObservedPixelShader(*a_pixelShader, *diagnosticMetadata);
 					if (IsLightLimitFixPixelTrackedCandidate(*diagnosticMetadata)) {
@@ -3324,6 +3416,16 @@ namespace CommunityShaders::Hooks
 				"[LightLimitFix] PreNG DFLight zero-additive pass active; set {}=0 after the short targeted run",
 				kPreNGDFLightZeroAdditivePassEnv);
 		}
+		if (ShouldBindPreNGDFLightDrawStateStrictCB()) {
+			logger::info(
+				"[LightLimitFix] PreNG DFLight draw-state strict-CB b3 bind active; set {}=0 after the short targeted run",
+				kPreNGDFLightDrawStateStrictCBBindEnv);
+		}
+		if (ShouldBindPreNGDFLightDrawStateClusterSRVs()) {
+			logger::info(
+				"[LightLimitFix] PreNG DFLight draw-state cluster SRV t35-t37 bind active; set {}=0 after the short targeted run",
+				kPreNGDFLightDrawStateClusterSRVBindEnv);
+		}
 		if (ShouldRunPreNGDFLightResourceNoOpPass()) {
 			logger::info(
 				"[LightLimitFix] PreNG DFLight resource no-op pass active; set {}=0 after the short targeted run",
@@ -3341,12 +3443,13 @@ namespace CommunityShaders::Hooks
 			const auto maxLights = GetPreNGDFLightLLFAdditiveMaxLights();
 			const bool persistent = ShouldPersistPreNGDFLightLLFAdditivePass();
 			logger::info(
-				"[LightLimitFix] PreNG DFLight LLF additive pass active drawBudget={} frameBudget={} scale1024={} maxLights={} persistent={} budgetEnv={} frameBudgetEnv={} scaleEnv={} maxLightsEnv={} persistentEnv={}; set {}=0 after the targeted run",
+				"[LightLimitFix] PreNG DFLight LLF additive legacy proof active drawBudget={} frameBudget={} scale1024={} maxLights={} persistent={} legacyOverrideEnv={} budgetEnv={} frameBudgetEnv={} scaleEnv={} maxLightsEnv={} persistentEnv={}; set {}=0 after the targeted run",
 				drawLimit,
 				frameBudget,
 				scale1024,
 				maxLights,
 				persistent ? "on" : "off",
+				kPreNGDFLightLegacyAdditiveProofEnv,
 				kPreNGDFLightLLFAdditiveBudgetEnv,
 				kPreNGDFLightLLFAdditiveFrameBudgetEnv,
 				kPreNGDFLightLLFAdditiveScale1024Env,
@@ -3367,12 +3470,15 @@ namespace CommunityShaders::Hooks
 			}
 		} else {
 			logger::info(
-				"[LightLimitFix] PreNG support-only PS candidate diagnostics held; set {}=1 for broad shader-path evidence, {}=1 for narrow DFLight draw-state evidence, {}=1 for zero-output DFLight additive pass proof, {}=1 for DFLight LLF-resource no-op pass proof, {}=1 for DFLight vanilla+LLF full-contract no-op pass proof, or {}=1 for DFLight LLF-only additive pass proof",
+				"[LightLimitFix] PreNG support-only PS candidate diagnostics held; set {}=1 for broad shader-path evidence, {}=1 for narrow DFLight draw-state evidence, {}=1 for zero-output DFLight additive pass proof, {}=1 for DFLight draw-state strict-CB b3 proof, {}=1 for DFLight draw-state cluster SRV t35-t37 proof, {}=1 for DFLight LLF-resource no-op pass proof, {}=1 for DFLight vanilla+LLF full-contract no-op pass proof, or {}=1 plus {}=1 for the legacy DFLight LLF-only additive proof. The legacy additive proof is not the Skyrim-CS LLF implementation direction.",
 				kTraceLLFPSEnv,
 				kPreNGDFLightDrawStateEnv,
 				kPreNGDFLightZeroAdditivePassEnv,
+				kPreNGDFLightDrawStateStrictCBBindEnv,
+				kPreNGDFLightDrawStateClusterSRVBindEnv,
 				kPreNGDFLightResourceNoOpPassEnv,
 				kPreNGDFLightFullContractNoOpPassEnv,
+				kPreNGDFLightLegacyAdditiveProofEnv,
 				kPreNGDFLightLLFAdditivePassEnv);
 		}
 #endif

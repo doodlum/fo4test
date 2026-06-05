@@ -6,6 +6,8 @@
 #include <cstring>
 #include <Windows.h>
 #include <cstdint>
+#include <string_view>
+#include <RE/FO4Runtime.h>
 
 #include "Core/CommunityShaders.h"
 #include "Core/Globals.h"
@@ -57,15 +59,21 @@ namespace
 #if defined(FALLOUT_PRE_NG)
 	constexpr std::uint64_t kPreNGStableFrame = 5;
 	constexpr bool kPreNGEnableInternalPointLightHook = false;
+	constexpr const char* kPreNGSetupGeometryHookOptInEnv = "FO4CS_LLF_PRENG_SETUP_GEOMETRY_HOOK";
+	constexpr const char* kPreNGSetupGeometryStrictCBBindEnv = "FO4CS_LLF_PRENG_SETUP_GEOMETRY_BIND_STRICT_CB";
+	constexpr const char* kPreNGSetupGeometryPersistStrictCBEnv = "FO4CS_LLF_PRENG_SETUP_GEOMETRY_PERSIST_STRICT_CB";
 	constexpr const char* kPreNGPointLightHookOptInEnv = "FO4CS_LLF_PRENG_POINT_LIGHT_HOOK";
 	constexpr const char* kPreNGStrictLightCBDiagnosticEnv = "FO4CS_LLF_PRENG_STRICT_CB_DIAG";
 	constexpr const char* kPreNGStrictLightCBBindEnv = "FO4CS_LLF_PRENG_BIND_STRICT_CB";
 	constexpr const char* kPreNGClusterSRVBindEnv = "FO4CS_LLF_PRENG_BIND_CLUSTER_SRVS";
 	constexpr const char* kPreNGPersistentClusterPrepassEnv = "FO4CS_LLF_PRENG_PERSISTENT_CLUSTER_PREPASS";
 	constexpr const char* kPreNGClusterPrepassProofFramesEnv = "FO4CS_LLF_PRENG_CLUSTER_PREPASS_PROOF_FRAMES";
+	constexpr const char* kPreNGDFLightDrawStateStrictCBBindEnv = "FO4CS_LLF_PRENG_DFLIGHT_BIND_STRICT_CB";
+	constexpr const char* kPreNGDFLightDrawStateClusterSRVBindEnv = "FO4CS_LLF_PRENG_DFLIGHT_BIND_CLUSTER_SRVS";
 	constexpr const char* kPreNGDFLightResourceNoOpPassEnv = "FO4CS_LLF_PRENG_DFLIGHT_RESOURCE_NOOP_PASS";
 	constexpr const char* kPreNGDFLightFullContractNoOpPassEnv = "FO4CS_LLF_PRENG_DFLIGHT_FULL_CONTRACT_NOOP_PASS";
 	constexpr const char* kPreNGDFLightLLFAdditivePassEnv = "FO4CS_LLF_PRENG_DFLIGHT_LLF_ADD_PASS";
+	constexpr const char* kPreNGDFLightLegacyAdditiveProofEnv = "FO4CS_LLF_PRENG_DFLIGHT_LEGACY_ADDITIVE_PROOF";
 	constexpr const char* kPreNGDFLightLLFAdditivePersistentEnv = "FO4CS_LLF_PRENG_DFLIGHT_LLF_ADD_PERSISTENT";
 	constexpr const char* kPreNGDFLightLLFAdditiveRefreshIntervalEnv = "FO4CS_LLF_PRENG_DFLIGHT_LLF_ADD_REFRESH_INTERVAL";
 	constexpr const char* kPreNGShaderObjectMetadataEnv = "FO4CS_LLF_PRENG_SHADER_OBJECT_METADATA";
@@ -74,6 +82,7 @@ namespace
 	constexpr const char* kPreNGDFLightCandidateCompileEnv = "FO4CS_LLF_PRENG_DFLIGHT_CANDIDATE_COMPILE";
 	constexpr const char* kPreNGDFLightContractProbeSource = "LightLimitFix\\DFLightContractProbePS.hlsl";
 	constexpr const char* kPreNGDFLightFullShadowedCandidateSource = "LightLimitFix\\DFLightFullShadowedPS.hlsl";
+	constexpr std::uint32_t kPreNGSetupGeometryStrictCBProofMaxSamples = 16;
 	constexpr std::uint32_t kPreNGDefaultClusterPrepassProofFrames = 8;
 	constexpr std::uint32_t kPreNGMinClusterPrepassProofFrames = 1;
 	constexpr std::uint32_t kPreNGMaxClusterPrepassProofFrames = 600;
@@ -144,67 +153,16 @@ namespace
 		return true;
 	}
 
-	constexpr std::uintptr_t kPreNGStaticImageBase = 0x140000000ull;
-	constexpr std::uintptr_t kPreNGBSLightingShaderSetupGeometryVA = 0x14289DD10ull;
-	constexpr std::uintptr_t kPreNGPointLightCallVA = 0x14289E0BFull;
-	constexpr std::uintptr_t kPreNGPointLightTargetVA = 0x14289F550ull;
-	constexpr std::uintptr_t kPreNGBSLightingShaderVTableVA = 0x14309AAB8ull;
-	constexpr std::uintptr_t kPreNGBSLightingShaderVFunc7VA = 0x14309AAF0ull;
-	constexpr std::uint8_t kPreNGPointLightCallContext[] = {
-		0xC7, 0x44, 0x24, 0x20, 0x00, 0x00, 0x00, 0x00,
-		0xE8, 0x8C, 0x14, 0x00, 0x00
-	};
-
-	std::uintptr_t PreNGRuntimeAddress(std::uintptr_t a_staticVA)
-	{
-		return REL::Module::get().base() + (a_staticVA - kPreNGStaticImageBase);
-	}
+	namespace F4Runtime = RE::FO4Runtime;
 
 	bool IsReadableMemory(std::uintptr_t a_address, std::size_t a_size)
 	{
-		MEMORY_BASIC_INFORMATION mbi{};
-		if (VirtualQuery(reinterpret_cast<const void*>(a_address), &mbi, sizeof(mbi)) == 0) {
-			return false;
-		}
-
-		const auto regionBegin = reinterpret_cast<std::uintptr_t>(mbi.BaseAddress);
-		const auto regionEnd = regionBegin + mbi.RegionSize;
-		const auto readEnd = a_address + a_size;
-		if (mbi.State != MEM_COMMIT || a_address < regionBegin || readEnd > regionEnd) {
-			return false;
-		}
-
-		return (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) == 0;
+		return F4Runtime::IsReadableAddress(a_address, a_size);
 	}
 
-	constexpr std::uintptr_t kPreNGBSRenderPassSceneLightsOffset = 0x30;
-	constexpr std::uintptr_t kPreNGBSRenderPassRawLightCountOffset = 0x50;
-	constexpr std::uint32_t kPreNGBSRenderPassSceneLightFirstIndex = 1;
-	constexpr std::uintptr_t kPreNGBSLightWrapperFadeOffset = 0x10;
-	constexpr std::uintptr_t kPreNGBSLightWrapperNiLightOffset = 0xB8;
-	constexpr std::uintptr_t kPreNGBSShadowLightMaskIndexOffset = 0x1B0;
-	constexpr std::uint32_t kPreNGInvalidShadowLightMaskIndex = 255;
-	constexpr std::uint32_t kPreNGMaxShadowLightMaskBits = 32;
-	constexpr std::uintptr_t kPreNGNiLightWorldTranslateOffset = 0xA0;
-	constexpr std::uintptr_t kPreNGNiLightDiffuseOffset = 0x12C;
-	constexpr std::uintptr_t kPreNGNiLightRadiusOffset = 0x138;
-	constexpr std::uintptr_t kPreNGNiLightDimmerOffset = 0x144;
-	constexpr std::uintptr_t kPreNGShadowSceneNodeArrayVA = 0x146721B70ull;
-	constexpr std::uintptr_t kPreNGShadowSceneNodeCurrentIndexVA = 0x146721C19ull;
-	constexpr std::uint32_t kPreNGShadowSceneNodeArraySlots = 21;
-	// FO4 keeps active lights in three buckets; +0x1A0/+0x1B8 are pending add/remove queues.
-	constexpr std::uintptr_t kPreNGShadowSceneNodeActiveLightsOffset = 0x158;
-	constexpr std::uintptr_t kPreNGShadowSceneNodeActiveLightsCountOffset = 0x168;
-	constexpr std::uintptr_t kPreNGShadowSceneNodeActiveShadowLightsOffset = 0x170;
-	constexpr std::uintptr_t kPreNGShadowSceneNodeActiveShadowLightsCountOffset = 0x180;
-	constexpr std::uintptr_t kPreNGShadowSceneNodeActiveExtraLightsOffset = 0x188;
-	constexpr std::uintptr_t kPreNGShadowSceneNodeActiveExtraLightsCountOffset = 0x198;
-	constexpr std::uintptr_t kPreNGCurrentPixelShaderEntryVA = 0x146732E28ull;
-	constexpr std::uintptr_t kPreNGShaderEntryD3DObjectOffset = 0x8;
-	constexpr std::uintptr_t kPreNGPixelShaderSlot88Offset = 88;
-	constexpr std::uintptr_t kPreNGPixelShaderSlot89Offset = 89;
-	constexpr std::uintptr_t kPreNGPixelShaderSlot94Offset = 94;
-	constexpr std::uintptr_t kPreNGPixelShaderSlot96Offset = 96;
+	constexpr std::uint32_t kPreNGBSRenderPassSceneLightFirstIndex = F4Runtime::PreNG::BS_RENDER_PASS_SCENE_LIGHT_FIRST_INDEX;
+	constexpr std::uint32_t kPreNGInvalidShadowLightMaskIndex = F4Runtime::PreNG::INVALID_SHADOW_LIGHT_MASK_INDEX;
+	constexpr std::uint32_t kPreNGMaxShadowLightMaskBits = F4Runtime::PreNG::MAX_SHADOW_LIGHT_MASK_BITS;
 	constexpr std::uint32_t kPreNGMaxShadowSceneActiveLights = 512;
 	constexpr float kPreNGLightContributionThreshold = 1.0e-4f;
 	constexpr float kPreNGLightRadiusThreshold = 1.0e-4f;
@@ -212,42 +170,14 @@ namespace
 	template <class T>
 	bool ReadPreNGValue(std::uintptr_t a_address, T& a_value)
 	{
-		if (!IsReadableMemory(a_address, sizeof(T))) {
-			return false;
-		}
-
-		std::memcpy(&a_value, reinterpret_cast<const void*>(a_address), sizeof(T));
-		return true;
+		return F4Runtime::ReadValue(a_address, a_value);
 	}
 
-	struct PreNGPixelShaderEntryState
-	{
-		std::uintptr_t entry = 0;
-		std::uintptr_t d3dObject = 0;
-		std::uint32_t id = 0;
-		std::uint8_t slot88 = 0xFF;
-		std::uint8_t slot89 = 0xFF;
-		std::uint8_t slot94 = 0xFF;
-		std::uint8_t slot96 = 0xFF;
-		bool entryReadable = false;
-	};
+	using PreNGPixelShaderEntryState = F4Runtime::PreNGShaderEntryState;
 
 	PreNGPixelShaderEntryState ReadPreNGCurrentPixelShaderEntryState()
 	{
-		PreNGPixelShaderEntryState result{};
-		if (!ReadPreNGValue(PreNGRuntimeAddress(kPreNGCurrentPixelShaderEntryVA), result.entry) || result.entry == 0) {
-			return result;
-		}
-
-		bool readable = true;
-		readable &= ReadPreNGValue(result.entry, result.id);
-		readable &= ReadPreNGValue(result.entry + kPreNGShaderEntryD3DObjectOffset, result.d3dObject);
-		readable &= ReadPreNGValue(result.entry + kPreNGPixelShaderSlot88Offset, result.slot88);
-		readable &= ReadPreNGValue(result.entry + kPreNGPixelShaderSlot89Offset, result.slot89);
-		readable &= ReadPreNGValue(result.entry + kPreNGPixelShaderSlot94Offset, result.slot94);
-		readable &= ReadPreNGValue(result.entry + kPreNGPixelShaderSlot96Offset, result.slot96);
-		result.entryReadable = readable;
-		return result;
+		return F4Runtime::ReadPreNGPixelShaderEntryState();
 	}
 
 	bool HasPreNGConstantBufferSlot(const CommunityShaders::ShaderCache::ShaderMetadata& a_metadata, std::uint32_t a_slot)
@@ -378,44 +308,11 @@ namespace
 			FormatPreNGShaderTextureSampleCounts(*a_metadata));
 	}
 
-	struct PreNGShadowSceneNodeRef
-	{
-		std::uintptr_t node{ 0 };
-		std::uint8_t selectedIndex{ 0 };
-		std::uint8_t currentIndex{ 0 };
-		bool currentIndexRead{ false };
-		bool usedFallback{ false };
-	};
+	using PreNGShadowSceneNodeRef = F4Runtime::PreNGShadowSceneNodeRef;
 
 	PreNGShadowSceneNodeRef GetPreNGWorldShadowSceneNode()
 	{
-		PreNGShadowSceneNodeRef result{};
-		const auto arrayBase = PreNGRuntimeAddress(kPreNGShadowSceneNodeArrayVA);
-
-		std::uint8_t currentIndex = 0;
-		if (ReadPreNGValue(PreNGRuntimeAddress(kPreNGShadowSceneNodeCurrentIndexVA), currentIndex)) {
-			result.currentIndexRead = true;
-			result.currentIndex = currentIndex;
-
-			if (currentIndex < kPreNGShadowSceneNodeArraySlots) {
-				std::uintptr_t indexedNode = 0;
-				const auto indexedSlot = arrayBase + (sizeof(std::uintptr_t) * currentIndex);
-				if (ReadPreNGValue(indexedSlot, indexedNode) && indexedNode != 0) {
-					result.node = indexedNode;
-					result.selectedIndex = currentIndex;
-					return result;
-				}
-			}
-		}
-
-		std::uintptr_t fallbackNode = 0;
-		if (ReadPreNGValue(arrayBase, fallbackNode)) {
-			result.node = fallbackNode;
-			result.selectedIndex = 0;
-			result.usedFallback = result.currentIndexRead && result.currentIndex != 0;
-		}
-
-		return result;
+		return F4Runtime::GetPreNGWorldShadowSceneNode();
 	}
 
 	enum class PreNGLightDecodeResult
@@ -441,61 +338,49 @@ namespace
 		a_shadowMaskBit = 0;
 
 		float wrapperFade = 1.0f;
+		const F4Runtime::PreNGLightWrapperView wrapperView{ a_wrapperAddress };
 		if (a_wrapperAddress == 0 ||
-			!ReadPreNGValue(a_wrapperAddress + kPreNGBSLightWrapperFadeOffset, wrapperFade) ||
-			!ReadPreNGValue(a_wrapperAddress + kPreNGBSLightWrapperNiLightOffset, a_niLightAddress) ||
+			!wrapperView.ReadFade(wrapperFade) ||
+			!wrapperView.ReadNiLight(a_niLightAddress) ||
 			a_niLightAddress == 0 ||
 			!std::isfinite(wrapperFade)) {
 			return PreNGLightDecodeResult::MissingWrapperData;
 		}
 
-		float diffuseR = 0.0f;
-		float diffuseG = 0.0f;
-		float diffuseB = 0.0f;
-		float radius = 0.0f;
-		float dimmer = 0.0f;
-		float positionX = 0.0f;
-		float positionY = 0.0f;
-		float positionZ = 0.0f;
-		if (!ReadPreNGValue(a_niLightAddress + kPreNGNiLightDiffuseOffset, diffuseR) ||
-			!ReadPreNGValue(a_niLightAddress + kPreNGNiLightDiffuseOffset + sizeof(float), diffuseG) ||
-			!ReadPreNGValue(a_niLightAddress + kPreNGNiLightDiffuseOffset + (2 * sizeof(float)), diffuseB) ||
-			!ReadPreNGValue(a_niLightAddress + kPreNGNiLightRadiusOffset, radius) ||
-			!ReadPreNGValue(a_niLightAddress + kPreNGNiLightDimmerOffset, dimmer) ||
-			!ReadPreNGValue(a_niLightAddress + kPreNGNiLightWorldTranslateOffset, positionX) ||
-			!ReadPreNGValue(a_niLightAddress + kPreNGNiLightWorldTranslateOffset + sizeof(float), positionY) ||
-			!ReadPreNGValue(a_niLightAddress + kPreNGNiLightWorldTranslateOffset + (2 * sizeof(float)), positionZ) ||
-			!std::isfinite(diffuseR) ||
-			!std::isfinite(diffuseG) ||
-			!std::isfinite(diffuseB) ||
-			!std::isfinite(radius) ||
-			!std::isfinite(dimmer) ||
-			!std::isfinite(positionX) ||
-			!std::isfinite(positionY) ||
-			!std::isfinite(positionZ) ||
-			radius <= 0.0f) {
+		F4Runtime::PreNGNiLightData niLight{};
+		const F4Runtime::PreNGNiLightView niLightView{ a_niLightAddress };
+		if (!niLightView.Read(niLight) ||
+			!std::isfinite(niLight.diffuse[0]) ||
+			!std::isfinite(niLight.diffuse[1]) ||
+			!std::isfinite(niLight.diffuse[2]) ||
+			!std::isfinite(niLight.radius) ||
+			!std::isfinite(niLight.dimmer) ||
+			!std::isfinite(niLight.position[0]) ||
+			!std::isfinite(niLight.position[1]) ||
+			!std::isfinite(niLight.position[2]) ||
+			niLight.radius <= 0.0f) {
 			return PreNGLightDecodeResult::InvalidNiLightData;
 		}
 
-		const float fade = dimmer * wrapperFade;
-		const float contribution = (diffuseR + diffuseG + diffuseB) * fade;
-		if (radius <= kPreNGLightRadiusThreshold || contribution <= kPreNGLightContributionThreshold) {
+		const float fade = niLight.dimmer * wrapperFade;
+		const float contribution = (niLight.diffuse[0] + niLight.diffuse[1] + niLight.diffuse[2]) * fade;
+		if (niLight.radius <= kPreNGLightRadiusThreshold || contribution <= kPreNGLightContributionThreshold) {
 			return PreNGLightDecodeResult::NonContributingLightData;
 		}
 
-		a_data.color.x = diffuseR;
-		a_data.color.y = diffuseG;
-		a_data.color.z = diffuseB;
+		a_data.color.x = niLight.diffuse[0];
+		a_data.color.y = niLight.diffuse[1];
+		a_data.color.z = niLight.diffuse[2];
 		a_data.fade = fade;
-		a_data.radius = radius;
+		a_data.radius = niLight.radius;
 		a_data.invRadius = a_data.radius > 0.0f ? 1.0f / a_data.radius : 0.0f;
-		a_data.positionWS[0].data.x = positionX;
-		a_data.positionWS[0].data.y = positionY;
-		a_data.positionWS[0].data.z = positionZ;
+		a_data.positionWS[0].data.x = niLight.position[0];
+		a_data.positionWS[0].data.y = niLight.position[1];
+		a_data.positionWS[0].data.z = niLight.position[2];
 		a_data.lightFlags = static_cast<std::uint32_t>(LightLimitFix::LightFlags::Initialised);
 
 		std::uint32_t shadowMaskIndex = kPreNGInvalidShadowLightMaskIndex;
-		if (ReadPreNGValue(a_wrapperAddress + kPreNGBSShadowLightMaskIndexOffset, shadowMaskIndex)) {
+		if (wrapperView.ReadShadowMaskIndex(shadowMaskIndex)) {
 			if (shadowMaskIndex != kPreNGInvalidShadowLightMaskIndex && shadowMaskIndex < kPreNGMaxShadowLightMaskBits) {
 				a_data.lightFlags |= static_cast<std::uint32_t>(LightLimitFix::LightFlags::Shadow);
 				a_data.shadowLightIndex = shadowMaskIndex;
@@ -562,16 +447,16 @@ namespace
 
 	bool ValidatePreNGPointLightCallsite()
 	{
-		const auto imageBase = static_cast<std::uintptr_t>(REL::Module::get().base());
-		const auto runtimeSetup = PreNGRuntimeAddress(kPreNGBSLightingShaderSetupGeometryVA);
-		const auto runtimeCall = PreNGRuntimeAddress(kPreNGPointLightCallVA);
+		const auto imageBase = F4Runtime::ModuleBase();
+		const auto runtimeSetup = F4Runtime::PreNG::BS_LIGHTING_SHADER_SETUP_GEOMETRY.address();
+		const auto runtimeCall = F4Runtime::PreNG::POINT_LIGHT_CALL.address();
 		const auto runtimeCallContext = runtimeCall - 8;
-		const auto runtimeTarget = PreNGRuntimeAddress(kPreNGPointLightTargetVA);
-		const auto runtimeVTable = PreNGRuntimeAddress(kPreNGBSLightingShaderVTableVA);
-		const auto runtimeVFuncEntry = PreNGRuntimeAddress(kPreNGBSLightingShaderVFunc7VA);
+		const auto runtimeTarget = F4Runtime::PreNG::POINT_LIGHT_TARGET.address();
+		const auto runtimeVTable = F4Runtime::PreNG::BS_LIGHTING_SHADER_VTABLE.address();
+		const auto runtimeVFuncEntry = F4Runtime::PreNG::BS_LIGHTING_SHADER_VFUNC_7.address();
 
 		const bool vfuncReadable = IsReadableMemory(runtimeVFuncEntry, sizeof(std::uintptr_t));
-		const bool callReadable = IsReadableMemory(runtimeCallContext, sizeof(kPreNGPointLightCallContext));
+		const bool callReadable = IsReadableMemory(runtimeCallContext, F4Runtime::PreNG::POINT_LIGHT_CALL_CONTEXT.size());
 		if (!vfuncReadable || !callReadable) {
 			logger::warn(
 				"[LightLimitFix] PreNG point-light callsite validation skipped: unreadable memory base=0x{:X} vfuncReadable={} callReadable={} vfunc[7]=0x{:X} callContext=0x{:X}",
@@ -587,8 +472,8 @@ namespace
 			static_cast<std::intptr_t>(runtimeCall + 5) + callRel);
 		const bool contextMatches = std::memcmp(
 			reinterpret_cast<const void*>(runtimeCallContext),
-			kPreNGPointLightCallContext,
-			sizeof(kPreNGPointLightCallContext)) == 0;
+			F4Runtime::PreNG::POINT_LIGHT_CALL_CONTEXT.data(),
+			F4Runtime::PreNG::POINT_LIGHT_CALL_CONTEXT.size()) == 0;
 
 		if (observedVFunc == runtimeSetup && callBytes[0] == 0xE8 && observedTarget == runtimeTarget && contextMatches) {
 			logger::info(
@@ -859,14 +744,20 @@ namespace
 		}
 		logged = true;
 
+		const auto setupGeometryHookState = ReadEnvironmentSwitch(kPreNGSetupGeometryHookOptInEnv);
+		const auto setupGeometryBindCBState = ReadEnvironmentSwitch(kPreNGSetupGeometryStrictCBBindEnv);
+		const auto setupGeometryPersistCBState = ReadEnvironmentSwitch(kPreNGSetupGeometryPersistStrictCBEnv);
 		const auto hookState = ReadEnvironmentSwitch(kPreNGPointLightHookOptInEnv);
 		const auto strictCBState = ReadEnvironmentSwitch(kPreNGStrictLightCBDiagnosticEnv);
 		const auto bindCBState = ReadEnvironmentSwitch(kPreNGStrictLightCBBindEnv);
 		const auto bindClusterSRVState = ReadEnvironmentSwitch(kPreNGClusterSRVBindEnv);
 		const auto persistentClusterPrepassState = ReadEnvironmentSwitch(kPreNGPersistentClusterPrepassEnv);
+		const auto dflightDrawStateStrictCBBindState = ReadEnvironmentSwitch(kPreNGDFLightDrawStateStrictCBBindEnv);
+		const auto dflightDrawStateClusterSRVBindState = ReadEnvironmentSwitch(kPreNGDFLightDrawStateClusterSRVBindEnv);
 		const auto dflightResourceNoOpPassState = ReadEnvironmentSwitch(kPreNGDFLightResourceNoOpPassEnv);
 		const auto dflightFullContractNoOpPassState = ReadEnvironmentSwitch(kPreNGDFLightFullContractNoOpPassEnv);
 		const auto dflightLLFAdditivePassState = ReadEnvironmentSwitch(kPreNGDFLightLLFAdditivePassEnv);
+		const auto dflightLegacyAdditiveProofState = ReadEnvironmentSwitch(kPreNGDFLightLegacyAdditiveProofEnv);
 		const auto dflightLLFAdditivePersistentState = ReadEnvironmentSwitch(kPreNGDFLightLLFAdditivePersistentEnv);
 		const auto shaderObjectMetadataState = ReadEnvironmentSwitch(kPreNGShaderObjectMetadataEnv);
 		const auto tracePSState = ReadEnvironmentSwitch(kPreNGTraceLLFPixelEnv);
@@ -874,7 +765,13 @@ namespace
 		const auto dflightCandidateCompileState = ReadEnvironmentSwitch(kPreNGDFLightCandidateCompileEnv);
 
 		logger::info(
-			"[LightLimitFix] PreNG diagnostic env snapshot {}={} {}={} {}={} {}={} {}={} {}={} {}={} {}={} {}={} {}={} {}={} {}={} {}={} sources hook={} strictCB={} bindCB={} bindSRV={} persistentPrepass={} dflightResourceNoOp={} dflightFullContractNoOp={} dflightLLFAdditive={} dflightLLFAdditivePersistent={} shaderObjectMetadata={} tracePS={} dflightContractCompile={} dflightCandidateCompile={}",
+			"[LightLimitFix] PreNG diagnostic env snapshot {}={} {}={} {}={} {}={} {}={} {}={} {}={} {}={} {}={} {}={} {}={} {}={} {}={} {}={} {}={} {}={} {}={} {}={} {}={} sources setupGeometryHook={} setupGeometryBindCB={} setupGeometryPersistCB={} hook={} strictCB={} bindCB={} bindSRV={} persistentPrepass={} dflightDrawStateStrictCB={} dflightDrawStateClusterSRV={} dflightResourceNoOp={} dflightFullContractNoOp={} dflightLLFAdditive={} dflightLegacyAdditiveProof={} dflightLLFAdditivePersistent={} shaderObjectMetadata={} tracePS={} dflightContractCompile={} dflightCandidateCompile={}",
+			kPreNGSetupGeometryHookOptInEnv,
+			setupGeometryHookState.enabled ? "on" : "off",
+			kPreNGSetupGeometryStrictCBBindEnv,
+			setupGeometryBindCBState.enabled ? "on" : "off",
+			kPreNGSetupGeometryPersistStrictCBEnv,
+			setupGeometryPersistCBState.enabled ? "on" : "off",
 			kPreNGPointLightHookOptInEnv,
 			hookState.enabled ? "on" : "off",
 			kPreNGStrictLightCBDiagnosticEnv,
@@ -885,12 +782,18 @@ namespace
 			bindClusterSRVState.enabled ? "on" : "off",
 			kPreNGPersistentClusterPrepassEnv,
 			persistentClusterPrepassState.enabled ? "on" : "off",
+			kPreNGDFLightDrawStateStrictCBBindEnv,
+			dflightDrawStateStrictCBBindState.enabled ? "on" : "off",
+			kPreNGDFLightDrawStateClusterSRVBindEnv,
+			dflightDrawStateClusterSRVBindState.enabled ? "on" : "off",
 			kPreNGDFLightResourceNoOpPassEnv,
 			dflightResourceNoOpPassState.enabled ? "on" : "off",
 			kPreNGDFLightFullContractNoOpPassEnv,
 			dflightFullContractNoOpPassState.enabled ? "on" : "off",
 			kPreNGDFLightLLFAdditivePassEnv,
 			dflightLLFAdditivePassState.enabled ? "on" : "off",
+			kPreNGDFLightLegacyAdditiveProofEnv,
+			dflightLegacyAdditiveProofState.enabled ? "on" : "off",
 			kPreNGDFLightLLFAdditivePersistentEnv,
 			dflightLLFAdditivePersistentState.enabled ? "on" : "off",
 			kPreNGShaderObjectMetadataEnv,
@@ -901,14 +804,20 @@ namespace
 			dflightContractCompileState.enabled ? "on" : "off",
 			kPreNGDFLightCandidateCompileEnv,
 			dflightCandidateCompileState.enabled ? "on" : "off",
+			EnvironmentSwitchSourceName(setupGeometryHookState.source),
+			EnvironmentSwitchSourceName(setupGeometryBindCBState.source),
+			EnvironmentSwitchSourceName(setupGeometryPersistCBState.source),
 			EnvironmentSwitchSourceName(hookState.source),
 			EnvironmentSwitchSourceName(strictCBState.source),
 			EnvironmentSwitchSourceName(bindCBState.source),
 			EnvironmentSwitchSourceName(bindClusterSRVState.source),
 			EnvironmentSwitchSourceName(persistentClusterPrepassState.source),
+			EnvironmentSwitchSourceName(dflightDrawStateStrictCBBindState.source),
+			EnvironmentSwitchSourceName(dflightDrawStateClusterSRVBindState.source),
 			EnvironmentSwitchSourceName(dflightResourceNoOpPassState.source),
 			EnvironmentSwitchSourceName(dflightFullContractNoOpPassState.source),
 			EnvironmentSwitchSourceName(dflightLLFAdditivePassState.source),
+			EnvironmentSwitchSourceName(dflightLegacyAdditiveProofState.source),
 			EnvironmentSwitchSourceName(dflightLLFAdditivePersistentState.source),
 			EnvironmentSwitchSourceName(shaderObjectMetadataState.source),
 			EnvironmentSwitchSourceName(tracePSState.source),
@@ -935,9 +844,37 @@ namespace
 		return IsTruthyEnvironmentSwitch(kPreNGStrictLightCBBindEnv);
 	}
 
+	bool ShouldBindPreNGSetupGeometryStrictLightCB()
+	{
+		return IsTruthyEnvironmentSwitch(kPreNGSetupGeometryStrictCBBindEnv) &&
+		       ShouldBindPreNGStrictLightCB();
+	}
+
+	bool ShouldPersistPreNGSetupGeometryStrictLightCB()
+	{
+		return IsTruthyEnvironmentSwitch(kPreNGSetupGeometryPersistStrictCBEnv);
+	}
+
 	bool ShouldBindPreNGClusterSRVs()
 	{
 		return IsTruthyEnvironmentSwitch(kPreNGClusterSRVBindEnv);
+	}
+
+	bool ShouldBindPreNGDFLightDrawStateStrictLightCB()
+	{
+		return IsTruthyEnvironmentSwitch(kPreNGDFLightDrawStateStrictCBBindEnv) &&
+		       ShouldBindPreNGStrictLightCB();
+	}
+
+	bool ShouldBindPreNGDFLightDrawStateClusterSRVs()
+	{
+		return IsTruthyEnvironmentSwitch(kPreNGDFLightDrawStateClusterSRVBindEnv);
+	}
+
+	bool ShouldUsePreNGSetupGeometryStrictLightCBProof()
+	{
+		return IsTruthyEnvironmentSwitch(kPreNGSetupGeometryHookOptInEnv) &&
+		       (ShouldUpdatePreNGStrictLightCB() || ShouldBindPreNGStrictLightCB());
 	}
 
 	bool ShouldPersistPreNGClusterPrepass()
@@ -957,13 +894,27 @@ namespace
 
 	bool ShouldRunPreNGDFLightLLFAdditivePass()
 	{
-		return IsTruthyEnvironmentSwitch(kPreNGDFLightLLFAdditivePassEnv);
+		static const bool enabled = [] {
+			const bool requested = IsTruthyEnvironmentSwitch(kPreNGDFLightLLFAdditivePassEnv);
+			const bool legacyProofAllowed = IsTruthyEnvironmentSwitch(kPreNGDFLightLegacyAdditiveProofEnv);
+			if (requested && !legacyProofAllowed) {
+				logger::warn(
+					"[LightLimitFix] PreNG DFLight LLF additive pass held; this legacy proof path is not the Skyrim-CS LLF direction. Keep it off for normal development, or set {}=1 only to reproduce the old additive proof.",
+					kPreNGDFLightLegacyAdditiveProofEnv);
+			} else if (requested) {
+				logger::warn(
+					"[LightLimitFix] PreNG DFLight LLF additive legacy proof active; this is not the final Skyrim-CS route and should not be used for performance or visual validation.");
+			}
+			return requested && legacyProofAllowed;
+		}();
+		return enabled;
 	}
 
 	bool ShouldHoldPreNGDFLightPreparedState()
 	{
 		return ShouldRunPreNGDFLightResourceNoOpPass() ||
 		       ShouldRunPreNGDFLightFullContractNoOpPass() ||
+		       ShouldBindPreNGDFLightDrawStateClusterSRVs() ||
 		       ShouldRunPreNGDFLightLLFAdditivePass();
 	}
 
@@ -974,10 +925,13 @@ namespace
 		}
 
 		const bool dflightLLFAdditiveRequested = ShouldRunPreNGDFLightLLFAdditivePass();
+		const bool strictCBProofRequested =
+			(ShouldUpdatePreNGStrictLightCB() || ShouldBindPreNGStrictLightCB()) &&
+			!ShouldUsePreNGSetupGeometryStrictLightCBProof();
 		const bool proofRequested =
-			ShouldUpdatePreNGStrictLightCB() ||
-			ShouldBindPreNGStrictLightCB() ||
+			strictCBProofRequested ||
 			ShouldBindPreNGClusterSRVs() ||
+			ShouldBindPreNGDFLightDrawStateClusterSRVs() ||
 			ShouldRunPreNGDFLightResourceNoOpPass() ||
 			ShouldRunPreNGDFLightFullContractNoOpPass() ||
 			dflightLLFAdditiveRequested;
@@ -985,13 +939,16 @@ namespace
 			static bool loggedHeld = false;
 			if (!loggedHeld) {
 				logger::info(
-					"[LightLimitFix] PreNG clustered Prepass held; enable {}, {}, {}, {}, or {} for a short proof window, or {}=1 for persistent cluster profiling only",
+					"[LightLimitFix] PreNG clustered Prepass held; strict CB proof is served by SetupGeometry when {}=1; use {} for the legacy Prepass b3 proof only when SetupGeometry is off, enable {}, {}, {}, or {} for clustered/DFLight contract proof work, or {}=1 for persistent cluster profiling only. The old DFLight additive path requires {}=1 plus {}=1 and is not the Skyrim-CS LLF direction.",
+					kPreNGSetupGeometryHookOptInEnv,
 					kPreNGStrictLightCBBindEnv,
 					kPreNGClusterSRVBindEnv,
+					kPreNGDFLightDrawStateClusterSRVBindEnv,
 					kPreNGDFLightResourceNoOpPassEnv,
 					kPreNGDFLightFullContractNoOpPassEnv,
-					kPreNGDFLightLLFAdditivePassEnv,
-					kPreNGPersistentClusterPrepassEnv);
+					kPreNGPersistentClusterPrepassEnv,
+					kPreNGDFLightLegacyAdditiveProofEnv,
+					kPreNGDFLightLLFAdditivePassEnv);
 				loggedHeld = true;
 			}
 			return false;
@@ -1039,7 +996,7 @@ namespace
 		static bool loggedComplete = false;
 		if (!loggedComplete) {
 			logger::info(
-				"[LightLimitFix] PreNG clustered Prepass proof window complete; holding per-frame light collection, cluster compute, b3, and t35-t37 after {} frames; additiveRefreshInterval={} env={}; set {}=1 only for persistent cluster profiling after shader-side LLF consumption is ready",
+				"[LightLimitFix] PreNG clustered Prepass proof window complete; holding per-frame light collection, cluster compute, b3, and t35-t37 after {} frames; legacyAdditiveRefreshInterval={} env={}; set {}=1 only for persistent cluster profiling after shader-side LLF consumption is ready",
 				frameBudget,
 				refreshInterval,
 				kPreNGDFLightLLFAdditiveRefreshIntervalEnv,
@@ -1280,7 +1237,7 @@ namespace
 		const auto patch = ReadPreNGCallPatch(a_runtimeCall);
 		const auto branchTarget = patch.readable ? ResolvePreNGAbsoluteJumpTarget(patch.callTarget) : 0;
 		const auto thunkTarget = reinterpret_cast<std::uintptr_t>(&PreNGPointLightSetupCall::thunk);
-		const auto originalTarget = PreNGRuntimeAddress(kPreNGPointLightTargetVA);
+		const auto originalTarget = F4Runtime::PreNG::POINT_LIGHT_TARGET.address();
 		const bool directToThunk = patch.callTarget == thunkTarget;
 		const bool branchToThunk = branchTarget == thunkTarget;
 		const bool verified = patch.readable && patch.opcode == 0xE8 && (directToThunk || branchToThunk);
@@ -1319,6 +1276,27 @@ namespace
 		InstalledUnverified
 	};
 
+	const char* PreNGPointLightHookStateName(PreNGPointLightHookState a_state)
+	{
+		switch (a_state) {
+		case PreNGPointLightHookState::Prepared:
+			return "prepared";
+		case PreNGPointLightHookState::Installed:
+			return "installed";
+		case PreNGPointLightHookState::InstalledUnverified:
+			return "installed-unverified";
+		case PreNGPointLightHookState::Failed:
+		default:
+			return "failed";
+		}
+	}
+
+	bool CanInstallPreNGSetupGeometryHooks(PreNGPointLightHookState a_pointLightHookState)
+	{
+		return a_pointLightHookState == PreNGPointLightHookState::Prepared ||
+		       a_pointLightHookState == PreNGPointLightHookState::Installed;
+	}
+
 	PreNGPointLightHookState PreparePreNGPointLightHook()
 	{
 		if (!ValidatePreNGPointLightCallsite()) {
@@ -1326,7 +1304,7 @@ namespace
 			return PreNGPointLightHookState::Failed;
 		}
 
-		const auto runtimeCall = PreNGRuntimeAddress(kPreNGPointLightCallVA);
+		const auto runtimeCall = F4Runtime::PreNG::POINT_LIGHT_CALL.address();
 		if (ShouldInstallPreNGInternalPointLightHook()) {
 			stl::write_thunk_call<PreNGPointLightSetupCall>(runtimeCall);
 			const bool patchVerified = VerifyPreNGPointLightHookPatch(runtimeCall);
@@ -1663,19 +1641,44 @@ void LightLimitFix::PostPostLoad()
 #if defined(FALLOUT_PRE_NG)
 	LogPreNGDiagnosticEnvironmentSnapshot();
 	const auto pointLightHookState = PreparePreNGPointLightHook();
-	switch (pointLightHookState) {
-	case PreNGPointLightHookState::Installed:
-		logger::warn("[LightLimitFix] PreNG SetupGeometry hooks held; scene-light decoder prepared, internal point-light hook diagnostic active and patch verified");
-		break;
-	case PreNGPointLightHookState::InstalledUnverified:
-		logger::warn("[LightLimitFix] PreNG SetupGeometry hooks held; scene-light decoder prepared, internal point-light hook patch unverified; diagnostic evidence is not trusted");
-		break;
-	case PreNGPointLightHookState::Prepared:
-		logger::info("[LightLimitFix] PreNG SetupGeometry hooks held; scene-light decoder prepared, internal point-light hook remains gated");
-		break;
-	case PreNGPointLightHookState::Failed:
-		logger::warn("[LightLimitFix] PreNG SetupGeometry hooks held; scene-light decoder prepared, internal point-light hook not prepared");
-		break;
+	const auto setupGeometryHookState = ReadEnvironmentSwitch(kPreNGSetupGeometryHookOptInEnv);
+	const bool setupGeometryRequested = setupGeometryHookState.enabled;
+	const bool setupGeometryAllowed = CanInstallPreNGSetupGeometryHooks(pointLightHookState);
+	if (setupGeometryRequested && setupGeometryAllowed) {
+		Hooks::Install(false);
+		logger::warn(
+			"[LightLimitFix] PreNG BSLightingShader SetupGeometry hook installed under {}=1 source={} pointLightState={}; scene-light decoder active, shader binding still uses explicit b3/t35-t37 gates",
+			kPreNGSetupGeometryHookOptInEnv,
+			EnvironmentSwitchSourceName(setupGeometryHookState.source),
+			PreNGPointLightHookStateName(pointLightHookState));
+		return;
+	}
+
+	if (setupGeometryRequested && !setupGeometryAllowed) {
+		logger::warn(
+			"[LightLimitFix] PreNG SetupGeometry hooks held despite {}=1 source={} pointLightState={}; callsite evidence is not trusted",
+			kPreNGSetupGeometryHookOptInEnv,
+			EnvironmentSwitchSourceName(setupGeometryHookState.source),
+			PreNGPointLightHookStateName(pointLightHookState));
+	} else {
+		switch (pointLightHookState) {
+		case PreNGPointLightHookState::Installed:
+			logger::warn(
+				"[LightLimitFix] PreNG SetupGeometry hooks held; scene-light decoder prepared, internal point-light hook diagnostic active and patch verified; set {}=1 for controlled SetupGeometry evidence",
+				kPreNGSetupGeometryHookOptInEnv);
+			break;
+		case PreNGPointLightHookState::InstalledUnverified:
+			logger::warn("[LightLimitFix] PreNG SetupGeometry hooks held; scene-light decoder prepared, internal point-light hook patch unverified; diagnostic evidence is not trusted");
+			break;
+		case PreNGPointLightHookState::Prepared:
+			logger::info(
+				"[LightLimitFix] PreNG SetupGeometry hooks held; scene-light decoder prepared, internal point-light hook remains gated; set {}=1 for controlled SetupGeometry evidence",
+				kPreNGSetupGeometryHookOptInEnv);
+			break;
+		case PreNGPointLightHookState::Failed:
+			logger::warn("[LightLimitFix] PreNG SetupGeometry hooks held; scene-light decoder prepared, internal point-light hook not prepared");
+			break;
+		}
 	}
 	return;
 #else
@@ -2136,11 +2139,12 @@ std::uint32_t LightLimitFix::CollectLightsFromPreNGSceneLights(RE::BSRenderPass*
 	}
 
 	const auto passAddress = reinterpret_cast<std::uintptr_t>(a_pass);
+	const F4Runtime::PreNGBSRenderPassView passView{ a_pass };
 
 	std::uintptr_t sceneLightsAddress = 0;
 	std::uint8_t rawLightCount = 0;
-	if (!ReadPreNGValue(passAddress + kPreNGBSRenderPassSceneLightsOffset, sceneLightsAddress) ||
-		!ReadPreNGValue(passAddress + kPreNGBSRenderPassRawLightCountOffset, rawLightCount) ||
+	if (!passView.ReadSceneLights(sceneLightsAddress) ||
+		!passView.ReadRawLightCount(rawLightCount) ||
 		sceneLightsAddress == 0 ||
 		rawLightCount <= kPreNGBSRenderPassSceneLightFirstIndex) {
 		return 0;
@@ -2165,8 +2169,7 @@ std::uint32_t LightLimitFix::CollectLightsFromPreNGSceneLights(RE::BSRenderPass*
 
 	for (std::uint32_t i = 0; i < availableLightCount && (frameLights.size() < kMaxLights || strictWriteCount < kMaxStrictLights); ++i) {
 		std::uintptr_t wrapperAddress = 0;
-		const auto entryAddress = sceneLightsAddress + ((i + kPreNGBSRenderPassSceneLightFirstIndex) * sizeof(std::uintptr_t));
-		if (!ReadPreNGValue(entryAddress, wrapperAddress) || wrapperAddress == 0) {
+		if (!passView.ReadSceneLightWrapper(i, wrapperAddress) || wrapperAddress == 0) {
 			++missingEntryCount;
 			continue;
 		}
@@ -2294,15 +2297,18 @@ std::uint32_t LightLimitFix::CollectLightsFromPreNGShadowScene()
 		return 0;
 	}
 
-	if (!ReadPreNGValue(shadowSceneNode + kPreNGShadowSceneNodeActiveLightsOffset, activeLightsAddress) ||
-		!ReadPreNGValue(shadowSceneNode + kPreNGShadowSceneNodeActiveLightsCountOffset, activeLightCount) ||
-		!ReadPreNGValue(shadowSceneNode + kPreNGShadowSceneNodeActiveShadowLightsOffset, activeShadowLightsAddress) ||
-		!ReadPreNGValue(shadowSceneNode + kPreNGShadowSceneNodeActiveShadowLightsCountOffset, activeShadowLightCount) ||
-		!ReadPreNGValue(shadowSceneNode + kPreNGShadowSceneNodeActiveExtraLightsOffset, activeExtraLightsAddress) ||
-		!ReadPreNGValue(shadowSceneNode + kPreNGShadowSceneNodeActiveExtraLightsCountOffset, activeExtraLightCount)) {
+	F4Runtime::PreNGShadowSceneBuckets buckets{};
+	const F4Runtime::PreNGShadowSceneNodeView shadowSceneView{ shadowSceneNode };
+	if (!shadowSceneView.ReadBuckets(buckets)) {
 		logFailure("arrays-unreadable");
 		return 0;
 	}
+	activeLightsAddress = buckets.active.entries;
+	activeLightCount = buckets.active.count;
+	activeShadowLightsAddress = buckets.shadow.entries;
+	activeShadowLightCount = buckets.shadow.count;
+	activeExtraLightsAddress = buckets.extra.entries;
+	activeExtraLightCount = buckets.extra.count;
 
 	if (activeLightCount > kPreNGMaxShadowSceneActiveLights ||
 		activeShadowLightCount > kPreNGMaxShadowSceneActiveLights ||
@@ -2428,15 +2434,6 @@ std::uint32_t LightLimitFix::CollectLightsFromPreNGShadowScene()
 
 bool LightLimitFix::UpdatePreNGStrictLightDataCB()
 {
-	static bool loggedMissing = false;
-	if (!strictLightDataCB) {
-		if (!loggedMissing) {
-			logger::warn("[LightLimitFix] PreNG strict-light CB update requested but resource is unavailable");
-			loggedMissing = true;
-		}
-		return false;
-	}
-
 	auto* rendererData = fo4cs::GetRendererData();
 	if (!rendererData) {
 		return false;
@@ -2446,15 +2443,32 @@ bool LightLimitFix::UpdatePreNGStrictLightDataCB()
 		return false;
 	}
 
+	return UpdatePreNGStrictLightDataCB(context);
+}
+
+bool LightLimitFix::UpdatePreNGStrictLightDataCB(ID3D11DeviceContext* a_context)
+{
+	static bool loggedMissing = false;
+	if (!strictLightDataCB) {
+		if (!loggedMissing) {
+			logger::warn("[LightLimitFix] PreNG strict-light CB update requested but resource is unavailable");
+			loggedMissing = true;
+		}
+		return false;
+	}
+	if (!a_context) {
+		return false;
+	}
+
 	D3D11_MAPPED_SUBRESOURCE mapped{};
-	const auto hr = context->Map(strictLightDataCB.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+	const auto hr = a_context->Map(strictLightDataCB.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
 	if (FAILED(hr)) {
 		LogResourceFailure("Map(strictLightDataCB)", hr);
 		return false;
 	}
 
 	std::memcpy(mapped.pData, &strictLightDataTemp, sizeof(strictLightDataTemp));
-	context->Unmap(strictLightDataCB.get(), 0);
+	a_context->Unmap(strictLightDataCB.get(), 0);
 	return true;
 }
 
@@ -2621,6 +2635,167 @@ bool LightLimitFix::BindPreNGClusterSRVsToPixelShader(RE::BSRenderPass* a_pass, 
 	return true;
 }
 
+LightLimitFix::PreNGDFLightResourceBindingState LightLimitFix::BindPreNGDFLightDrawStateStrictLightCB(ID3D11DeviceContext* a_context)
+{
+	PreNGDFLightResourceBindingState state{};
+	state.lightCount = currentLightCount;
+	state.strictLightCount = currentStrictLightCount;
+	state.shadowBitMask = strictLightDataTemp.ShadowBitMask;
+
+	if (!ShouldBindPreNGDFLightDrawStateStrictLightCB()) {
+		return state;
+	}
+
+	auto logBindFailure = [&](const char* a_reason) {
+		static std::atomic_uint32_t failureCount = 0;
+		const auto failureIndex = ++failureCount;
+		if (failureIndex <= 8 || failureIndex % 512 == 0) {
+			logger::warn(
+				"[LightLimitFix] PreNG DFLight draw-state strict-light CB b3 bind held failures={} reason={} context=0x{:X} lights={} strict={} shadowMask=0x{:08X}",
+				failureIndex,
+				a_reason,
+				reinterpret_cast<std::uintptr_t>(a_context),
+				state.lightCount,
+				state.strictLightCount,
+				state.shadowBitMask);
+		}
+	};
+
+	if (!a_context) {
+		logBindFailure("context-unavailable");
+		return state;
+	}
+	if (!strictLightDataCB) {
+		logBindFailure("missing-strict-cb");
+		return state;
+	}
+	if (!UpdatePreNGStrictLightDataCB(a_context)) {
+		logBindFailure("strict-cb-upload-failed");
+		return state;
+	}
+
+	ID3D11Buffer* strictCB = strictLightDataCB.get();
+	a_context->PSSetConstantBuffers(3, 1, &strictCB);
+	state.strictCBBound = true;
+
+	static std::atomic_uint32_t bindCount = 0;
+	const auto bindIndex = ++bindCount;
+	if (bindIndex <= 8 || bindIndex % 512 == 0) {
+		logger::info(
+			"[LightLimitFix] PreNG DFLight draw-state strict-light CB bound to PS b3 binds={} context=0x{:X} lights={} strict={} shadowMask=0x{:08X}",
+			bindIndex,
+			reinterpret_cast<std::uintptr_t>(a_context),
+			state.lightCount,
+			state.strictLightCount,
+			state.shadowBitMask);
+	}
+
+	return state;
+}
+
+LightLimitFix::PreNGDFLightResourceBindingState LightLimitFix::BindPreNGDFLightDrawStateClusterSRVs(
+	ID3D11DeviceContext* a_context,
+	bool a_strictCBBound)
+{
+	PreNGDFLightResourceBindingState state{};
+	state.lightCount = currentLightCount;
+	state.strictLightCount = currentStrictLightCount;
+	state.shadowBitMask = strictLightDataTemp.ShadowBitMask;
+	state.strictCBBound = a_strictCBBound;
+
+	if (!ShouldBindPreNGDFLightDrawStateClusterSRVs()) {
+		return state;
+	}
+
+	auto logBindFailure = [&](const char* a_reason) {
+		static std::atomic_uint32_t failureCount = 0;
+		const auto failureIndex = ++failureCount;
+		if (failureIndex <= 8 || failureIndex % 512 == 0) {
+			logger::warn(
+				"[LightLimitFix] PreNG DFLight draw-state cluster SRV t35-t37 bind held failures={} reason={} context=0x{:X} lights={} strict={} shadowMask=0x{:08X} strictCBBound={}",
+				failureIndex,
+				a_reason,
+				reinterpret_cast<std::uintptr_t>(a_context),
+				state.lightCount,
+				state.strictLightCount,
+				state.shadowBitMask,
+				state.strictCBBound);
+		}
+	};
+
+	if (!a_context) {
+		logBindFailure("context-unavailable");
+		return state;
+	}
+	if (!strictLightDataCB) {
+		logBindFailure("missing-strict-cb");
+		return state;
+	}
+	if (!state.strictCBBound) {
+		ID3D11Buffer* currentStrictCB = nullptr;
+		a_context->PSGetConstantBuffers(3, 1, &currentStrictCB);
+		state.strictCBBound = currentStrictCB == strictLightDataCB.get();
+		if (currentStrictCB) {
+			currentStrictCB->Release();
+		}
+	}
+	if (!state.strictCBBound) {
+		logBindFailure("strict-cb-not-bound");
+		return state;
+	}
+	if (currentLightCount == 0) {
+		logBindFailure("cluster-prepass-not-ready");
+		return state;
+	}
+	if (!HasResources()) {
+		logBindFailure("gpu-resources-incomplete");
+		return state;
+	}
+	if (!lightsSRV || !lightIndexListSRV || !lightGridSRV) {
+		logBindFailure("missing-cluster-srvs");
+		return state;
+	}
+
+	ID3D11ShaderResourceView* views[3]{
+		lightsSRV.get(),
+		lightIndexListSRV.get(),
+		lightGridSRV.get()
+	};
+	a_context->PSSetShaderResources(35, ARRAYSIZE(views), views);
+	state.clusterSRVsBound = true;
+
+	static std::atomic_uint32_t bindCount = 0;
+	const auto bindIndex = ++bindCount;
+	if (bindIndex <= 8 || bindIndex % 512 == 0) {
+		logger::info(
+			"[LightLimitFix] PreNG DFLight draw-state cluster SRVs bound to PS t35-t37 binds={} context=0x{:X} lights={} strict={} clusters={} shadowMask=0x{:08X} strictCBBound={}",
+			bindIndex,
+			reinterpret_cast<std::uintptr_t>(a_context),
+			state.lightCount,
+			state.strictLightCount,
+			clusterSize[0] * clusterSize[1] * clusterSize[2],
+			state.shadowBitMask,
+			state.strictCBBound);
+	}
+
+	static std::atomic_uint32_t nonZeroBindCount = 0;
+	const auto nonZeroBindIndex = ++nonZeroBindCount;
+	if (nonZeroBindIndex <= 8 || nonZeroBindIndex % 512 == 0) {
+		logger::info(
+			"[LightLimitFix] PreNG DFLight draw-state cluster SRVs nonzero bind proof nonzeroBinds={} binds={} context=0x{:X} lights={} strict={} clusters={} shadowMask=0x{:08X} strictCBBound={}",
+			nonZeroBindIndex,
+			bindIndex,
+			reinterpret_cast<std::uintptr_t>(a_context),
+			state.lightCount,
+			state.strictLightCount,
+			clusterSize[0] * clusterSize[1] * clusterSize[2],
+			state.shadowBitMask,
+			state.strictCBBound);
+	}
+
+	return state;
+}
+
 LightLimitFix::PreNGDFLightResourceBindingState LightLimitFix::BindPreNGDFLightNoOpPassResources(
 	ID3D11DeviceContext* a_context,
 	const char* a_passName)
@@ -2722,7 +2897,8 @@ void LightLimitFix::TracePreNGActiveLightingBindings(
 	std::uint32_t a_vertexDescriptor,
 	std::uint32_t a_pixelDescriptor,
 	bool a_found,
-	std::uintptr_t a_lookupPixelShader)
+	std::uintptr_t a_lookupPixelShader,
+	ID3D11DeviceContext* a_contextOverride)
 {
 	std::optional<CommunityShaders::ShaderCache::ShaderMetadata> currentPixelShaderMetadata;
 	std::optional<CommunityShaders::ShaderCache::ShaderMetadata> lookupPixelShaderMetadata;
@@ -2740,11 +2916,40 @@ void LightLimitFix::TracePreNGActiveLightingBindings(
 						ID3D11ShaderResourceView* a_boundT35,
 						ID3D11ShaderResourceView* a_boundT36,
 						ID3D11ShaderResourceView* a_boundT37) {
-		static std::atomic_uint32_t queriedAuditCount = 0;
+		static std::atomic_uint32_t setupGeometryQueriedAuditCount = 0;
+		static std::atomic_uint32_t shaderLookupQueriedAuditCount = 0;
+		static std::atomic_uint32_t dflightDrawStateQueriedAuditCount = 0;
+		static std::atomic_uint32_t dflightCandidateBindQueriedAuditCount = 0;
+		static std::atomic_uint32_t pointLightHookQueriedAuditCount = 0;
+		static std::atomic_uint32_t otherQueriedAuditCount = 0;
 		static std::atomic_uint32_t heldAuditCount = 0;
+		static std::atomic_bool dflightDrawStateB3Logged = false;
 		const bool queried = std::strcmp(a_reason, "queried") == 0;
-		const auto auditIndex = queried ? ++queriedAuditCount : ++heldAuditCount;
-		if (auditIndex > 16 && auditIndex % 128 != 0) {
+		const std::string_view sourceName = a_source ? std::string_view{ a_source } : std::string_view{};
+		const bool dflightDrawStateAudit = queried && sourceName == "dflight-draw-state";
+		std::atomic_uint32_t* auditCounter = &heldAuditCount;
+		if (queried) {
+			if (sourceName == "setup-geometry") {
+				auditCounter = &setupGeometryQueriedAuditCount;
+			} else if (sourceName == "shader-lookup") {
+				auditCounter = &shaderLookupQueriedAuditCount;
+			} else if (sourceName == "dflight-draw-state") {
+				auditCounter = &dflightDrawStateQueriedAuditCount;
+			} else if (sourceName == "dflight-full-shadowed-candidate-bind") {
+				auditCounter = &dflightCandidateBindQueriedAuditCount;
+			} else if (sourceName == "point-light-hook") {
+				auditCounter = &pointLightHookQueriedAuditCount;
+			} else {
+				auditCounter = &otherQueriedAuditCount;
+			}
+		}
+		const auto auditIndex = ++(*auditCounter);
+		const auto initialAuditLimit = dflightDrawStateAudit ? 64u : 16u;
+		const bool forceFirstDFLightB3 =
+			dflightDrawStateAudit &&
+			a_b3Matches &&
+			!dflightDrawStateB3Logged.exchange(true, std::memory_order_relaxed);
+		if (!forceFirstDFLightB3 && auditIndex > initialAuditLimit && auditIndex % 128 != 0) {
 			return;
 		}
 
@@ -2809,12 +3014,15 @@ void LightLimitFix::TracePreNGActiveLightingBindings(
 		return;
 	}
 
-	auto* rendererData = fo4cs::GetRendererData();
-	if (!rendererData) {
-		logAudit("renderer-data-unavailable", nullptr, 0, false, false, false, false, false, nullptr, nullptr, nullptr, nullptr);
-		return;
+	auto* context = a_contextOverride;
+	if (!context) {
+		auto* rendererData = fo4cs::GetRendererData();
+		if (!rendererData) {
+			logAudit("renderer-data-unavailable", nullptr, 0, false, false, false, false, false, nullptr, nullptr, nullptr, nullptr);
+			return;
+		}
+		context = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
 	}
-	auto* context = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
 	if (!context) {
 		logAudit("context-unavailable", nullptr, 0, false, false, false, false, false, nullptr, nullptr, nullptr, nullptr);
 		return;
@@ -3006,7 +3214,88 @@ void LightLimitFix::SetupGeometryBefore(RE::BSRenderPass* /*a_pass*/)
 void LightLimitFix::SetupGeometryAfter(RE::BSRenderPass* a_pass)
 {
 #if defined(FALLOUT_PRE_NG)
-	CollectLightsFromPreNGSceneLights(a_pass);
+	const auto collected = CollectLightsFromPreNGSceneLights(a_pass);
+	if (collected > 0) {
+		const bool strictCBProofRequested = ShouldUpdatePreNGStrictLightCB() || ShouldBindPreNGSetupGeometryStrictLightCB();
+		std::uint32_t strictCBProofSample = 0;
+		bool strictCBProofActive = false;
+		if (strictCBProofRequested) {
+			static std::atomic_uint32_t setupGeometryStrictCBProofSamples = 0;
+			const auto proofIndex = setupGeometryStrictCBProofSamples.fetch_add(1, std::memory_order_relaxed);
+			if (proofIndex < kPreNGSetupGeometryStrictCBProofMaxSamples) {
+				strictCBProofActive = true;
+				strictCBProofSample = proofIndex + 1;
+			} else {
+				static bool loggedStrictCBProofComplete = false;
+				if (!loggedStrictCBProofComplete) {
+					logger::info(
+						"[LightLimitFix] PreNG SetupGeometry strict-CB proof window complete; holding upload/bind after {} accepted samples",
+						kPreNGSetupGeometryStrictCBProofMaxSamples);
+					loggedStrictCBProofComplete = true;
+				}
+			}
+		}
+		const bool strictCBUploaded = strictCBProofActive ? UploadPreNGStrictLightDataDiagnostic() : false;
+		const bool strictCBBindRequested = strictCBProofActive && ShouldBindPreNGSetupGeometryStrictLightCB();
+		const bool strictCBPersistRequested = ShouldPersistPreNGSetupGeometryStrictLightCB();
+		ID3D11DeviceContext* setupGeometryContext = nullptr;
+		ID3D11Buffer* previousStrictCB = nullptr;
+		bool strictCBRestorePrepared = false;
+		if (strictCBBindRequested && !strictCBPersistRequested) {
+			if (auto* rendererData = fo4cs::GetRendererData()) {
+				setupGeometryContext = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
+				if (setupGeometryContext) {
+					setupGeometryContext->PSGetConstantBuffers(3, 1, &previousStrictCB);
+					strictCBRestorePrepared = true;
+				}
+			}
+		}
+		const bool strictCBBound = strictCBBindRequested && (strictCBPersistRequested || strictCBRestorePrepared) ?
+			BindPreNGStrictLightDataCBToPixelShader(a_pass, collected, strictCBUploaded) :
+			false;
+		const bool strictCBAvailable = strictCBUploaded || strictCBBound;
+		if (strictCBBound) {
+			TracePreNGActiveLightingBindings("setup-geometry", -1, 0, 0, false, 0);
+			if (!strictCBPersistRequested && strictCBRestorePrepared && setupGeometryContext) {
+				setupGeometryContext->PSSetConstantBuffers(3, 1, &previousStrictCB);
+			}
+		}
+		if (previousStrictCB) {
+			previousStrictCB->Release();
+		}
+		const char* strictCBRestoreState = strictCBBound ?
+			(strictCBPersistRequested ? "persistent" : (strictCBRestorePrepared ? "restored" : "restore-unavailable")) :
+			"held";
+		static std::atomic_uint32_t setupGeometryCollectCount = 0;
+		const auto collectIndex = ++setupGeometryCollectCount;
+		if (collectIndex <= 8 || collectIndex % 512 == 0) {
+			logger::info(
+				"[LightLimitFix] PreNG SetupGeometry scene-light collection accepted samples={} pass=0x{:X} collected={} strict={} strictCB={} b3={} b3Restore={} setupGeometryBindGate={} setupGeometryPersistGate={} strictCBProof={} proofSample={} shadowMask=0x{:08X}",
+				collectIndex,
+				reinterpret_cast<std::uintptr_t>(a_pass),
+				collected,
+				currentStrictLightCount,
+				strictCBAvailable ? "uploaded" : "held",
+				strictCBBound ? "bound" : "held",
+				strictCBRestoreState,
+				ShouldBindPreNGSetupGeometryStrictLightCB() ? "on" : "off",
+				strictCBPersistRequested ? "on" : "off",
+				strictCBProofRequested ? (strictCBProofActive ? "active" : "complete") : "off",
+				strictCBProofSample,
+				strictLightDataTemp.ShadowBitMask);
+		}
+	} else {
+		static std::atomic_uint32_t setupGeometryEmptyCount = 0;
+		const auto emptyIndex = ++setupGeometryEmptyCount;
+		if (emptyIndex <= 8 || emptyIndex % 512 == 0) {
+			logger::info(
+				"[LightLimitFix] PreNG SetupGeometry scene-light collection empty samples={} pass=0x{:X} strict={} shadowMask=0x{:08X}",
+				emptyIndex,
+				reinterpret_cast<std::uintptr_t>(a_pass),
+				currentStrictLightCount,
+				strictLightDataTemp.ShadowBitMask);
+		}
+	}
 #else
 	CollectLightsFromPass(a_pass);
 #endif
@@ -3016,16 +3305,54 @@ namespace RE::VTABLE
 {
 }
 
-void LightLimitFix::Hooks::Install()
+void LightLimitFix::Hooks::Install(bool a_includeEffectShader)
 {
-	stl::write_vfunc<0x7, BSLightingShader_SetupGeometry>(RE::VTABLE::BSLightingShader[0]);
-	stl::write_vfunc<0x7, BSEffectShader_SetupGeometry>(RE::VTABLE::BSEffectShader[0]);
-	logger::info("[LightLimitFix] Installed SetupGeometry hooks (vfunc index 7)");
+	static std::atomic_bool lightingInstalled = false;
+	static std::atomic_bool effectInstalled = false;
+
+	const bool installedLightingNow = !lightingInstalled.exchange(true, std::memory_order_acq_rel);
+	bool installedEffectNow = false;
+	if (installedLightingNow) {
+		stl::write_vfunc<0x7, BSLightingShader_SetupGeometry>(RE::VTABLE::BSLightingShader[0]);
+	}
+	if (a_includeEffectShader) {
+		installedEffectNow = !effectInstalled.exchange(true, std::memory_order_acq_rel);
+		if (installedEffectNow) {
+			stl::write_vfunc<0x7, BSEffectShader_SetupGeometry>(RE::VTABLE::BSEffectShader[0]);
+		}
+	}
+
+	const auto* state = CommunityShaders::State::GetSingleton();
+	const char* runtimeName = state ? state->GetRuntimeName().c_str() : "unknown";
+	if (installedLightingNow || installedEffectNow) {
+		logger::info(
+			"[LightLimitFix] Installed SetupGeometry hooks (runtime={}, vfunc index 7, lightingInstalled={} effectInstalled={} effectRequested={})",
+			runtimeName,
+			installedLightingNow,
+			installedEffectNow,
+			a_includeEffectShader);
+	} else {
+		logger::info(
+			"[LightLimitFix] SetupGeometry hooks already installed; skipping duplicate install (runtime={}, effectRequested={})",
+			runtimeName,
+			a_includeEffectShader);
+	}
 }
 
 void LightLimitFix::Hooks::BSLightingShader_SetupGeometry::thunk(
 	RE::BSShader* a_this, RE::BSRenderPass* a_pass)
 {
+#if defined(FALLOUT_PRE_NG)
+	static std::atomic_uint32_t preNGBSLightingSetupGeometryCalls = 0;
+	const auto callIndex = ++preNGBSLightingSetupGeometryCalls;
+	if (callIndex <= 8 || callIndex % 512 == 0) {
+		logger::info(
+			"[LightLimitFix] PreNG BSLightingShader SetupGeometry hook reached calls={} shader=0x{:X} pass=0x{:X}",
+			callIndex,
+			reinterpret_cast<std::uintptr_t>(a_this),
+			reinterpret_cast<std::uintptr_t>(a_pass));
+	}
+#endif
 	auto& self = globals::features::lightLimitFix;
 	self.SetupGeometryBefore(a_pass);
 	func(a_this, a_pass);

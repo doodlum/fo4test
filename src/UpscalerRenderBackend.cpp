@@ -2,6 +2,7 @@
 
 #include "RE/CameraData.h"
 #include "RE/SingletonAccessors.h"
+#include <RE/FO4Runtime.h>
 
 #include <algorithm>
 #include <cmath>
@@ -1266,13 +1267,15 @@ void InstallUpscalerRenderBackendHooks()
 	stl::write_vfunc<0x8, ImageSpaceEffectTemporalAA_IsActive>(RE::VTABLE::ImageSpaceEffectTemporalAA[0]);
 
 #if defined(FALLOUT_POST_NG)
-	stl::write_thunk_call<BSGraphics_State_UpdateDynamicResolution>(REL::ID(2318321).address() + 0x29F);
-	stl::write_thunk_call<DrawWorld_Render_PreUI_DeferredPrePass>(REL::ID(2318321).address() + 0x2E3);
-	stl::write_thunk_call<DrawWorld_Render_PreUI_Forward>(REL::ID(2318321).address() + 0x3A6);
+	namespace F4Hooks = RE::FO4Runtime::PostNG::Hooks;
+	stl::write_thunk_call<BSGraphics_State_UpdateDynamicResolution>(F4Hooks::UPSCALER_RENDER_BACKEND_DYNAMIC_RESOLUTION_CALL.address());
+	stl::write_thunk_call<DrawWorld_Render_PreUI_DeferredPrePass>(F4Hooks::UPSCALER_RENDER_BACKEND_DEFERRED_PREPASS_CALL.address());
+	stl::write_thunk_call<DrawWorld_Render_PreUI_Forward>(F4Hooks::UPSCALER_RENDER_BACKEND_FORWARD_CALL.address());
 #else
-	stl::write_thunk_call<BSGraphics_State_UpdateDynamicResolution>(REL::ID(984743).address() + 0x14B);
-	stl::write_thunk_call<DrawWorld_Render_PreUI_DeferredPrePass>(REL::ID(984743).address() + 0x17F);
-	stl::write_thunk_call<DrawWorld_Render_PreUI_Forward>(REL::ID(984743).address() + 0x1C9);
+	namespace F4Hooks = RE::FO4Runtime::PreNG::Hooks;
+	stl::write_thunk_call<BSGraphics_State_UpdateDynamicResolution>(F4Hooks::UPSCALER_RENDER_BACKEND_DYNAMIC_RESOLUTION_CALL.address());
+	stl::write_thunk_call<DrawWorld_Render_PreUI_DeferredPrePass>(F4Hooks::UPSCALER_RENDER_BACKEND_DEFERRED_PREPASS_CALL.address());
+	stl::write_thunk_call<DrawWorld_Render_PreUI_Forward>(F4Hooks::UPSCALER_RENDER_BACKEND_FORWARD_CALL.address());
 #endif
 
 	logger::debug("[Upscaler] Installed render backend hooks");
