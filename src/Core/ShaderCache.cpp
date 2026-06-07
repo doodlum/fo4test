@@ -9,12 +9,14 @@
 #else
 #include "RE/Bethesda/BSShader.h"
 #endif
+#include <RE/FO4Runtime.h>
 
 #include <d3dcompiler.h>
 
 #include <algorithm>
 #include <cctype>
 #include <cstring>
+#include <cstdlib>
 #include <format>
 #include <fstream>
 #include <memory>
@@ -26,7 +28,30 @@ namespace CommunityShaders
 	namespace
 	{
 		constexpr const char* kDescriptorCompileEnv = "FO4CS_LLF_PRENG_DESCRIPTOR_COMPILE";
+#if defined(FALLOUT_PRE_NG)
+		namespace F4Runtime = RE::FO4Runtime;
+		constexpr std::int32_t kPreNGBSLightingShaderType = static_cast<std::int32_t>(F4Runtime::PreNG::BS_LIGHTING_SHADER_TYPE);
+		constexpr std::int32_t kPreNGDFLightingShaderType = static_cast<std::int32_t>(F4Runtime::PreNG::DF_LIGHTING_SHADER_TYPE);
+		constexpr std::int32_t kPreNGDFCompositeShaderType = static_cast<std::int32_t>(F4Runtime::PreNG::DF_COMPOSITE_SHADER_TYPE);
+		constexpr std::string_view kPreNGDFLightingFxpName = "dflight";
+		constexpr std::string_view kPreNGDFCompositeFxpName = "dfcomposite";
+		constexpr const char* kPreNGDFLightFullShadowedDescriptorConsumerEnv = "FO4CS_LLF_PRENG_DFLIGHT_FULL_SHADOWED_DESCRIPTOR_CONSUMER";
+		constexpr const char* kPreNGDFLightFullShadowedDescriptorConsumerUnsafeEnv = "FO4CS_LLF_PRENG_DFLIGHT_FULL_SHADOWED_DESCRIPTOR_CONSUMER_UNSAFE";
+		constexpr const char* kPreNGDFLightFullContractVisibleLLFEnv = "FO4CS_LLF_PRENG_DFLIGHT_FULL_CONTRACT_VISIBLE_LLF";
+		constexpr const char* kPreNGDFLightFullContractVisibleMaxLightsEnv = "FO4CS_LLF_PRENG_DFLIGHT_FULL_CONTRACT_VISIBLE_MAX_LIGHTS";
+		constexpr const char* kPreNGDFCompositeDescriptorCompileEnv = "FO4CS_LLF_PRENG_DFCOMPOSITE_DESCRIPTOR_COMPILE";
+		constexpr const char* kPreNGDFCompositeSafeBindEnv = "FO4CS_LLF_PRENG_DFCOMPOSITE_SAFE_BIND";
+		constexpr const char* kPreNGDFCompositeFogSafeBindEnv = "FO4CS_LLF_PRENG_DFCOMPOSITE_FOG_SAFE_BIND";
+#else
 		constexpr std::int32_t kPreNGBSLightingShaderType = 8;
+#endif
+		constexpr std::string_view kPreNGDFLightFullContractDescriptorSource = "LightLimitFix/DFLightFullContractPS.hlsl";
+		constexpr std::string_view kPreNGDFLightFullShadowedDescriptorSource = "LightLimitFix/DFLightFullShadowedPS.hlsl";
+		constexpr std::string_view kPreNGDFCompositeDescriptorProbeSource = "LightLimitFix/DFCompositeContractProbePS.hlsl";
+		constexpr std::string_view kPreNGDFCompositeVanilla40Source = "LightLimitFix/DFCompositeVanilla40PS.hlsl";
+		constexpr std::string_view kPreNGDFCompositeVanilla88Source = "LightLimitFix/DFCompositeVanilla88PS.hlsl";
+		constexpr std::string_view kPreNGDFCompositeVanilla10040Source = "LightLimitFix/DFCompositeVanilla10040PS.hlsl";
+		constexpr std::string_view kPreNGDFCompositeVanilla10088Source = "LightLimitFix/DFCompositeVanilla10088PS.hlsl";
 
 #if defined(FALLOUT_POST_NG)
 		REX::W32::ID3D11VertexShader* ToREVertexShader(ID3D11VertexShader* a_shader)
@@ -59,14 +84,14 @@ namespace CommunityShaders
 			       std::strcmp(a_value, "ON") == 0;
 		}
 
-		bool ReadDescriptorCompileRegistryValue(HKEY a_root, const char* a_subKey, char (&a_value)[16])
+		bool ReadDescriptorRegistryValue(const char* a_name, HKEY a_root, const char* a_subKey, char (&a_value)[16])
 		{
 			DWORD type = 0;
 			DWORD size = static_cast<DWORD>(sizeof(a_value));
 			const auto result = RegGetValueA(
 				a_root,
 				a_subKey,
-				kDescriptorCompileEnv,
+				a_name,
 				RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ,
 				&type,
 				a_value,
@@ -79,27 +104,27 @@ namespace CommunityShaders
 			return true;
 		}
 
-		bool ReadDescriptorCompileSwitch()
+		bool ReadDescriptorEnvironmentValue(const char* a_name, char (&a_value)[16])
 		{
-			char value[16]{};
-			if (ReadDescriptorCompileRegistryValue(HKEY_CURRENT_USER, "Environment", value)) {
-				return IsTruthyDescriptorEnvironmentValue(value);
+			if (ReadDescriptorRegistryValue(a_name, HKEY_CURRENT_USER, "Environment", a_value)) {
+				return true;
 			}
 
-			if (ReadDescriptorCompileRegistryValue(
+			if (ReadDescriptorRegistryValue(
+					a_name,
 					HKEY_LOCAL_MACHINE,
 					"SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment",
-					value)) {
-				return IsTruthyDescriptorEnvironmentValue(value);
+					a_value)) {
+				return true;
 			}
 
 			SetLastError(ERROR_SUCCESS);
 			const auto length = GetEnvironmentVariableA(
-				kDescriptorCompileEnv,
-				value,
-				static_cast<DWORD>(sizeof(value)));
+				a_name,
+				a_value,
+				static_cast<DWORD>(sizeof(a_value)));
 			if (length > 0) {
-				return length < sizeof(value) && IsTruthyDescriptorEnvironmentValue(value);
+				return length < sizeof(a_value);
 			}
 			if (GetLastError() != ERROR_ENVVAR_NOT_FOUND) {
 				return false;
@@ -107,6 +132,71 @@ namespace CommunityShaders
 
 			return false;
 		}
+
+		bool ReadDescriptorEnvironmentSwitch(const char* a_name)
+		{
+			char value[16]{};
+			return ReadDescriptorEnvironmentValue(a_name, value) && IsTruthyDescriptorEnvironmentValue(value);
+		}
+
+		std::uint32_t ReadDescriptorEnvironmentUInt(
+			const char* a_name,
+			std::uint32_t a_defaultValue,
+			std::uint32_t a_minValue,
+			std::uint32_t a_maxValue)
+		{
+			char value[16]{};
+			if (!ReadDescriptorEnvironmentValue(a_name, value)) {
+				return a_defaultValue;
+			}
+
+			char* end = nullptr;
+			const auto parsed = std::strtoul(value, &end, 10);
+			if (end == value || *end != '\0') {
+				return a_defaultValue;
+			}
+
+			const auto clamped = std::clamp(parsed, static_cast<unsigned long>(a_minValue), static_cast<unsigned long>(a_maxValue));
+			return static_cast<std::uint32_t>(clamped);
+		}
+
+		bool ReadDescriptorCompileSwitch()
+		{
+			return ReadDescriptorEnvironmentSwitch(kDescriptorCompileEnv);
+		}
+
+#if defined(FALLOUT_PRE_NG)
+		bool ShouldEnablePreNGDFLightFullShadowedDescriptorConsumer()
+		{
+			static const bool enabled = [] {
+				const bool requested = ReadDescriptorEnvironmentSwitch(kPreNGDFLightFullShadowedDescriptorConsumerEnv);
+				const bool unsafeOverride = ReadDescriptorEnvironmentSwitch(kPreNGDFLightFullShadowedDescriptorConsumerUnsafeEnv);
+				if (requested && !unsafeOverride) {
+					logger::warn(
+						"[ShaderCache] PreNG DFLight full-shadowed descriptor compile held; DFLightFullShadowedPS is not vanilla-equivalent and can black out sky-light-only views. Set {}=1 only for focused diagnostics.",
+						kPreNGDFLightFullShadowedDescriptorConsumerUnsafeEnv);
+				}
+				return requested && unsafeOverride;
+			}();
+			return enabled;
+		}
+
+		bool ShouldEnablePreNGDFLightFullContractVisibleLLF()
+		{
+			static const bool enabled = ReadDescriptorEnvironmentSwitch(kPreNGDFLightFullContractVisibleLLFEnv);
+			return enabled;
+		}
+
+		std::uint32_t GetPreNGDFLightFullContractVisibleMaxLights()
+		{
+			static const auto maxLights = ReadDescriptorEnvironmentUInt(
+				kPreNGDFLightFullContractVisibleMaxLightsEnv,
+				16,
+				1,
+				64);
+			return maxLights;
+		}
+#endif
 
 		std::string ToLowerAscii(std::string a_value)
 		{
@@ -122,9 +212,313 @@ namespace CommunityShaders
 			       a_value.substr(0, a_prefix.size()) == a_prefix;
 		}
 
-		bool CanActivelyCompilePreNGLightingDescriptorShader(std::int32_t a_shaderType)
+		bool IsPreNGDFLightFxpName(std::string_view a_normalizedFxpFilename)
 		{
-			return a_shaderType == kPreNGBSLightingShaderType;
+#if defined(FALLOUT_PRE_NG)
+			std::string name{ a_normalizedFxpFilename };
+			if (name.empty() || name.front() == '<' || name.find('<') != std::string::npos) {
+				return false;
+			}
+			if (const auto slash = name.find_last_of('/'); slash != std::string::npos) {
+				name.erase(0, slash + 1);
+			}
+			for (const auto extension : { std::string_view{ ".hlsl" }, std::string_view{ ".fxp" }, std::string_view{ ".fx" } }) {
+				if (name.ends_with(extension)) {
+					name.resize(name.size() - extension.size());
+					break;
+				}
+			}
+			return name == kPreNGDFLightingFxpName;
+#else
+			(void)a_normalizedFxpFilename;
+			return false;
+#endif
+		}
+
+		bool IsPreNGDFCompositeFxpName(std::string_view a_normalizedFxpFilename)
+		{
+#if defined(FALLOUT_PRE_NG)
+			std::string name{ a_normalizedFxpFilename };
+			if (name.empty() || name.front() == '<' || name.find('<') != std::string::npos) {
+				return false;
+			}
+			if (const auto slash = name.find_last_of('/'); slash != std::string::npos) {
+				name.erase(0, slash + 1);
+			}
+			for (const auto extension : { std::string_view{ ".hlsl" }, std::string_view{ ".fxp" }, std::string_view{ ".fx" } }) {
+				if (name.ends_with(extension)) {
+					name.resize(name.size() - extension.size());
+					break;
+				}
+			}
+			return name == kPreNGDFCompositeFxpName;
+#else
+			(void)a_normalizedFxpFilename;
+			return false;
+#endif
+		}
+
+		bool IsPreNGDFLightFullShadowedDescriptorShader(
+			ShaderStage a_stage,
+			std::int32_t a_shaderType,
+			std::string_view a_normalizedFxpFilename,
+			std::uint32_t a_descriptor)
+		{
+#if defined(FALLOUT_PRE_NG)
+			return a_stage == ShaderStage::Pixel &&
+			       a_shaderType == kPreNGDFLightingShaderType &&
+			       IsPreNGDFLightFxpName(a_normalizedFxpFilename) &&
+			       F4Runtime::PreNG::IsDFLightFullShadowedPixelDescriptor(a_descriptor);
+#else
+			(void)a_stage;
+			(void)a_shaderType;
+			(void)a_normalizedFxpFilename;
+			(void)a_descriptor;
+			return false;
+#endif
+		}
+
+		bool IsPreNGDFLightFullContractDescriptorShader(
+			ShaderStage a_stage,
+			std::int32_t a_shaderType,
+			std::string_view a_normalizedFxpFilename,
+			std::uint32_t a_descriptor)
+		{
+#if defined(FALLOUT_PRE_NG)
+			return a_stage == ShaderStage::Pixel &&
+			       a_shaderType == kPreNGDFLightingShaderType &&
+			       IsPreNGDFLightFxpName(a_normalizedFxpFilename) &&
+			       F4Runtime::PreNG::IsDFLightFullContractPixelDescriptor(a_descriptor);
+#else
+			(void)a_stage;
+			(void)a_shaderType;
+			(void)a_normalizedFxpFilename;
+			(void)a_descriptor;
+			return false;
+#endif
+		}
+
+		bool IsPreNGDFCompositeContractDescriptorShader(
+			ShaderStage a_stage,
+			std::int32_t a_shaderType,
+			std::string_view a_normalizedFxpFilename,
+			std::uint32_t a_descriptor)
+		{
+#if defined(FALLOUT_PRE_NG)
+			return a_stage == ShaderStage::Pixel &&
+			       a_shaderType == kPreNGDFCompositeShaderType &&
+			       IsPreNGDFCompositeFxpName(a_normalizedFxpFilename) &&
+			       F4Runtime::PreNG::IsDFCompositeObservedPixelDescriptor(a_descriptor);
+#else
+			(void)a_stage;
+			(void)a_shaderType;
+			(void)a_normalizedFxpFilename;
+			(void)a_descriptor;
+			return false;
+#endif
+		}
+
+		bool ShouldCompilePreNGDFCompositeDescriptorShader(
+			ShaderStage a_stage,
+			std::int32_t a_shaderType,
+			std::string_view a_normalizedFxpFilename,
+			std::uint32_t a_descriptor)
+		{
+#if defined(FALLOUT_PRE_NG)
+			static const bool enabled = ReadDescriptorEnvironmentSwitch(kPreNGDFCompositeDescriptorCompileEnv);
+			return enabled &&
+			       IsPreNGDFCompositeContractDescriptorShader(
+					   a_stage,
+					   a_shaderType,
+					   a_normalizedFxpFilename,
+					   a_descriptor);
+#else
+			(void)a_stage;
+			(void)a_shaderType;
+			(void)a_normalizedFxpFilename;
+			(void)a_descriptor;
+			return false;
+#endif
+		}
+
+		bool ShouldEnablePreNGDFCompositeFogSafeBindShader()
+		{
+#if defined(FALLOUT_PRE_NG)
+			static const bool enabled = ReadDescriptorEnvironmentSwitch(kPreNGDFCompositeFogSafeBindEnv);
+			return enabled;
+#else
+			return false;
+#endif
+		}
+
+		bool ShouldUsePreNGDFCompositeVanilla40Shader(
+			ShaderStage a_stage,
+			std::int32_t a_shaderType,
+			std::string_view a_normalizedFxpFilename,
+			std::uint32_t a_descriptor)
+		{
+#if defined(FALLOUT_PRE_NG)
+			static const bool enabled = ReadDescriptorEnvironmentSwitch(kPreNGDFCompositeSafeBindEnv);
+			return enabled &&
+			       ShouldEnablePreNGDFCompositeFogSafeBindShader() &&
+			       a_stage == ShaderStage::Pixel &&
+			       a_shaderType == kPreNGDFCompositeShaderType &&
+			       IsPreNGDFCompositeFxpName(a_normalizedFxpFilename) &&
+			       a_descriptor == F4Runtime::PreNG::DF_COMPOSITE_PIXEL_DESCRIPTOR_40;
+#else
+			(void)a_stage;
+			(void)a_shaderType;
+			(void)a_normalizedFxpFilename;
+			(void)a_descriptor;
+			return false;
+#endif
+		}
+
+		bool ShouldUsePreNGDFCompositeVanilla88Shader(
+			ShaderStage a_stage,
+			std::int32_t a_shaderType,
+			std::string_view a_normalizedFxpFilename,
+			std::uint32_t a_descriptor)
+		{
+#if defined(FALLOUT_PRE_NG)
+			static const bool enabled = ReadDescriptorEnvironmentSwitch(kPreNGDFCompositeSafeBindEnv);
+			return enabled &&
+			       a_stage == ShaderStage::Pixel &&
+			       a_shaderType == kPreNGDFCompositeShaderType &&
+			       IsPreNGDFCompositeFxpName(a_normalizedFxpFilename) &&
+			       a_descriptor == F4Runtime::PreNG::DF_COMPOSITE_PIXEL_DESCRIPTOR_88;
+#else
+			(void)a_stage;
+			(void)a_shaderType;
+			(void)a_normalizedFxpFilename;
+			(void)a_descriptor;
+			return false;
+#endif
+		}
+
+		bool ShouldUsePreNGDFCompositeVanilla10040Shader(
+			ShaderStage a_stage,
+			std::int32_t a_shaderType,
+			std::string_view a_normalizedFxpFilename,
+			std::uint32_t a_descriptor)
+		{
+#if defined(FALLOUT_PRE_NG)
+			static const bool enabled = ReadDescriptorEnvironmentSwitch(kPreNGDFCompositeSafeBindEnv);
+			return enabled &&
+			       ShouldEnablePreNGDFCompositeFogSafeBindShader() &&
+			       a_stage == ShaderStage::Pixel &&
+			       a_shaderType == kPreNGDFCompositeShaderType &&
+			       IsPreNGDFCompositeFxpName(a_normalizedFxpFilename) &&
+			       a_descriptor == F4Runtime::PreNG::DF_COMPOSITE_PIXEL_DESCRIPTOR_10040;
+#else
+			(void)a_stage;
+			(void)a_shaderType;
+			(void)a_normalizedFxpFilename;
+			(void)a_descriptor;
+			return false;
+#endif
+		}
+
+		bool ShouldUsePreNGDFCompositeVanilla10088Shader(
+			ShaderStage a_stage,
+			std::int32_t a_shaderType,
+			std::string_view a_normalizedFxpFilename,
+			std::uint32_t a_descriptor)
+		{
+#if defined(FALLOUT_PRE_NG)
+			static const bool enabled = ReadDescriptorEnvironmentSwitch(kPreNGDFCompositeSafeBindEnv);
+			return enabled &&
+			       a_stage == ShaderStage::Pixel &&
+			       a_shaderType == kPreNGDFCompositeShaderType &&
+			       IsPreNGDFCompositeFxpName(a_normalizedFxpFilename) &&
+			       a_descriptor == F4Runtime::PreNG::DF_COMPOSITE_PIXEL_DESCRIPTOR_10088;
+#else
+			(void)a_stage;
+			(void)a_shaderType;
+			(void)a_normalizedFxpFilename;
+			(void)a_descriptor;
+			return false;
+#endif
+		}
+
+		bool ShouldUsePreNGDFCompositeVanillaSafeBindShader(
+			ShaderStage a_stage,
+			std::int32_t a_shaderType,
+			std::string_view a_normalizedFxpFilename,
+			std::uint32_t a_descriptor)
+		{
+			return ShouldUsePreNGDFCompositeVanilla40Shader(
+				       a_stage,
+				       a_shaderType,
+				       a_normalizedFxpFilename,
+				       a_descriptor) ||
+			       ShouldUsePreNGDFCompositeVanilla88Shader(
+				       a_stage,
+				       a_shaderType,
+				       a_normalizedFxpFilename,
+				       a_descriptor) ||
+			       ShouldUsePreNGDFCompositeVanilla10040Shader(
+				       a_stage,
+				       a_shaderType,
+				       a_normalizedFxpFilename,
+				       a_descriptor) ||
+			       ShouldUsePreNGDFCompositeVanilla10088Shader(
+				       a_stage,
+				       a_shaderType,
+				       a_normalizedFxpFilename,
+				       a_descriptor);
+		}
+
+		bool IsPreNGDFLightLLFConsumerDescriptorShader(
+			ShaderStage a_stage,
+			std::int32_t a_shaderType,
+			std::string_view a_normalizedFxpFilename,
+			std::uint32_t a_descriptor)
+		{
+#if defined(FALLOUT_PRE_NG)
+			return a_stage == ShaderStage::Pixel &&
+			       a_shaderType == kPreNGDFLightingShaderType &&
+			       IsPreNGDFLightFxpName(a_normalizedFxpFilename) &&
+			       (F4Runtime::PreNG::IsDFLightLLFConsumerPixelDescriptor(a_descriptor) ||
+			        (ShouldEnablePreNGDFLightFullShadowedDescriptorConsumer() &&
+			         F4Runtime::PreNG::IsDFLightFullShadowedPixelDescriptor(a_descriptor)));
+#else
+			(void)a_stage;
+			(void)a_shaderType;
+			(void)a_normalizedFxpFilename;
+			(void)a_descriptor;
+			return false;
+#endif
+		}
+
+		bool CanActivelyCompilePreNGLightingDescriptorShader(
+			ShaderStage a_stage,
+			std::int32_t a_shaderType,
+			std::string_view a_normalizedFxpFilename,
+			std::uint32_t a_descriptor)
+		{
+			return a_shaderType == kPreNGBSLightingShaderType ||
+			       IsPreNGDFLightLLFConsumerDescriptorShader(a_stage, a_shaderType, a_normalizedFxpFilename, a_descriptor) ||
+			       IsPreNGDFCompositeContractDescriptorShader(a_stage, a_shaderType, a_normalizedFxpFilename, a_descriptor);
+		}
+
+		bool CanCompileDescriptorShader(
+			ShaderStage a_stage,
+			std::int32_t a_shaderType,
+			std::string_view a_normalizedFxpFilename,
+			std::uint32_t a_descriptor)
+		{
+			return ReadDescriptorCompileSwitch() ||
+			       ShouldUsePreNGDFCompositeVanillaSafeBindShader(
+				       a_stage,
+				       a_shaderType,
+				       a_normalizedFxpFilename,
+				       a_descriptor) ||
+			       ShouldCompilePreNGDFCompositeDescriptorShader(
+					   a_stage,
+					   a_shaderType,
+					   a_normalizedFxpFilename,
+					   a_descriptor);
 		}
 
 		std::string BuildFeatureDefineList(const std::vector<D3D_SHADER_MACRO>& a_defines)
@@ -172,6 +566,57 @@ namespace CommunityShaders
 			result.storage.emplace_back(
 				a_stage == ShaderStage::Vertex ? "FO4CS_DESCRIPTOR_VERTEX_SHADER" : "FO4CS_DESCRIPTOR_PIXEL_SHADER",
 				"1");
+
+#if defined(FALLOUT_PRE_NG)
+			if (a_stage == ShaderStage::Pixel &&
+				a_shaderType == kPreNGDFLightingShaderType &&
+				F4Runtime::PreNG::IsDFLightFullContractPixelDescriptor(a_descriptor)) {
+				result.storage.emplace_back("FO4CS_DFLIGHT_FULL_CONTRACT_DESCRIPTOR", "1");
+				if (ShouldEnablePreNGDFLightFullContractVisibleLLF()) {
+					result.storage.emplace_back("FO4CS_DFLIGHT_FULL_CONTRACT_VISIBLE_LLF", "1");
+					result.storage.emplace_back(
+						"FO4CS_DFLIGHT_FULL_CONTRACT_VISIBLE_MAX_LIGHTS",
+						std::to_string(GetPreNGDFLightFullContractVisibleMaxLights()));
+				}
+			}
+			if (a_stage == ShaderStage::Pixel &&
+				a_shaderType == kPreNGDFCompositeShaderType &&
+				F4Runtime::PreNG::IsDFCompositeObservedPixelDescriptor(a_descriptor)) {
+				result.storage.emplace_back("FO4CS_DFCOMPOSITE_CONTRACT_DESCRIPTOR", "1");
+				if (a_descriptor == F4Runtime::PreNG::DF_COMPOSITE_PIXEL_DESCRIPTOR_40 &&
+					ShouldUsePreNGDFCompositeVanilla40Shader(
+						a_stage,
+						a_shaderType,
+						kPreNGDFCompositeFxpName,
+						a_descriptor)) {
+					result.storage.emplace_back("FO4CS_DFCOMPOSITE_VANILLA_40", "1");
+				}
+				if (a_descriptor == F4Runtime::PreNG::DF_COMPOSITE_PIXEL_DESCRIPTOR_88 &&
+					ShouldUsePreNGDFCompositeVanilla88Shader(
+						a_stage,
+						a_shaderType,
+						kPreNGDFCompositeFxpName,
+						a_descriptor)) {
+					result.storage.emplace_back("FO4CS_DFCOMPOSITE_VANILLA_88", "1");
+				}
+				if (a_descriptor == F4Runtime::PreNG::DF_COMPOSITE_PIXEL_DESCRIPTOR_10040 &&
+					ShouldUsePreNGDFCompositeVanilla10040Shader(
+						a_stage,
+						a_shaderType,
+						kPreNGDFCompositeFxpName,
+						a_descriptor)) {
+					result.storage.emplace_back("FO4CS_DFCOMPOSITE_VANILLA_10040", "1");
+				}
+				if (a_descriptor == F4Runtime::PreNG::DF_COMPOSITE_PIXEL_DESCRIPTOR_10088 &&
+					ShouldUsePreNGDFCompositeVanilla10088Shader(
+						a_stage,
+						a_shaderType,
+						kPreNGDFCompositeFxpName,
+						a_descriptor)) {
+					result.storage.emplace_back("FO4CS_DFCOMPOSITE_VANILLA_10088", "1");
+				}
+			}
+#endif
 
 			result.macros.reserve(result.storage.size() + 1);
 			for (auto& [name, value] : result.storage) {
@@ -248,6 +693,59 @@ namespace CommunityShaders
 
 	std::optional<std::string> ShaderCache::ResolveDescriptorShaderSource(const DescriptorShaderKey& a_key)
 	{
+		if (IsPreNGDFLightFullContractDescriptorShader(a_key.stage, a_key.shaderType, a_key.fxpFilename, a_key.descriptor)) {
+			const auto diskPath = std::filesystem::path("Data\\Shaders") / std::filesystem::path(kPreNGDFLightFullContractDescriptorSource);
+			std::error_code ec;
+			if (std::filesystem::exists(diskPath, ec) && std::filesystem::is_regular_file(diskPath, ec)) {
+				return std::string{ kPreNGDFLightFullContractDescriptorSource };
+			}
+			return std::nullopt;
+		}
+
+		if (IsPreNGDFLightFullShadowedDescriptorShader(a_key.stage, a_key.shaderType, a_key.fxpFilename, a_key.descriptor)) {
+			const auto diskPath = std::filesystem::path("Data\\Shaders") / std::filesystem::path(kPreNGDFLightFullShadowedDescriptorSource);
+			std::error_code ec;
+			if (std::filesystem::exists(diskPath, ec) && std::filesystem::is_regular_file(diskPath, ec)) {
+				return std::string{ kPreNGDFLightFullShadowedDescriptorSource };
+			}
+			return std::nullopt;
+		}
+
+		if (IsPreNGDFCompositeContractDescriptorShader(a_key.stage, a_key.shaderType, a_key.fxpFilename, a_key.descriptor)) {
+			std::string_view sourcePath = kPreNGDFCompositeDescriptorProbeSource;
+			if (ShouldUsePreNGDFCompositeVanilla40Shader(
+					a_key.stage,
+					a_key.shaderType,
+					a_key.fxpFilename,
+					a_key.descriptor)) {
+				sourcePath = kPreNGDFCompositeVanilla40Source;
+			} else if (ShouldUsePreNGDFCompositeVanilla88Shader(
+					a_key.stage,
+					a_key.shaderType,
+					a_key.fxpFilename,
+					a_key.descriptor)) {
+				sourcePath = kPreNGDFCompositeVanilla88Source;
+			} else if (ShouldUsePreNGDFCompositeVanilla10040Shader(
+						   a_key.stage,
+						   a_key.shaderType,
+						   a_key.fxpFilename,
+						   a_key.descriptor)) {
+				sourcePath = kPreNGDFCompositeVanilla10040Source;
+			} else if (ShouldUsePreNGDFCompositeVanilla10088Shader(
+						   a_key.stage,
+						   a_key.shaderType,
+						   a_key.fxpFilename,
+						   a_key.descriptor)) {
+				sourcePath = kPreNGDFCompositeVanilla10088Source;
+			}
+			const auto diskPath = std::filesystem::path("Data\\Shaders") / std::filesystem::path(sourcePath);
+			std::error_code ec;
+			if (std::filesystem::exists(diskPath, ec) && std::filesystem::is_regular_file(diskPath, ec)) {
+				return std::string{ sourcePath };
+			}
+			return std::nullopt;
+		}
+
 		auto source = a_key.fxpFilename;
 		if (source.empty() || source.front() == '<' || source.find('<') != std::string::npos) {
 			return std::nullopt;
@@ -450,7 +948,7 @@ namespace CommunityShaders
 			return cachedEntry;
 		}
 
-		if (!ShouldCompileDescriptorShaders()) {
+		if (!CanCompileDescriptorShader(ShaderStage::Vertex, a_shader.shaderType, key.fxpFilename, a_descriptor)) {
 			LogDescriptorCompileEvent(
 				ShaderStage::Vertex,
 				a_shader,
@@ -479,7 +977,7 @@ namespace CommunityShaders
 			return cachedEntry;
 		}
 
-		if (!ShouldCompileDescriptorShaders()) {
+		if (!CanCompileDescriptorShader(ShaderStage::Pixel, a_shader.shaderType, key.fxpFilename, a_descriptor)) {
 			LogDescriptorCompileEvent(
 				ShaderStage::Pixel,
 				a_shader,
@@ -498,12 +996,12 @@ namespace CommunityShaders
 		constexpr auto stage = ShaderStage::Vertex;
 		const auto key = MakeDescriptorShaderKey(stage, a_shader, a_descriptor);
 
-		if (!ShouldCompileDescriptorShaders()) {
+		if (!CanCompileDescriptorShader(stage, a_shader.shaderType, key.fxpFilename, a_descriptor)) {
 			LogDescriptorCompileEvent(stage, a_shader, a_descriptor, "MakeAndAddVertexShader", "gated", "FO4CS_LLF_PRENG_DESCRIPTOR_COMPILE-off");
 			return nullptr;
 		}
 
-		if (!CanActivelyCompilePreNGLightingDescriptorShader(a_shader.shaderType)) {
+		if (!CanActivelyCompilePreNGLightingDescriptorShader(stage, a_shader.shaderType, key.fxpFilename, a_descriptor)) {
 			LogDescriptorCompileEvent(stage, a_shader, a_descriptor, "MakeAndAddVertexShader", "skipped", "unsupported-shaderType");
 			return nullptr;
 		}
@@ -594,12 +1092,12 @@ namespace CommunityShaders
 		constexpr auto stage = ShaderStage::Pixel;
 		const auto key = MakeDescriptorShaderKey(stage, a_shader, a_descriptor);
 
-		if (!ShouldCompileDescriptorShaders()) {
+		if (!CanCompileDescriptorShader(stage, a_shader.shaderType, key.fxpFilename, a_descriptor)) {
 			LogDescriptorCompileEvent(stage, a_shader, a_descriptor, "MakeAndAddPixelShader", "gated", "FO4CS_LLF_PRENG_DESCRIPTOR_COMPILE-off");
 			return nullptr;
 		}
 
-		if (!CanActivelyCompilePreNGLightingDescriptorShader(a_shader.shaderType)) {
+		if (!CanActivelyCompilePreNGLightingDescriptorShader(stage, a_shader.shaderType, key.fxpFilename, a_descriptor)) {
 			LogDescriptorCompileEvent(stage, a_shader, a_descriptor, "MakeAndAddPixelShader", "skipped", "unsupported-shaderType");
 			return nullptr;
 		}
@@ -662,6 +1160,9 @@ namespace CommunityShaders
 		owned->bytecode = std::move(*bytecode);
 		owned->entry.id = a_descriptor;
 		owned->entry.shader = ToREPixelShader(owned->d3dShader.get());
+		if (const auto metadata = GetMetadataForBytecode(stage, owned->bytecode.data(), owned->bytecode.size())) {
+			ObserveD3DShaderObject(stage, reinterpret_cast<std::uintptr_t>(owned->d3dShader.get()), *metadata);
+		}
 
 		RE::BSGraphics::PixelShader* entry = nullptr;
 		std::size_t bytecodeSize = 0;
@@ -799,7 +1300,11 @@ namespace CommunityShaders
 		return std::nullopt;
 	}
 
-	bool ShaderCache::DumpObservedD3DShaderObject(ShaderStage a_stage, std::uintptr_t a_d3dObject, std::string_view a_label)
+	bool ShaderCache::DumpObservedD3DShaderObject(
+		ShaderStage a_stage,
+		std::uintptr_t a_d3dObject,
+		std::string_view a_label,
+		std::string_view a_familySubdir)
 	{
 		if (a_d3dObject == 0) {
 			return false;
@@ -823,7 +1328,8 @@ namespace CommunityShaders
 			observed = it->second;
 		}
 
-		const auto dumpDirectory = GetDumpDirectory() / "LightLimitFix" / "DFLight" / GetStageName(a_stage);
+		const auto familySubdir = a_familySubdir.empty() ? std::string_view{ "Unknown" } : a_familySubdir;
+		const auto dumpDirectory = GetDumpDirectory() / "LightLimitFix" / familySubdir / GetStageName(a_stage);
 		std::error_code ec;
 		std::filesystem::create_directories(dumpDirectory, ec);
 		if (ec) {

@@ -126,7 +126,11 @@ namespace CommunityShaders
 		void ObserveD3DShaderObject(ShaderStage a_stage, std::uintptr_t a_d3dObject, const ShaderMetadata& a_metadata);
 		void ObserveD3DShaderObjectBytecode(ShaderStage a_stage, std::uintptr_t a_d3dObject, const ShaderMetadata& a_metadata, const void* a_bytecode, SIZE_T a_bytecodeLength);
 		[[nodiscard]] std::optional<ShaderMetadata> GetMetadataForD3DShaderObject(ShaderStage a_stage, std::uintptr_t a_d3dObject);
-		[[nodiscard]] bool DumpObservedD3DShaderObject(ShaderStage a_stage, std::uintptr_t a_d3dObject, std::string_view a_label);
+		[[nodiscard]] bool DumpObservedD3DShaderObject(
+			ShaderStage a_stage,
+			std::uintptr_t a_d3dObject,
+			std::string_view a_label,
+			std::string_view a_familySubdir = "DFLight");
 
 	private:
 

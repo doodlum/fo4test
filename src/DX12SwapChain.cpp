@@ -174,7 +174,8 @@ std::string FormatHRESULT(HRESULT hr)
 	{
 		kUIUnavailable,
 		kBlockingMenuOpen,
-		kPostLoadingSettle
+		kPostLoadingSettle,
+		kPostMenuSettle
 	};
 
 	struct FrameGenerationBlock
@@ -205,6 +206,7 @@ std::string FormatHRESULT(HRESULT hr)
 		std::string_view{ "TerminalHolotapeMenu" },
 		std::string_view{ "PowerArmorModMenu" }
 	};
+	constexpr std::uint32_t kFrameGenerationPostMenuSettlePresents = 600;
 
 	const char* GetFrameGenerationBlockReasonName(FrameGenerationBlockReason reason)
 	{
@@ -215,6 +217,8 @@ std::string FormatHRESULT(HRESULT hr)
 			return "menu-open";
 		case FrameGenerationBlockReason::kPostLoadingSettle:
 			return "post-loading-settle";
+		case FrameGenerationBlockReason::kPostMenuSettle:
+			return "post-menu-settle";
 		default:
 			return "unknown";
 		}
@@ -533,6 +537,22 @@ HRESULT DX12SwapChain::Present(UINT SyncInterval, UINT Flags)
 		}
 
 		auto frameGenerationBlock = frameGenerationUIBlock;
+		{
+			static std::uint32_t postMenuSettlePresents = 0;
+			static std::string_view postMenuSettleDetail{ "post-menu" };
+
+			if (frameGenerationUIBlock &&
+				frameGenerationUIBlock->reason == FrameGenerationBlockReason::kBlockingMenuOpen) {
+				postMenuSettlePresents = kFrameGenerationPostMenuSettlePresents;
+				postMenuSettleDetail = frameGenerationUIBlock->detail;
+			} else if (postMenuSettlePresents > 0) {
+				--postMenuSettlePresents;
+			}
+
+			if (!frameGenerationBlock && postMenuSettlePresents > 0 && !skipFgAfterLoading) {
+				frameGenerationBlock = FrameGenerationBlock{ FrameGenerationBlockReason::kPostMenuSettle, postMenuSettleDetail };
+			}
+		}
 		if (!frameGenerationBlock && skipFgAfterLoading) {
 			frameGenerationBlock = FrameGenerationBlock{ FrameGenerationBlockReason::kPostLoadingSettle, "post-loading" };
 		}

@@ -165,6 +165,57 @@ struct LightLimitFix : Feature
 
 	bool clusterBuildCacheValid = false;
 	ClusterBuildCacheState clusterBuildCache{};
+
+	struct ClusterPayloadCacheState
+	{
+		float LightsNear = 0.0f;
+		float LightsFar = 0.0f;
+		std::uint32_t ClusterSize[4]{};
+		std::uint32_t LightCount = 0;
+		std::uint32_t StrictLightCount = 0;
+		std::uint32_t ShadowBitMask = 0;
+		std::uint64_t LightsHash = 0;
+		std::uint64_t StrictHash = 0;
+		std::uint64_t ViewHash = 0;
+		bool StrictCBUploaded = false;
+	};
+
+	bool clusterPayloadCacheValid = false;
+	ClusterPayloadCacheState clusterPayloadCache{};
+
+	struct ShadowSceneFastReuseKey
+	{
+		std::uintptr_t Node = 0;
+		std::uint8_t SelectedIndex = 0;
+		std::uint8_t CurrentIndex = 0;
+		bool CurrentIndexRead = false;
+		bool UsedFallback = false;
+		std::uintptr_t ActiveEntries = 0;
+		std::uintptr_t ShadowEntries = 0;
+		std::uintptr_t ExtraEntries = 0;
+		std::uint32_t ActiveCount = 0;
+		std::uint32_t ShadowCount = 0;
+		std::uint32_t ExtraCount = 0;
+		std::uint64_t ActiveHash = 0;
+		std::uint64_t ShadowHash = 0;
+		std::uint64_t ExtraHash = 0;
+	};
+
+	struct ShadowSceneFastReuseState
+	{
+		ShadowSceneFastReuseKey Key{};
+		std::vector<LightData> Lights{};
+		StrictLightDataCB StrictData{};
+		std::uint32_t LightCount = 0;
+		std::uint32_t StrictLightCount = 0;
+		std::uint64_t LightsHash = 0;
+		std::uint64_t StrictHash = 0;
+		std::uint32_t StableDecodeCount = 0;
+		std::uint32_t ReuseAge = 0;
+	};
+
+	bool shadowSceneFastReuseValid = false;
+	ShadowSceneFastReuseState shadowSceneFastReuse{};
 #endif
 
 	// --- Settings ---
@@ -225,7 +276,24 @@ struct LightLimitFix : Feature
 	PreNGDFLightResourceBindingState BindPreNGDFLightResourceNoOpPass(ID3D11DeviceContext* a_context);
 	PreNGDFLightResourceBindingState BindPreNGDFLightFullContractNoOpPass(ID3D11DeviceContext* a_context);
 	PreNGDFLightResourceBindingState BindPreNGDFLightLLFAdditivePass(ID3D11DeviceContext* a_context);
-	void TracePreNGActiveLightingBindings(
+	PreNGDFLightResourceBindingState BindPreNGDFLightDescriptorResourcesToPixelShader();
+	PreNGDFLightResourceBindingState BindPreNGDFCompositeDescriptorResourcesToPixelShader();
+	[[nodiscard]] bool HasPreNGDFLightDescriptorConsumerData() const;
+	[[nodiscard]] bool HasPreNGDFCompositeDescriptorConsumerData() const;
+	void NotifyPreNGDFLightLLFConsumerDescriptorObserved(
+		std::uint32_t a_vertexDescriptor,
+		std::uint32_t a_pixelDescriptor,
+		bool a_found,
+		std::uintptr_t a_pixelShader);
+	void NotifyPreNGDFCompositeLLFConsumerDescriptorObserved(
+		std::uint32_t a_vertexDescriptor,
+		std::uint32_t a_pixelDescriptor,
+		bool a_found,
+		std::uintptr_t a_vanillaPixelShader,
+		std::uintptr_t a_ownedPixelShader);
+	[[nodiscard]] bool HasPreNGDFLightLLFConsumerDescriptorObserved() const;
+	[[nodiscard]] bool HasPreNGDFCompositeLLFConsumerDescriptorObserved() const;
+	bool TracePreNGActiveLightingBindings(
 		const char* a_source,
 		std::int32_t a_shaderType,
 		std::uint32_t a_vertexDescriptor,
@@ -264,6 +332,7 @@ struct LightLimitFix : Feature
 private:
 #if defined(FALLOUT_PRE_NG)
 	bool UpdatePreNGStrictLightDataCB(ID3D11DeviceContext* a_context);
+	PreNGDFLightResourceBindingState BindPreNGDescriptorResourcesToPixelShader(const char* a_sourceName);
 	PreNGDFLightResourceBindingState BindPreNGDFLightNoOpPassResources(
 		ID3D11DeviceContext* a_context,
 		const char* a_passName);

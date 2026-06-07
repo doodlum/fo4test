@@ -53,11 +53,14 @@ namespace CommunityShaders::Hooks
 
 		CreateDeferredContextFn createDeferredContext = nullptr;
 		constexpr const char* kPreNGShaderLookupDiagEnv = "FO4CS_LLF_PRENG_SHADER_LOOKUP_DIAG";
+		constexpr const char* kPreNGShaderObjectMetadataEnv = "FO4CS_LLF_PRENG_SHADER_OBJECT_METADATA";
 		constexpr const char* kPreNGDFLightVanillaDumpEnv = "FO4CS_LLF_PRENG_DFLIGHT_VANILLA_DUMP";
+		constexpr const char* kPreNGDFCompositeVanillaDumpEnv = "FO4CS_LLF_PRENG_DFCOMPOSITE_VANILLA_DUMP";
 		constexpr const char* kPreNGDFLightDrawStateEnv = "FO4CS_LLF_PRENG_DFLIGHT_DRAW_STATE";
 		constexpr const char* kPreNGDFLightZeroAdditivePassEnv = "FO4CS_LLF_PRENG_DFLIGHT_ZERO_ADD_PASS";
 		constexpr const char* kPreNGDFLightDrawStateStrictCBBindEnv = "FO4CS_LLF_PRENG_DFLIGHT_BIND_STRICT_CB";
 		constexpr const char* kPreNGDFLightDrawStateClusterSRVBindEnv = "FO4CS_LLF_PRENG_DFLIGHT_BIND_CLUSTER_SRVS";
+		constexpr const char* kPreNGDFLightDrawStateProofBudgetEnv = "FO4CS_LLF_PRENG_DFLIGHT_DRAW_STATE_PROOF_BUDGET";
 		constexpr const char* kPreNGDFLightResourceNoOpPassEnv = "FO4CS_LLF_PRENG_DFLIGHT_RESOURCE_NOOP_PASS";
 		constexpr const char* kPreNGDFLightFullContractNoOpPassEnv = "FO4CS_LLF_PRENG_DFLIGHT_FULL_CONTRACT_NOOP_PASS";
 		constexpr const char* kPreNGDFLightLLFAdditivePassEnv = "FO4CS_LLF_PRENG_DFLIGHT_LLF_ADD_PASS";
@@ -74,6 +77,8 @@ namespace CommunityShaders::Hooks
 		constexpr const char* kTraceLLFPSEnv = "FO4CS_TRACE_LLF_PS";
 		constexpr std::uint32_t kPreNGDFLightVanillaFullShadowed920AsmHash = 0xFB077F61u;
 		constexpr std::uint32_t kPreNGDFLightVanillaFullShadowed922AsmHash = 0xA2D7B576u;
+		constexpr std::uint32_t kPreNGDefaultDFLightDrawStateProofSamples = 128;
+		constexpr std::uint32_t kPreNGMaxDFLightDrawStateProofSamples = 8192;
 
 		bool IsTruthyPreNGEnvironmentValue(const char* a_value)
 		{
@@ -179,13 +184,17 @@ namespace CommunityShaders::Hooks
 
 		bool ShouldMapPreNGShaderObjectMetadata()
 		{
-			static const bool enabled = ReadPreNGEnvironmentSwitch(kPreNGShaderLookupDiagEnv);
+			static const bool enabled =
+				ReadPreNGEnvironmentSwitch(kPreNGShaderObjectMetadataEnv) ||
+				ReadPreNGEnvironmentSwitch(kPreNGShaderLookupDiagEnv);
 			return enabled;
 		}
 
 		bool ShouldCapturePreNGDFLightVanillaDumpBytecode()
 		{
-			static const bool enabled = ReadPreNGEnvironmentSwitch(kPreNGDFLightVanillaDumpEnv);
+			static const bool enabled =
+				ReadPreNGEnvironmentSwitch(kPreNGDFLightVanillaDumpEnv) ||
+				ReadPreNGEnvironmentSwitch(kPreNGDFCompositeVanillaDumpEnv);
 			return enabled;
 		}
 
@@ -211,6 +220,105 @@ namespace CommunityShaders::Hooks
 		{
 			static const bool enabled = ReadPreNGEnvironmentSwitch(kPreNGDFLightDrawStateClusterSRVBindEnv);
 			return enabled;
+		}
+
+		std::atomic_uint32_t& PreNGDFLightDrawStateProofSamples()
+		{
+			static std::atomic_uint32_t samples = 0;
+			return samples;
+		}
+
+		std::atomic_bool& PreNGDFLightDrawStateProofComplete()
+		{
+			static std::atomic_bool complete = false;
+			return complete;
+		}
+
+		std::atomic_bool& PreNGDFLightDrawStateProofLimitLogged()
+		{
+			static std::atomic_bool logged = false;
+			return logged;
+		}
+
+		std::uint32_t GetPreNGDFLightDrawStateProofBudget()
+		{
+			static const std::uint32_t budget = [] {
+				const auto configured = ReadPreNGEnvironmentUInt(kPreNGDFLightDrawStateProofBudgetEnv);
+				if (!configured) {
+					return kPreNGDefaultDFLightDrawStateProofSamples;
+				}
+				if (*configured > kPreNGMaxDFLightDrawStateProofSamples) {
+					logger::warn(
+						"[LightLimitFix] PreNG DFLight draw-state proof budget clamped env={} requested={} max={}",
+						kPreNGDFLightDrawStateProofBudgetEnv,
+						*configured,
+						kPreNGMaxDFLightDrawStateProofSamples);
+					return kPreNGMaxDFLightDrawStateProofSamples;
+				}
+				return *configured;
+			}();
+			return budget;
+		}
+
+		bool ShouldRunPreNGDFLightDrawStateProof()
+		{
+			return ShouldTracePreNGDFLightDrawState() ||
+			       ShouldBindPreNGDFLightDrawStateStrictCB() ||
+			       ShouldBindPreNGDFLightDrawStateClusterSRVs();
+		}
+
+		bool IsPreNGDFLightDrawStateProofOpen()
+		{
+			const auto budget = GetPreNGDFLightDrawStateProofBudget();
+			return ShouldRunPreNGDFLightDrawStateProof() &&
+			       budget > 0 &&
+			       !PreNGDFLightDrawStateProofComplete().load(std::memory_order_relaxed) &&
+			       PreNGDFLightDrawStateProofSamples().load(std::memory_order_relaxed) < budget;
+		}
+
+		std::optional<std::uint32_t> TryReservePreNGDFLightDrawStateProofSample()
+		{
+			if (!IsPreNGDFLightDrawStateProofOpen()) {
+				return std::nullopt;
+			}
+			const auto sample = PreNGDFLightDrawStateProofSamples().fetch_add(1, std::memory_order_relaxed) + 1;
+			const auto budget = GetPreNGDFLightDrawStateProofBudget();
+			if (sample > budget) {
+				if (!PreNGDFLightDrawStateProofLimitLogged().exchange(true, std::memory_order_relaxed)) {
+					logger::info(
+						"[LightLimitFix] PreNG DFLight draw-state proof budget exhausted; holding draw-state bind/audit samples={} budget={} env={}",
+						sample - 1,
+						budget,
+						kPreNGDFLightDrawStateProofBudgetEnv);
+				}
+				return std::nullopt;
+			}
+			return sample;
+		}
+
+		void MarkPreNGDFLightDrawStateProofComplete(std::uint32_t a_sample)
+		{
+			if (!PreNGDFLightDrawStateProofComplete().exchange(true, std::memory_order_relaxed)) {
+				logger::info(
+					"[LightLimitFix] PreNG DFLight draw-state proof complete; holding draw-state bind/audit after sample={} budget={}",
+					a_sample,
+					GetPreNGDFLightDrawStateProofBudget());
+			}
+		}
+
+		void MaybeLogPreNGDFLightDrawStateProofBudgetReached(std::uint32_t a_sample)
+		{
+			const auto budget = GetPreNGDFLightDrawStateProofBudget();
+			if (budget > 0 &&
+				a_sample >= budget &&
+				!PreNGDFLightDrawStateProofComplete().load(std::memory_order_relaxed) &&
+				!PreNGDFLightDrawStateProofLimitLogged().exchange(true, std::memory_order_relaxed)) {
+				logger::info(
+					"[LightLimitFix] PreNG DFLight draw-state proof budget reached without complete audit; holding draw-state bind/audit samples={} budget={} env={}",
+					a_sample,
+					budget,
+					kPreNGDFLightDrawStateProofBudgetEnv);
+			}
 		}
 
 		bool ShouldRunPreNGDFLightResourceNoOpPass()
@@ -251,10 +359,8 @@ namespace CommunityShaders::Hooks
 
 		bool ShouldTrackPreNGDFLightDrawTargets()
 		{
-			return ShouldTracePreNGDFLightDrawState() ||
+			return IsPreNGDFLightDrawStateProofOpen() ||
 			       ShouldRunPreNGDFLightZeroAdditivePass() ||
-			       ShouldBindPreNGDFLightDrawStateStrictCB() ||
-			       ShouldBindPreNGDFLightDrawStateClusterSRVs() ||
 			       ShouldRunPreNGDFLightResourceNoOpPass() ||
 			       ShouldRunPreNGDFLightFullContractNoOpPass() ||
 			       ShouldRunPreNGDFLightLLFAdditivePass();
@@ -1730,7 +1836,7 @@ namespace CommunityShaders::Hooks
 
 		void TracePreNGDFLightDrawStateContext(ID3D11DeviceContext* a_context, const char* a_drawKind, std::string_view a_drawCounts)
 		{
-			if (!a_context || !ShouldTrackPreNGDFLightDrawTargets()) {
+			if (!a_context || !ShouldRunPreNGDFLightDrawStateProof() || !IsPreNGDFLightDrawStateProofOpen()) {
 				return;
 			}
 
@@ -1739,9 +1845,38 @@ namespace CommunityShaders::Hooks
 				return;
 			}
 
+			const auto proofSample = TryReservePreNGDFLightDrawStateProofSample();
+			if (!proofSample) {
+				return;
+			}
+
 			if (globals::features::lightLimitFix.loaded) {
 				const auto strictState = globals::features::lightLimitFix.BindPreNGDFLightDrawStateStrictLightCB(a_context);
 				globals::features::lightLimitFix.BindPreNGDFLightDrawStateClusterSRVs(a_context, strictState.strictCBBound);
+			}
+
+			bool bindingComplete = false;
+			winrt::com_ptr<ID3D11PixelShader> pixelShader;
+			a_context->PSGetShader(pixelShader.put(), nullptr, nullptr);
+			const auto pixelShaderAddress = ToAddress(pixelShader.get());
+			if (globals::features::lightLimitFix.loaded) {
+				bindingComplete = globals::features::lightLimitFix.TracePreNGActiveLightingBindings(
+					"dflight-draw-state",
+					4,
+					0,
+					0,
+					pixelShaderAddress != 0,
+					pixelShaderAddress,
+					a_context);
+			}
+			if (bindingComplete) {
+				MarkPreNGDFLightDrawStateProofComplete(*proofSample);
+				return;
+			}
+			MaybeLogPreNGDFLightDrawStateProofBudgetReached(*proofSample);
+
+			if (!ShouldTracePreNGDFLightDrawState()) {
+				return;
 			}
 
 			D3D11_PRIMITIVE_TOPOLOGY topology{};
@@ -1781,20 +1916,6 @@ namespace CommunityShaders::Hooks
 				if (loggedDFLightDrawStateDraws.size() < kMaxDFLightDrawStateLogs) {
 					shouldLog = loggedDFLightDrawStateDraws.insert(key).second;
 				}
-			}
-
-			winrt::com_ptr<ID3D11PixelShader> pixelShader;
-			a_context->PSGetShader(pixelShader.put(), nullptr, nullptr);
-			const auto pixelShaderAddress = ToAddress(pixelShader.get());
-			if (globals::features::lightLimitFix.loaded) {
-				globals::features::lightLimitFix.TracePreNGActiveLightingBindings(
-					"dflight-draw-state",
-					4,
-					0,
-					0,
-					pixelShaderAddress != 0,
-					pixelShaderAddress,
-					a_context);
 			}
 
 			if (!shouldLog) {
@@ -3403,8 +3524,9 @@ namespace CommunityShaders::Hooks
 #if defined(FALLOUT_PRE_NG)
 		if (ShouldCapturePreNGDFLightVanillaDumpBytecode()) {
 			logger::info(
-				"[LightLimitFix] PreNG DFLight vanilla shader bytecode capture active; set {}=0 to hold it after the targeted dump run",
-				kPreNGDFLightVanillaDumpEnv);
+				"[LightLimitFix] PreNG targeted vanilla shader bytecode capture active; set {}/{}=0 to hold it after the targeted dump run",
+				kPreNGDFLightVanillaDumpEnv,
+				kPreNGDFCompositeVanillaDumpEnv);
 		}
 		if (ShouldTracePreNGDFLightDrawState()) {
 			logger::info(
@@ -3425,6 +3547,12 @@ namespace CommunityShaders::Hooks
 			logger::info(
 				"[LightLimitFix] PreNG DFLight draw-state cluster SRV t35-t37 bind active; set {}=0 after the short targeted run",
 				kPreNGDFLightDrawStateClusterSRVBindEnv);
+		}
+		if (ShouldRunPreNGDFLightDrawStateProof()) {
+			logger::info(
+				"[LightLimitFix] PreNG DFLight draw-state proof budget resolved env={} samples={}",
+				kPreNGDFLightDrawStateProofBudgetEnv,
+				GetPreNGDFLightDrawStateProofBudget());
 		}
 		if (ShouldRunPreNGDFLightResourceNoOpPass()) {
 			logger::info(

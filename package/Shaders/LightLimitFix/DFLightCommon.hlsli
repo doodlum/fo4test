@@ -3,6 +3,10 @@
 
 #include "LightLimitFix/LightLimitFix.hlsli"
 
+#ifndef LLF_DFLIGHT_HAS_SHADOW_MAP
+#define LLF_DFLIGHT_HAS_SHADOW_MAP 1
+#endif
+
 cbuffer DFLightFrameData : register(b2)
 {
 	float4 DFLightCB2[28];
@@ -17,13 +21,17 @@ Texture2D<float4> DFLightGBuffer0 : register(t0);
 Texture2D<float4> DFLightGBuffer1 : register(t1);
 Texture2D<float4> DFLightGBuffer2 : register(t2);
 Texture2D<float4> DFLightDepth : register(t3);
+#if LLF_DFLIGHT_HAS_SHADOW_MAP
 Texture2DArray<float> DFLightShadowMap : register(t5);
+#endif
 
 SamplerState DFLightSampler0 : register(s0);
 SamplerState DFLightSampler1 : register(s1);
 SamplerState DFLightSampler2 : register(s2);
 SamplerState DFLightSampler3 : register(s3);
+#if LLF_DFLIGHT_HAS_SHADOW_MAP
 SamplerComparisonState DFLightShadowSampler : register(s5);
+#endif
 
 struct DFLightPSInput
 {
@@ -52,7 +60,9 @@ float2 GetDFLightDepthSizeUV(float4 position)
 
 float SampleDFLightDepth(float2 uv)
 {
-	return DFLightDepth.SampleGrad(DFLightSampler3, uv, ddx(uv), ddy(uv)).z;
+	const float2 gradX = ddx(uv.x).xx;
+	const float2 gradY = ddy(uv.y).xx;
+	return DFLightDepth.SampleGrad(DFLightSampler3, uv, gradX, gradY).y;
 }
 
 float3 ReconstructDFLightPosition(float2 uv, float depth)
@@ -72,11 +82,12 @@ float3 ReconstructDFLightPosition(float2 uv, float depth)
 float3 DecodeDFLightNormal(float2 encodedNormal)
 {
 	const float2 normalXY = mad(encodedNormal, 4.0f, -2.0f);
-	const float xyLengthSq = saturate(dot(normalXY, normalXY));
-	const float z = -sqrt(saturate(1.0f - (xyLengthSq * 0.25f)));
-	return normalize(float3(normalXY * sqrt(saturate(1.0f - (xyLengthSq * 0.25f))), z));
+	const float xyLengthSq = dot(normalXY, normalXY);
+	const float normalScale = sqrt(1.0f - (xyLengthSq * 0.25f));
+	return float3(normalXY * normalScale, (xyLengthSq * 0.5f) - 1.0f);
 }
 
+#if LLF_DFLIGHT_HAS_SHADOW_MAP
 float SampleDFLightShadow(float2 uv, float viewZ)
 {
 	const float shadowScale = max(abs(DFLightCB2[20].z), 1.0f) * 3.0f;
@@ -93,6 +104,7 @@ float SampleDFLightShadow(float2 uv, float viewZ)
 	shadow += DFLightShadowMap.SampleCmpLevelZero(DFLightShadowSampler, float3(saturate(baseUV + shadowTexel * float2(1.0f, 1.0f)), 2.0f), compareValue);
 	return shadow * (1.0f / 6.0f);
 }
+#endif
 
 float3 EvaluateLLFDFLight(LightLimitFix::Light light, float3 positionWS, float3 normalWS)
 {
@@ -136,7 +148,7 @@ float3 AccumulateLLFDFLight(float2 uv, float viewZ, float3 positionWS, float3 no
 
 float3 AccumulateLLFDFLight(float2 uv, float viewZ, float3 positionWS, float3 normalWS)
 {
-	return AccumulateLLFDFLight(uv, viewZ, positionWS, normalWS, 32u);
+	return AccumulateLLFDFLight(uv, viewZ, positionWS, normalWS, LightLimitFix::MaxStrictLights + MAX_CLUSTER_LIGHTS);
 }
 
 float ConsumeDFLightFullContract(float4 position)
@@ -151,9 +163,11 @@ float ConsumeDFLightFullContract(float4 position)
 	diagnostic += dot(DFLightGBuffer2.Sample(DFLightSampler2, uv), float4(1.0e-8f, 2.0e-8f, 3.0e-8f, 4.0e-8f));
 	diagnostic += dot(DFLightDepth.Sample(DFLightSampler3, uv), float4(1.0e-8f, 2.0e-8f, 3.0e-8f, 4.0e-8f));
 
+#if LLF_DFLIGHT_HAS_SHADOW_MAP
 	const float2 shadowTexel = 1.0f / max(abs(DFLightCB2[27].zw), float2(1.0f, 1.0f));
 	diagnostic += DFLightShadowMap.SampleCmpLevelZero(DFLightShadowSampler, float3(saturate(uv), 0.0f), 0.5f) * 1.0e-8f;
 	diagnostic += DFLightShadowMap.SampleCmpLevelZero(DFLightShadowSampler, float3(saturate(uv + shadowTexel), 1.0f), 0.5f) * 1.0e-8f;
+#endif
 
 	const uint strictCount = LightLimitFix::GetStrictLightCount();
 	diagnostic += (float)strictCount * 1.0e-8f;
@@ -180,7 +194,9 @@ float ConsumeDFLightVanillaKeepAlive(float2 uv)
 	diagnostic += dot(DFLightCB12[30], float4(1.0e-8f, 2.0e-8f, 3.0e-8f, 4.0e-8f));
 	diagnostic += dot(DFLightGBuffer0.Sample(DFLightSampler0, uv), float4(1.0e-8f, 2.0e-8f, 3.0e-8f, 4.0e-8f));
 	diagnostic += dot(DFLightGBuffer2.Sample(DFLightSampler2, uv), float4(1.0e-8f, 2.0e-8f, 3.0e-8f, 4.0e-8f));
+#if LLF_DFLIGHT_HAS_SHADOW_MAP
 	diagnostic += DFLightShadowMap.SampleCmpLevelZero(DFLightShadowSampler, float3(saturate(uv), 0.0f), 0.5f) * 1.0e-8f;
+#endif
 	return diagnostic;
 }
 
