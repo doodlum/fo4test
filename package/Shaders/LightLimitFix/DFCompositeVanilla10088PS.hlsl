@@ -1,7 +1,9 @@
 // Narrow vanilla-equivalent FO4 PreNG DFComposite descriptor 0x10088 shader.
 // This is the low-risk t11/t12 variant of the descriptor 0x88 safe-bind proof.
 
-#include "LightLimitFix/LightLimitFix.hlsli"
+#if defined(FO4CS_DFCOMPOSITE_VISIBLE_LLF)
+#include "LightLimitFix/DFCompositeVisibleLLF.hlsli"
+#endif
 
 cbuffer DFCompositeFrameData : register(b2)
 {
@@ -39,30 +41,6 @@ float2 GetDFCompositeUV(float4 position)
 	return position.xy * DFCompositeCB2[0].xy;
 }
 
-float3 ConsumeLLFKeepalive(float2 uv)
-{
-	uint clusterLightOffset = 0;
-	uint clusteredLightCount = 0;
-	LightLimitFix::TryGetCluster(
-		uv,
-		1.0f,
-		uint3(8, 8, 16),
-		0.1f,
-		10000.0f,
-		clusterLightOffset,
-		clusteredLightCount);
-
-	const uint lightCount = min(LightLimitFix::GetStrictLightCount() + clusteredLightCount, 4u);
-	float3 result = 0.0f;
-	[loop] for (uint i = 0; i < lightCount; ++i) {
-		LightLimitFix::Light light = (LightLimitFix::Light)0;
-		if (LightLimitFix::GetStrictOrClusteredLight(i, clusterLightOffset, light)) {
-			result += light.color * light.fade * saturate(light.invRadius);
-		}
-	}
-	return result;
-}
-
 DFCompositePSOutput main(DFCompositePSInput input)
 {
 	const float2 uv = GetDFCompositeUV(input.position);
@@ -82,9 +60,9 @@ DFCompositePSOutput main(DFCompositePSInput input)
 		color += DFCompositeTexture12.SampleLevel(DFCompositeSampler12, uv, 0.0f).xyz;
 	}
 
-	if (input.position.x < -0.5f) {
-		color += ConsumeLLFKeepalive(uv) * 1.0e-4f;
-	}
+#if defined(FO4CS_DFCOMPOSITE_VISIBLE_LLF)
+	color += AccumulateDFCompositeVisibleLLF(uv, input.position, baseColor);
+#endif
 
 	DFCompositePSOutput output;
 	output.target0 = float4(color, baseColor.w);

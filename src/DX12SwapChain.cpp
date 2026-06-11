@@ -206,7 +206,7 @@ std::string FormatHRESULT(HRESULT hr)
 		std::string_view{ "TerminalHolotapeMenu" },
 		std::string_view{ "PowerArmorModMenu" }
 	};
-	constexpr std::uint32_t kFrameGenerationPostMenuSettlePresents = 600;
+	constexpr std::uint32_t kFrameGenerationPostMenuSettlePresents = 120;
 
 	const char* GetFrameGenerationBlockReasonName(FrameGenerationBlockReason reason)
 	{
@@ -658,8 +658,11 @@ HRESULT DX12SwapChain::Present(UINT SyncInterval, UINT Flags)
 		}
 
 		trace("game-frame-limiter");
-		if (upscaling->pluginMode != Upscaling::PluginMode::kReflex && !upscaling->highFPSPhysicsFixLoaded)
+		if (upscaling->pluginMode != Upscaling::PluginMode::kReflex &&
+			upscaling->settings.frameLimitMode &&
+			!upscaling->highFPSPhysicsFixLoaded) {
 			upscaling->GameFrameLimiter();
+		}
 
 		trace("frame-limiter");
 		if (upscaling->pluginMode != Upscaling::PluginMode::kReflex && SyncInterval == 0)

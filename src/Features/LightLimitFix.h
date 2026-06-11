@@ -278,8 +278,12 @@ struct LightLimitFix : Feature
 	PreNGDFLightResourceBindingState BindPreNGDFLightLLFAdditivePass(ID3D11DeviceContext* a_context);
 	PreNGDFLightResourceBindingState BindPreNGDFLightDescriptorResourcesToPixelShader();
 	PreNGDFLightResourceBindingState BindPreNGDFCompositeDescriptorResourcesToPixelShader();
+	PreNGDFLightResourceBindingState BindPreNGBSLightingDescriptorResourcesToPixelShader();
+	PreNGDFLightResourceBindingState BindPreNGBSLightingSetupGeometryResources(RE::BSRenderPass* a_pass);
+	[[nodiscard]] bool ShouldProcessPreNGBSLightingSetupGeometryProof() const;
 	[[nodiscard]] bool HasPreNGDFLightDescriptorConsumerData() const;
 	[[nodiscard]] bool HasPreNGDFCompositeDescriptorConsumerData() const;
+	[[nodiscard]] bool HasPreNGBSLightingDescriptorConsumerData() const;
 	void NotifyPreNGDFLightLLFConsumerDescriptorObserved(
 		std::uint32_t a_vertexDescriptor,
 		std::uint32_t a_pixelDescriptor,
@@ -291,8 +295,14 @@ struct LightLimitFix : Feature
 		bool a_found,
 		std::uintptr_t a_vanillaPixelShader,
 		std::uintptr_t a_ownedPixelShader);
+	void NotifyPreNGBSLightingLLFConsumerDescriptorObserved(
+		std::uint32_t a_vertexDescriptor,
+		std::uint32_t a_pixelDescriptor,
+		bool a_found,
+		std::uintptr_t a_vanillaPixelShader);
 	[[nodiscard]] bool HasPreNGDFLightLLFConsumerDescriptorObserved() const;
 	[[nodiscard]] bool HasPreNGDFCompositeLLFConsumerDescriptorObserved() const;
+	[[nodiscard]] bool HasPreNGBSLightingLLFConsumerDescriptorObserved() const;
 	bool TracePreNGActiveLightingBindings(
 		const char* a_source,
 		std::int32_t a_shaderType,

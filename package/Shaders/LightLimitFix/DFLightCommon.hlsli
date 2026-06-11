@@ -118,7 +118,14 @@ float3 EvaluateLLFDFLight(LightLimitFix::Light light, float3 positionWS, float3 
 	return light.color * light.fade * attenuation * attenuation * diffuse;
 }
 
-float3 AccumulateLLFDFLight(float2 uv, float viewZ, float3 positionWS, float3 normalWS, uint maxLights)
+float3 AccumulateLLFDFLight(
+	float2 uv,
+	float viewZ,
+	float3 positionWS,
+	float3 normalWS,
+	uint maxLights,
+	uint maxStrictLights,
+	uint maxClusterLights)
 {
 	uint clusterLightOffset = 0;
 	uint clusteredLightCount = 0;
@@ -132,9 +139,13 @@ float3 AccumulateLLFDFLight(float2 uv, float viewZ, float3 positionWS, float3 no
 		clusterLightOffset,
 		clusteredLightCount);
 
-	const uint lightCount = min(LightLimitFix::GetStrictLightCount() + clusteredLightCount, max(maxLights, 1u));
+	const uint strictLightCount = LightLimitFix::GetStrictLightCount();
+	const uint totalBudget = max(maxLights, 1u);
+	const uint strictBudget = min(strictLightCount, min(totalBudget, maxStrictLights));
+	const uint clusterBudgetRoom = totalBudget - strictBudget;
+	const uint clusteredBudget = min(clusteredLightCount, min(clusterBudgetRoom, maxClusterLights));
 	float3 result = 0.0f;
-	[loop] for (uint i = 0; i < lightCount; ++i) {
+	[loop] for (uint i = 0; i < strictBudget; ++i) {
 		LightLimitFix::Light light = (LightLimitFix::Light)0;
 		if (!LightLimitFix::GetStrictOrClusteredLight(i, clusterLightOffset, light)) {
 			continue;
@@ -142,8 +153,28 @@ float3 AccumulateLLFDFLight(float2 uv, float viewZ, float3 positionWS, float3 no
 
 		result += EvaluateLLFDFLight(light, positionWS, normalWS);
 	}
+	[loop] for (uint clusterIndex = 0; clusterIndex < clusteredBudget; ++clusterIndex) {
+		LightLimitFix::Light light = (LightLimitFix::Light)0;
+		if (!LightLimitFix::GetStrictOrClusteredLight(strictLightCount + clusterIndex, clusterLightOffset, light)) {
+			continue;
+		}
+
+		result += EvaluateLLFDFLight(light, positionWS, normalWS);
+	}
 
 	return result;
+}
+
+float3 AccumulateLLFDFLight(float2 uv, float viewZ, float3 positionWS, float3 normalWS, uint maxLights)
+{
+	return AccumulateLLFDFLight(
+		uv,
+		viewZ,
+		positionWS,
+		normalWS,
+		maxLights,
+		LightLimitFix::MaxStrictLights,
+		MAX_CLUSTER_LIGHTS);
 }
 
 float3 AccumulateLLFDFLight(float2 uv, float viewZ, float3 positionWS, float3 normalWS)

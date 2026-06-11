@@ -33,18 +33,28 @@ namespace CommunityShaders
 		constexpr std::int32_t kPreNGBSLightingShaderType = static_cast<std::int32_t>(F4Runtime::PreNG::BS_LIGHTING_SHADER_TYPE);
 		constexpr std::int32_t kPreNGDFLightingShaderType = static_cast<std::int32_t>(F4Runtime::PreNG::DF_LIGHTING_SHADER_TYPE);
 		constexpr std::int32_t kPreNGDFCompositeShaderType = static_cast<std::int32_t>(F4Runtime::PreNG::DF_COMPOSITE_SHADER_TYPE);
+		constexpr std::string_view kPreNGBSLightingFxpName = "lighting";
 		constexpr std::string_view kPreNGDFLightingFxpName = "dflight";
 		constexpr std::string_view kPreNGDFCompositeFxpName = "dfcomposite";
+		constexpr const char* kPreNGBSLightingContractCompileEnv = "FO4CS_LLF_PRENG_BSLIGHTING_CONTRACT_COMPILE";
+		constexpr const char* kPreNGBSLightingConsumerCompileEnv = "FO4CS_LLF_PRENG_BSLIGHTING_CONSUMER_COMPILE";
 		constexpr const char* kPreNGDFLightFullShadowedDescriptorConsumerEnv = "FO4CS_LLF_PRENG_DFLIGHT_FULL_SHADOWED_DESCRIPTOR_CONSUMER";
 		constexpr const char* kPreNGDFLightFullShadowedDescriptorConsumerUnsafeEnv = "FO4CS_LLF_PRENG_DFLIGHT_FULL_SHADOWED_DESCRIPTOR_CONSUMER_UNSAFE";
 		constexpr const char* kPreNGDFLightFullContractVisibleLLFEnv = "FO4CS_LLF_PRENG_DFLIGHT_FULL_CONTRACT_VISIBLE_LLF";
 		constexpr const char* kPreNGDFLightFullContractVisibleMaxLightsEnv = "FO4CS_LLF_PRENG_DFLIGHT_FULL_CONTRACT_VISIBLE_MAX_LIGHTS";
+		constexpr const char* kPreNGDFLightFullContractVisibleStrictMaxLightsEnv = "FO4CS_LLF_PRENG_DFLIGHT_FULL_CONTRACT_VISIBLE_STRICT_MAX_LIGHTS";
+		constexpr const char* kPreNGDFLightFullContractVisibleClusterMaxLightsEnv = "FO4CS_LLF_PRENG_DFLIGHT_FULL_CONTRACT_VISIBLE_CLUSTER_MAX_LIGHTS";
 		constexpr const char* kPreNGDFCompositeDescriptorCompileEnv = "FO4CS_LLF_PRENG_DFCOMPOSITE_DESCRIPTOR_COMPILE";
 		constexpr const char* kPreNGDFCompositeSafeBindEnv = "FO4CS_LLF_PRENG_DFCOMPOSITE_SAFE_BIND";
 		constexpr const char* kPreNGDFCompositeFogSafeBindEnv = "FO4CS_LLF_PRENG_DFCOMPOSITE_FOG_SAFE_BIND";
+		constexpr const char* kPreNGDFCompositeVisibleLLFEnv = "FO4CS_LLF_PRENG_DFCOMPOSITE_VISIBLE_LLF";
+		constexpr const char* kPreNGDFCompositeVisibleLLFScale1024Env = "FO4CS_LLF_PRENG_DFCOMPOSITE_VISIBLE_LLF_SCALE_1024";
+		constexpr const char* kPreNGDFCompositeVisibleLLFMaxLightsEnv = "FO4CS_LLF_PRENG_DFCOMPOSITE_VISIBLE_LLF_MAX_LIGHTS";
 #else
 		constexpr std::int32_t kPreNGBSLightingShaderType = 8;
 #endif
+		constexpr std::string_view kPreNGBSLightingContractProbeSource = "LightLimitFix/BSLightingContractProbePS.hlsl";
+		constexpr std::string_view kPreNGBSLightingConsumerProbeSource = "LightLimitFix/BSLightingLLFConsumerProbePS.hlsl";
 		constexpr std::string_view kPreNGDFLightFullContractDescriptorSource = "LightLimitFix/DFLightFullContractPS.hlsl";
 		constexpr std::string_view kPreNGDFLightFullShadowedDescriptorSource = "LightLimitFix/DFLightFullShadowedPS.hlsl";
 		constexpr std::string_view kPreNGDFCompositeDescriptorProbeSource = "LightLimitFix/DFCompositeContractProbePS.hlsl";
@@ -196,6 +206,65 @@ namespace CommunityShaders
 				64);
 			return maxLights;
 		}
+
+		std::uint32_t GetPreNGDFLightFullContractVisibleStrictMaxLights()
+		{
+			static const auto maxLights = ReadDescriptorEnvironmentUInt(
+				kPreNGDFLightFullContractVisibleStrictMaxLightsEnv,
+				15,
+				0,
+				15);
+			return maxLights;
+		}
+
+		std::uint32_t GetPreNGDFLightFullContractVisibleClusterMaxLights()
+		{
+			static const auto maxLights = ReadDescriptorEnvironmentUInt(
+				kPreNGDFLightFullContractVisibleClusterMaxLightsEnv,
+				64,
+				0,
+				64);
+			return maxLights;
+		}
+
+		bool IsPreNGDFCompositeVisibleLLFDescriptor(std::uint32_t a_descriptor)
+		{
+			return a_descriptor == F4Runtime::PreNG::DF_COMPOSITE_PIXEL_DESCRIPTOR_88 ||
+			       a_descriptor == F4Runtime::PreNG::DF_COMPOSITE_PIXEL_DESCRIPTOR_10088;
+		}
+
+		bool ShouldEnablePreNGDFCompositeVisibleLLF()
+		{
+			static const bool enabled = [] {
+				const bool requested = ReadDescriptorEnvironmentSwitch(kPreNGDFCompositeVisibleLLFEnv);
+				if (requested) {
+					logger::warn(
+						"[ShaderCache] PreNG DFComposite visible LLF proof active; this screen-space contribution is diagnostic-only and uses the low-risk 0x88/0x10088 DFComposite consumers.");
+				}
+				return requested;
+			}();
+			return enabled;
+		}
+
+		std::uint32_t GetPreNGDFCompositeVisibleLLFScale1024()
+		{
+			static const auto scale = ReadDescriptorEnvironmentUInt(
+				kPreNGDFCompositeVisibleLLFScale1024Env,
+				16,
+				0,
+				1024);
+			return scale;
+		}
+
+		std::uint32_t GetPreNGDFCompositeVisibleLLFMaxLights()
+		{
+			static const auto maxLights = ReadDescriptorEnvironmentUInt(
+				kPreNGDFCompositeVisibleLLFMaxLightsEnv,
+				16,
+				1,
+				64);
+			return maxLights;
+		}
 #endif
 
 		std::string ToLowerAscii(std::string a_value)
@@ -229,6 +298,29 @@ namespace CommunityShaders
 				}
 			}
 			return name == kPreNGDFLightingFxpName;
+#else
+			(void)a_normalizedFxpFilename;
+			return false;
+#endif
+		}
+
+		bool IsPreNGBSLightingFxpName(std::string_view a_normalizedFxpFilename)
+		{
+#if defined(FALLOUT_PRE_NG)
+			std::string name{ a_normalizedFxpFilename };
+			if (name.empty() || name.front() == '<' || name.find('<') != std::string::npos) {
+				return false;
+			}
+			if (const auto slash = name.find_last_of('/'); slash != std::string::npos) {
+				name.erase(0, slash + 1);
+			}
+			for (const auto extension : { std::string_view{ ".hlsl" }, std::string_view{ ".fxp" }, std::string_view{ ".fx" } }) {
+				if (name.ends_with(extension)) {
+					name.resize(name.size() - extension.size());
+					break;
+				}
+			}
+			return name == kPreNGBSLightingFxpName;
 #else
 			(void)a_normalizedFxpFilename;
 			return false;
@@ -269,6 +361,81 @@ namespace CommunityShaders
 			       a_shaderType == kPreNGDFLightingShaderType &&
 			       IsPreNGDFLightFxpName(a_normalizedFxpFilename) &&
 			       F4Runtime::PreNG::IsDFLightFullShadowedPixelDescriptor(a_descriptor);
+#else
+			(void)a_stage;
+			(void)a_shaderType;
+			(void)a_normalizedFxpFilename;
+			(void)a_descriptor;
+			return false;
+#endif
+		}
+
+		bool IsPreNGBSLightingContractPixelDescriptor(std::uint32_t a_descriptor)
+		{
+			return a_descriptor == 0x00000001u ||
+			       a_descriptor == 0x00000101u ||
+			       a_descriptor == 0x00000111u ||
+			       a_descriptor == 0x00000141u ||
+			       a_descriptor == 0x00000201u;
+		}
+
+		bool IsPreNGBSLightingContractDescriptorShader(
+			ShaderStage a_stage,
+			std::int32_t a_shaderType,
+			std::string_view a_normalizedFxpFilename,
+			std::uint32_t a_descriptor)
+		{
+#if defined(FALLOUT_PRE_NG)
+			return a_stage == ShaderStage::Pixel &&
+			       a_shaderType == kPreNGBSLightingShaderType &&
+			       IsPreNGBSLightingFxpName(a_normalizedFxpFilename) &&
+			       IsPreNGBSLightingContractPixelDescriptor(a_descriptor);
+#else
+			(void)a_stage;
+			(void)a_shaderType;
+			(void)a_normalizedFxpFilename;
+			(void)a_descriptor;
+			return false;
+#endif
+		}
+
+		bool ShouldCompilePreNGBSLightingContractShader(
+			ShaderStage a_stage,
+			std::int32_t a_shaderType,
+			std::string_view a_normalizedFxpFilename,
+			std::uint32_t a_descriptor)
+		{
+#if defined(FALLOUT_PRE_NG)
+			static const bool enabled = ReadDescriptorEnvironmentSwitch(kPreNGBSLightingContractCompileEnv);
+			return enabled &&
+			       IsPreNGBSLightingContractDescriptorShader(
+					   a_stage,
+					   a_shaderType,
+					   a_normalizedFxpFilename,
+					   a_descriptor);
+#else
+			(void)a_stage;
+			(void)a_shaderType;
+			(void)a_normalizedFxpFilename;
+			(void)a_descriptor;
+			return false;
+#endif
+		}
+
+		bool ShouldCompilePreNGBSLightingConsumerShader(
+			ShaderStage a_stage,
+			std::int32_t a_shaderType,
+			std::string_view a_normalizedFxpFilename,
+			std::uint32_t a_descriptor)
+		{
+#if defined(FALLOUT_PRE_NG)
+			static const bool enabled = ReadDescriptorEnvironmentSwitch(kPreNGBSLightingConsumerCompileEnv);
+			return enabled &&
+			       IsPreNGBSLightingContractDescriptorShader(
+				       a_stage,
+				       a_shaderType,
+				       a_normalizedFxpFilename,
+				       a_descriptor);
 #else
 			(void)a_stage;
 			(void)a_shaderType;
@@ -509,6 +676,16 @@ namespace CommunityShaders
 			std::uint32_t a_descriptor)
 		{
 			return ReadDescriptorCompileSwitch() ||
+			       ShouldCompilePreNGBSLightingContractShader(
+				       a_stage,
+				       a_shaderType,
+				       a_normalizedFxpFilename,
+				       a_descriptor) ||
+			       ShouldCompilePreNGBSLightingConsumerShader(
+				       a_stage,
+				       a_shaderType,
+				       a_normalizedFxpFilename,
+				       a_descriptor) ||
 			       ShouldUsePreNGDFCompositeVanillaSafeBindShader(
 				       a_stage,
 				       a_shaderType,
@@ -568,6 +745,20 @@ namespace CommunityShaders
 				"1");
 
 #if defined(FALLOUT_PRE_NG)
+			if (ShouldCompilePreNGBSLightingContractShader(
+					a_stage,
+					a_shaderType,
+					kPreNGBSLightingFxpName,
+					a_descriptor)) {
+				result.storage.emplace_back("FO4CS_BSLIGHTING_CONTRACT_DESCRIPTOR", "1");
+			}
+			if (ShouldCompilePreNGBSLightingConsumerShader(
+					a_stage,
+					a_shaderType,
+					kPreNGBSLightingFxpName,
+					a_descriptor)) {
+				result.storage.emplace_back("FO4CS_BSLIGHTING_LLF_CONSUMER_DESCRIPTOR", "1");
+			}
 			if (a_stage == ShaderStage::Pixel &&
 				a_shaderType == kPreNGDFLightingShaderType &&
 				F4Runtime::PreNG::IsDFLightFullContractPixelDescriptor(a_descriptor)) {
@@ -577,6 +768,12 @@ namespace CommunityShaders
 					result.storage.emplace_back(
 						"FO4CS_DFLIGHT_FULL_CONTRACT_VISIBLE_MAX_LIGHTS",
 						std::to_string(GetPreNGDFLightFullContractVisibleMaxLights()));
+					result.storage.emplace_back(
+						"FO4CS_DFLIGHT_FULL_CONTRACT_VISIBLE_STRICT_MAX_LIGHTS",
+						std::to_string(GetPreNGDFLightFullContractVisibleStrictMaxLights()));
+					result.storage.emplace_back(
+						"FO4CS_DFLIGHT_FULL_CONTRACT_VISIBLE_CLUSTER_MAX_LIGHTS",
+						std::to_string(GetPreNGDFLightFullContractVisibleClusterMaxLights()));
 				}
 			}
 			if (a_stage == ShaderStage::Pixel &&
@@ -614,6 +811,21 @@ namespace CommunityShaders
 						kPreNGDFCompositeFxpName,
 						a_descriptor)) {
 					result.storage.emplace_back("FO4CS_DFCOMPOSITE_VANILLA_10088", "1");
+				}
+				if (ShouldEnablePreNGDFCompositeVisibleLLF() &&
+					IsPreNGDFCompositeVisibleLLFDescriptor(a_descriptor) &&
+					ShouldUsePreNGDFCompositeVanillaSafeBindShader(
+						a_stage,
+						a_shaderType,
+						kPreNGDFCompositeFxpName,
+						a_descriptor)) {
+					result.storage.emplace_back("FO4CS_DFCOMPOSITE_VISIBLE_LLF", "1");
+					result.storage.emplace_back(
+						"FO4CS_DFCOMPOSITE_VISIBLE_LLF_SCALE_1024",
+						std::to_string(GetPreNGDFCompositeVisibleLLFScale1024()));
+					result.storage.emplace_back(
+						"FO4CS_DFCOMPOSITE_VISIBLE_LLF_MAX_LIGHTS",
+						std::to_string(GetPreNGDFCompositeVisibleLLFMaxLights()));
 				}
 			}
 #endif
@@ -693,6 +905,24 @@ namespace CommunityShaders
 
 	std::optional<std::string> ShaderCache::ResolveDescriptorShaderSource(const DescriptorShaderKey& a_key)
 	{
+		if (ShouldCompilePreNGBSLightingConsumerShader(a_key.stage, a_key.shaderType, a_key.fxpFilename, a_key.descriptor)) {
+			const auto diskPath = std::filesystem::path("Data\\Shaders") / std::filesystem::path(kPreNGBSLightingConsumerProbeSource);
+			std::error_code ec;
+			if (std::filesystem::exists(diskPath, ec) && std::filesystem::is_regular_file(diskPath, ec)) {
+				return std::string{ kPreNGBSLightingConsumerProbeSource };
+			}
+			return std::nullopt;
+		}
+
+		if (ShouldCompilePreNGBSLightingContractShader(a_key.stage, a_key.shaderType, a_key.fxpFilename, a_key.descriptor)) {
+			const auto diskPath = std::filesystem::path("Data\\Shaders") / std::filesystem::path(kPreNGBSLightingContractProbeSource);
+			std::error_code ec;
+			if (std::filesystem::exists(diskPath, ec) && std::filesystem::is_regular_file(diskPath, ec)) {
+				return std::string{ kPreNGBSLightingContractProbeSource };
+			}
+			return std::nullopt;
+		}
+
 		if (IsPreNGDFLightFullContractDescriptorShader(a_key.stage, a_key.shaderType, a_key.fxpFilename, a_key.descriptor)) {
 			const auto diskPath = std::filesystem::path("Data\\Shaders") / std::filesystem::path(kPreNGDFLightFullContractDescriptorSource);
 			std::error_code ec;

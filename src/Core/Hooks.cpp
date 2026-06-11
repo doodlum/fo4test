@@ -54,6 +54,7 @@ namespace CommunityShaders::Hooks
 		CreateDeferredContextFn createDeferredContext = nullptr;
 		constexpr const char* kPreNGShaderLookupDiagEnv = "FO4CS_LLF_PRENG_SHADER_LOOKUP_DIAG";
 		constexpr const char* kPreNGShaderObjectMetadataEnv = "FO4CS_LLF_PRENG_SHADER_OBJECT_METADATA";
+		constexpr const char* kPreNGBSLightingVanillaDumpEnv = "FO4CS_LLF_PRENG_BSLIGHTING_VANILLA_DUMP";
 		constexpr const char* kPreNGDFLightVanillaDumpEnv = "FO4CS_LLF_PRENG_DFLIGHT_VANILLA_DUMP";
 		constexpr const char* kPreNGDFCompositeVanillaDumpEnv = "FO4CS_LLF_PRENG_DFCOMPOSITE_VANILLA_DUMP";
 		constexpr const char* kPreNGDFLightDrawStateEnv = "FO4CS_LLF_PRENG_DFLIGHT_DRAW_STATE";
@@ -193,6 +194,7 @@ namespace CommunityShaders::Hooks
 		bool ShouldCapturePreNGDFLightVanillaDumpBytecode()
 		{
 			static const bool enabled =
+				ReadPreNGEnvironmentSwitch(kPreNGBSLightingVanillaDumpEnv) ||
 				ReadPreNGEnvironmentSwitch(kPreNGDFLightVanillaDumpEnv) ||
 				ReadPreNGEnvironmentSwitch(kPreNGDFCompositeVanillaDumpEnv);
 			return enabled;
@@ -3524,7 +3526,8 @@ namespace CommunityShaders::Hooks
 #if defined(FALLOUT_PRE_NG)
 		if (ShouldCapturePreNGDFLightVanillaDumpBytecode()) {
 			logger::info(
-				"[LightLimitFix] PreNG targeted vanilla shader bytecode capture active; set {}/{}=0 to hold it after the targeted dump run",
+				"[LightLimitFix] PreNG targeted vanilla shader bytecode capture active; set {}/{}/{}=0 to hold it after the targeted dump run",
+				kPreNGBSLightingVanillaDumpEnv,
 				kPreNGDFLightVanillaDumpEnv,
 				kPreNGDFCompositeVanillaDumpEnv);
 		}
