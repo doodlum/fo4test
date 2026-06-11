@@ -347,6 +347,32 @@ namespace
 		       a_lhs.ExtraHash == a_rhs.ExtraHash;
 	}
 
+	// Structural (pointer/hash-independent) fast-reuse comparison. The per-light
+	// wrapper pointers folded into ActiveHash/ShadowHash/ExtraHash churn every
+	// frame even for a static light set (the engine reorders/reallocates the
+	// wrapper array), so the strict SamePreNGShadowSceneFastReuseKey never
+	// matches for dense scenes and the decode re-runs every frame (sub-1-FPS in
+	// 1000+ light interiors). This weaker key matches when the same node exposes
+	// the same bucket layout and light counts, which together with a hard
+	// ReuseAge < refreshInterval gate bounds full re-decodes to once per
+	// refresh interval regardless of pointer churn.
+	bool SamePreNGShadowSceneFastReuseStructure(
+		const LightLimitFix::ShadowSceneFastReuseKey& a_lhs,
+		const LightLimitFix::ShadowSceneFastReuseKey& a_rhs)
+	{
+		return a_lhs.Node == a_rhs.Node &&
+		       a_lhs.SelectedIndex == a_rhs.SelectedIndex &&
+		       a_lhs.CurrentIndex == a_rhs.CurrentIndex &&
+		       a_lhs.CurrentIndexRead == a_rhs.CurrentIndexRead &&
+		       a_lhs.UsedFallback == a_rhs.UsedFallback &&
+		       a_lhs.ActiveEntries == a_rhs.ActiveEntries &&
+		       a_lhs.ShadowEntries == a_rhs.ShadowEntries &&
+		       a_lhs.ExtraEntries == a_rhs.ExtraEntries &&
+		       a_lhs.ActiveCount == a_rhs.ActiveCount &&
+		       a_lhs.ShadowCount == a_rhs.ShadowCount &&
+		       a_lhs.ExtraCount == a_rhs.ExtraCount;
+	}
+
 	bool ReadPreNGShadowSceneBucketHash(
 		const F4Runtime::PreNGShadowSceneBucket& a_bucket,
 		std::uint64_t& a_hash)
@@ -3541,8 +3567,7 @@ std::uint32_t LightLimitFix::CollectLightsFromPreNGShadowScene()
 			shadowSceneFastReuseValid = false;
 			shadowSceneFastReuse = {};
 		} else if (shadowSceneFastReuseValid &&
-		           SamePreNGShadowSceneFastReuseKey(shadowSceneFastReuse.Key, fastReuseKey) &&
-		           shadowSceneFastReuse.StableDecodeCount >= 2 &&
+		           SamePreNGShadowSceneFastReuseStructure(shadowSceneFastReuse.Key, fastReuseKey) &&
 		           shadowSceneFastReuse.ReuseAge < fastReuseRefreshInterval) {
 			frameLights = shadowSceneFastReuse.Lights;
 			strictLightDataTemp = shadowSceneFastReuse.StrictData;
