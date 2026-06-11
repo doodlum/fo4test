@@ -101,6 +101,7 @@ namespace
 	constexpr const char* kPreNGBSLightingConsumerCompileEnv = "FO4CS_LLF_PRENG_BSLIGHTING_CONSUMER_COMPILE";
 	constexpr const char* kPreNGBSLightingDescriptorObserveEnv = "FO4CS_LLF_PRENG_BSLIGHTING_DESCRIPTOR_OBSERVE";
 	constexpr const char* kPreNGBSLightingVanillaBindEnv = "FO4CS_LLF_PRENG_BSLIGHTING_VANILLA_BIND";
+	constexpr const char* kPreNGBSLightingLLFBindEnv = "FO4CS_LLF_PRENG_BSLIGHTING_LLF_BIND";
 	constexpr const char* kPreNGShaderObjectMetadataEnv = "FO4CS_LLF_PRENG_SHADER_OBJECT_METADATA";
 	constexpr const char* kPreNGTraceLLFPixelEnv = "FO4CS_TRACE_LLF_PS";
 	constexpr const char* kPreNGDFLightContractCompileEnv = "FO4CS_LLF_PRENG_DFLIGHT_CONTRACT_COMPILE";
@@ -1283,6 +1284,7 @@ namespace
 		const auto bsLightingConsumerCompileState = ReadEnvironmentSwitch(kPreNGBSLightingConsumerCompileEnv);
 		const auto bsLightingDescriptorObserveState = ReadEnvironmentSwitch(kPreNGBSLightingDescriptorObserveEnv);
 		const auto bsLightingVanillaBindState = ReadEnvironmentSwitch(kPreNGBSLightingVanillaBindEnv);
+		const auto bsLightingLLFBindState = ReadEnvironmentSwitch(kPreNGBSLightingLLFBindEnv);
 		const auto shaderObjectMetadataState = ReadEnvironmentSwitch(kPreNGShaderObjectMetadataEnv);
 		const auto tracePSState = ReadEnvironmentSwitch(kPreNGTraceLLFPixelEnv);
 		const auto dflightContractCompileState = ReadEnvironmentSwitch(kPreNGDFLightContractCompileEnv);
@@ -1364,7 +1366,7 @@ namespace
 			EnvironmentSwitchSourceName(dflightCandidateCompileState.source));
 
 		logger::info(
-			"[LightLimitFix] PreNG BSLighting proof env snapshot {}={} {}={} {}={} {}={} {}={} {}={} {}={} sources bsLightingContractCompile={} bsLightingConsumerCompile={} bsLightingDescriptorObserve={} bsLightingResourceBind={} bindStrictCB={} bindClusterSRV={} bsLightingVanillaBind={}",
+			"[LightLimitFix] PreNG BSLighting proof env snapshot {}={} {}={} {}={} {}={} {}={} {}={} {}={} {}={} sources bsLightingContractCompile={} bsLightingConsumerCompile={} bsLightingDescriptorObserve={} bsLightingResourceBind={} bindStrictCB={} bindClusterSRV={} bsLightingVanillaBind={} bsLightingLLFBind={}",
 			kPreNGBSLightingContractCompileEnv,
 			bsLightingContractCompileState.enabled ? "on" : "off",
 			kPreNGBSLightingConsumerCompileEnv,
@@ -1379,13 +1381,16 @@ namespace
 			bindClusterSRVState.enabled ? "on" : "off",
 			kPreNGBSLightingVanillaBindEnv,
 			bsLightingVanillaBindState.enabled ? "on" : "off",
+			kPreNGBSLightingLLFBindEnv,
+			bsLightingLLFBindState.enabled ? "on" : "off",
 			EnvironmentSwitchSourceName(bsLightingContractCompileState.source),
 			EnvironmentSwitchSourceName(bsLightingConsumerCompileState.source),
 			EnvironmentSwitchSourceName(bsLightingDescriptorObserveState.source),
 			EnvironmentSwitchSourceName(bsLightingResourceBindState.source),
 			EnvironmentSwitchSourceName(bindCBState.source),
 			EnvironmentSwitchSourceName(bindClusterSRVState.source),
-			EnvironmentSwitchSourceName(bsLightingVanillaBindState.source));
+			EnvironmentSwitchSourceName(bsLightingVanillaBindState.source),
+			EnvironmentSwitchSourceName(bsLightingLLFBindState.source));
 	}
 
 	bool ShouldInstallPreNGInternalPointLightHook()

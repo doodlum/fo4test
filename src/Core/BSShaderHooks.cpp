@@ -64,6 +64,7 @@ namespace CommunityShaders
 	static constexpr const char* kPreNGBSLightingDescriptorObserveEnv = "FO4CS_LLF_PRENG_BSLIGHTING_DESCRIPTOR_OBSERVE";
 	static constexpr const char* kPreNGBSLightingResourceBindEnv = "FO4CS_LLF_PRENG_BSLIGHTING_RESOURCE_BIND";
 	static constexpr const char* kPreNGBSLightingVanillaBindEnv = "FO4CS_LLF_PRENG_BSLIGHTING_VANILLA_BIND";
+	static constexpr const char* kPreNGBSLightingLLFBindEnv = "FO4CS_LLF_PRENG_BSLIGHTING_LLF_BIND";
 	static constexpr const char* kPreNGBSLightingVanillaDumpEnv = "FO4CS_LLF_PRENG_BSLIGHTING_VANILLA_DUMP";
 	static constexpr const char* kPreNGDFLightVanillaDumpEnv = "FO4CS_LLF_PRENG_DFLIGHT_VANILLA_DUMP";
 	static constexpr const char* kPreNGDFCompositeDescriptorObserveEnv = "FO4CS_LLF_PRENG_DFCOMPOSITE_DESCRIPTOR_OBSERVE";
@@ -335,6 +336,12 @@ namespace CommunityShaders
 	bool ShouldBindPreNGBSLightingVanillaDescriptorShader()
 	{
 		static const bool enabled = ReadPreNGEnvironmentSwitch(kPreNGBSLightingVanillaBindEnv);
+		return enabled;
+	}
+
+	bool ShouldBindPreNGBSLightingLLFConsumerShader()
+	{
+		static const bool enabled = ReadPreNGEnvironmentSwitch(kPreNGBSLightingLLFBindEnv);
 		return enabled;
 	}
 
@@ -788,6 +795,9 @@ namespace CommunityShaders
 	std::atomic_uint32_t s_preNGBSLightingVanillaBoundCount = 0;
 	std::atomic_bool s_preNGBSLightingVanillaBindProofCompleteLogged = false;
 	std::atomic_uint64_t s_preNGBSLightingVanillaPendingProbeNextFrame = 0;
+	std::atomic_uint32_t s_preNGBSLightingLLFConsumerBindAttempts = 0;
+	std::atomic_uint32_t s_preNGBSLightingLLFConsumerBoundCount = 0;
+	std::atomic_bool s_preNGBSLightingLLFConsumerBindProofCompleteLogged = false;
 	std::mutex s_preNGDFLightVanillaDumpLock;
 	std::vector<PreNGDFLightVanillaDumpKey> s_preNGDFLightVanillaDumpKeys;
 	std::atomic_uint32_t s_preNGDFLightVanillaDumpAttempts = 0;
@@ -1789,6 +1799,136 @@ namespace CommunityShaders
 		return resourceState.strictCBBound && resourceState.clusterSRVsBound;
 	}
 
+	// Phase 3 visible consumer bind. Mirrors TryBindPreNGBSLightingVanillaPixelShader
+	// but binds the ShaderCache-compiled BSLightingLLFConsumerPS instead of a
+	// vanilla PS alias. Gated by FO4CS_LLF_PRENG_BSLIGHTING_LLF_BIND. The
+	// consumer declares the vanilla resource shape plus b3/t35-t37, so the
+	// existing strict-CB + cluster-SRV bind path serves it unchanged.
+	bool TryBindPreNGBSLightingLLFConsumerPixelShader(
+		RE::BSShader* a_shader,
+		std::int32_t a_vertexDescriptor,
+		std::int32_t a_hullDescriptor,
+		std::int32_t a_domainDescriptor,
+		std::int32_t a_pixelDescriptor,
+		bool a_found)
+	{
+		const auto pixelDescriptor = static_cast<std::uint32_t>(a_pixelDescriptor);
+		auto* llfFeature = globals::features::lightLimitFix.loaded ?
+			std::addressof(globals::features::lightLimitFix) :
+			nullptr;
+
+		const auto attempt = ++s_preNGBSLightingLLFConsumerBindAttempts;
+		const bool shouldLog = attempt <= 8 || IsPreNGPowerOfTwo(attempt);
+		const auto fxpFilename = a_shader ?
+			ReadPreNGCString(a_shader->fxpFilename, kPreNGMaxFxpFilenameLength) :
+			std::string("<null>");
+
+		LightLimitFix::PreNGDFLightResourceBindingState resourceState{};
+		auto logBind = [&](const char* a_state, const char* a_reason, std::uintptr_t a_vertexEntry, std::uintptr_t a_pixelEntry, std::uintptr_t a_consumerPSD3D, std::uint32_t a_bindIndex, bool a_consumerComplete) {
+			const bool forceLog = std::strcmp(a_state, "bound") == 0;
+			if (!shouldLog && !forceLog) {
+				return;
+			}
+
+			logger::info(
+				"[BSShaderHooks] BSLighting LLF consumer bound attempts={} binds={} shaderType={} fxp={} vsDesc=0x{:X} hsDesc=0x{:X} dsDesc=0x{:X} descriptor=0x{:X} vsEntry=0x{:X} psEntry=0x{:X} consumerPSD3D=0x{:X} vanillaFound={} state={} reason={} resources(strictCB={},clusterSRVs={},lights={},strict={},shadowMask=0x{:08X}) llfConsumerComplete={}",
+				attempt,
+				a_bindIndex,
+				a_shader ? static_cast<std::int32_t>(a_shader->shaderType) : -1,
+				fxpFilename,
+				static_cast<std::uint32_t>(a_vertexDescriptor),
+				static_cast<std::uint32_t>(a_hullDescriptor),
+				static_cast<std::uint32_t>(a_domainDescriptor),
+				pixelDescriptor,
+				a_vertexEntry,
+				a_pixelEntry,
+				a_consumerPSD3D,
+				a_found,
+				a_state,
+				a_reason,
+				resourceState.strictCBBound,
+				resourceState.clusterSRVsBound,
+				resourceState.lightCount,
+				resourceState.strictLightCount,
+				resourceState.shadowBitMask,
+				a_consumerComplete);
+		};
+
+		const auto bound = s_preNGBSLightingLLFConsumerBoundCount.load(std::memory_order_relaxed);
+		if (!a_found) {
+			logBind("failed", "vanilla-lookup-miss", 0, 0, 0, bound, false);
+			return false;
+		}
+		if (!a_shader) {
+			logBind("failed", "null-shader", 0, 0, 0, bound, false);
+			return false;
+		}
+		if (!llfFeature || !llfFeature->HasPreNGBSLightingDescriptorConsumerData()) {
+			logBind("held", "clustered-payload-pending", 0, 0, 0, bound, false);
+			return false;
+		}
+
+		// Compile/fetch the LLF consumer PS for this descriptor. ShaderCache owns
+		// the lifetime; we bind its D3D object directly (no vanilla-style alias).
+		auto* consumerShader = ShaderCache::GetSingleton()->GetPixelShader(
+			*a_shader,
+			pixelDescriptor);
+		const auto consumerPSD3D = consumerShader ?
+			reinterpret_cast<std::uintptr_t>(consumerShader->shader) :
+			0;
+		const auto pixelEntry = reinterpret_cast<std::uintptr_t>(consumerShader);
+		if (!consumerShader || consumerPSD3D == 0 || pixelEntry == 0) {
+			logBind("failed", "consumer-ps-unavailable", 0, pixelEntry, consumerPSD3D, bound, false);
+			return false;
+		}
+
+		const auto vertexEntry = ReadPreNGPointer(F4Runtime::PreNG::CURRENT_VERTEX_SHADER_ENTRY.address());
+		const auto hullEntry = ReadPreNGPointer(F4Runtime::PreNG::CURRENT_HULL_SHADER_ENTRY.address());
+		const auto domainEntry = ReadPreNGPointer(F4Runtime::PreNG::CURRENT_DOMAIN_SHADER_ENTRY.address());
+		const auto vertexD3D = ReadPreNGShaderEntryD3DObject(vertexEntry);
+		if (vertexEntry == 0 || vertexD3D == 0) {
+			logBind("failed", "current-vs-entry-unavailable", vertexEntry, pixelEntry, consumerPSD3D, bound, false);
+			return false;
+		}
+
+		const auto bindAddr = F4Runtime::PreNG::BIND_SHADERS.address();
+		const auto pixelGlobal = F4Runtime::PreNG::CURRENT_PIXEL_SHADER_ENTRY.address();
+		if (!IsReadableMemory(bindAddr, 16) || !IsWritableMemory(pixelGlobal, sizeof(std::uintptr_t))) {
+			logBind("failed", "bind-helper-or-pixel-global-unavailable", vertexEntry, pixelEntry, consumerPSD3D, bound, false);
+			return false;
+		}
+
+		if (!WritePreNGValue(pixelGlobal, pixelEntry)) {
+			logBind("failed", "pixel-global-write-failed", vertexEntry, pixelEntry, consumerPSD3D, bound, false);
+			return false;
+		}
+
+		using PreNGBindShadersFn = void* (*)(std::uintptr_t, std::uintptr_t, std::uintptr_t, std::uintptr_t, std::uintptr_t);
+		auto bindShaders = reinterpret_cast<PreNGBindShadersFn>(bindAddr);
+		bindShaders(F4Runtime::PreNG::RENDERER_STATE.address(), vertexEntry, hullEntry, domainEntry, pixelEntry);
+
+		const auto bindIndex = s_preNGBSLightingLLFConsumerBoundCount.fetch_add(1, std::memory_order_relaxed) + 1;
+		resourceState = llfFeature->BindPreNGBSLightingDescriptorResourcesToPixelShader();
+		llfFeature->TracePreNGActiveLightingBindings(
+			"descriptor-bslighting-llf-bind",
+			static_cast<std::int32_t>(a_shader->shaderType),
+			static_cast<std::uint32_t>(a_vertexDescriptor),
+			pixelDescriptor,
+			a_found,
+			consumerPSD3D);
+
+		const bool consumerComplete = resourceState.strictCBBound && resourceState.clusterSRVsBound;
+		logBind("bound", "llf-consumer-current-vs-bound", vertexEntry, pixelEntry, consumerPSD3D, bindIndex, consumerComplete);
+
+		if (consumerComplete &&
+			!s_preNGBSLightingLLFConsumerBindProofCompleteLogged.exchange(true, std::memory_order_relaxed)) {
+			logger::info(
+				"[BSShaderHooks] PreNG BSLighting LLF consumer bind proof reached current-vs/consumer-ps plus b3/t35-t37 completion llfConsumerComplete=true");
+		}
+
+		return consumerComplete;
+	}
+
 	void DumpPreNGBSLightingVanillaShader(
 		RE::BSShader* a_shader,
 		std::int32_t a_vertexDescriptor,
@@ -2424,6 +2564,9 @@ namespace CommunityShaders
 			const bool bsLightingVanillaBindActive =
 				ShouldBindPreNGBSLightingVanillaDescriptorShader() &&
 				IsPreNGBSLightingContractDescriptorShader(a_shader, a_pixelDescriptor);
+			const bool bsLightingLLFBindActive =
+				ShouldBindPreNGBSLightingLLFConsumerShader() &&
+				IsPreNGBSLightingContractDescriptorShader(a_shader, a_pixelDescriptor);
 			const bool bsLightingVanillaDump =
 				ShouldDumpPreNGBSLightingVanillaShader() &&
 				IsPreNGBSLightingVanillaDumpLookup(a_shader);
@@ -2457,6 +2600,7 @@ namespace CommunityShaders
 				!bsLightingDescriptorObserveActive &&
 				!bsLightingResourceBindActive &&
 				!bsLightingVanillaBindActive &&
+				!bsLightingLLFBindActive &&
 				!bsLightingVanillaDump &&
 				!dflightVanillaDump &&
 				!dfCompositeObserveActive &&
@@ -2481,6 +2625,7 @@ namespace CommunityShaders
 				!bsLightingDescriptorObserveActive &&
 				!bsLightingResourceBindActive &&
 				!bsLightingVanillaBindActive &&
+				!bsLightingLLFBindActive &&
 				!bsLightingVanillaDump &&
 				!dflightVanillaDump &&
 				!dfCompositeObserveActive &&
@@ -2656,6 +2801,20 @@ namespace CommunityShaders
 						lookupPixelDescriptor,
 						result != 0)) {
 					bsLightingVanillaBindProofComplete.store(true, std::memory_order_relaxed);
+					return 1;
+				}
+			}
+			// Visible LLF consumer bind. Unlike the vanilla proof bind above this
+			// is a production path: it replaces the BSLighting PS entry on every
+			// eligible draw so clustered lighting stays visible, not just once.
+			if (bsLightingLLFBindActive) {
+				if (TryBindPreNGBSLightingLLFConsumerPixelShader(
+						a_shader,
+						lookupVertexDescriptor,
+						a_hullDescriptor,
+						a_domainDescriptor,
+						lookupPixelDescriptor,
+						result != 0)) {
 					return 1;
 				}
 			}

@@ -38,6 +38,7 @@ namespace CommunityShaders
 		constexpr std::string_view kPreNGDFCompositeFxpName = "dfcomposite";
 		constexpr const char* kPreNGBSLightingContractCompileEnv = "FO4CS_LLF_PRENG_BSLIGHTING_CONTRACT_COMPILE";
 		constexpr const char* kPreNGBSLightingConsumerCompileEnv = "FO4CS_LLF_PRENG_BSLIGHTING_CONSUMER_COMPILE";
+		constexpr const char* kPreNGBSLightingLLFBindEnv = "FO4CS_LLF_PRENG_BSLIGHTING_LLF_BIND";
 		constexpr const char* kPreNGDFLightFullShadowedDescriptorConsumerEnv = "FO4CS_LLF_PRENG_DFLIGHT_FULL_SHADOWED_DESCRIPTOR_CONSUMER";
 		constexpr const char* kPreNGDFLightFullShadowedDescriptorConsumerUnsafeEnv = "FO4CS_LLF_PRENG_DFLIGHT_FULL_SHADOWED_DESCRIPTOR_CONSUMER_UNSAFE";
 		constexpr const char* kPreNGDFLightFullContractVisibleLLFEnv = "FO4CS_LLF_PRENG_DFLIGHT_FULL_CONTRACT_VISIBLE_LLF";
@@ -55,6 +56,7 @@ namespace CommunityShaders
 #endif
 		constexpr std::string_view kPreNGBSLightingContractProbeSource = "LightLimitFix/BSLightingContractProbePS.hlsl";
 		constexpr std::string_view kPreNGBSLightingConsumerProbeSource = "LightLimitFix/BSLightingLLFConsumerProbePS.hlsl";
+		constexpr std::string_view kPreNGBSLightingLLFConsumerVisibleSource = "LightLimitFix/BSLightingLLFConsumerPS.hlsl";
 		constexpr std::string_view kPreNGDFLightFullContractDescriptorSource = "LightLimitFix/DFLightFullContractPS.hlsl";
 		constexpr std::string_view kPreNGDFLightFullShadowedDescriptorSource = "LightLimitFix/DFLightFullShadowedPS.hlsl";
 		constexpr std::string_view kPreNGDFCompositeDescriptorProbeSource = "LightLimitFix/DFCompositeContractProbePS.hlsl";
@@ -445,6 +447,29 @@ namespace CommunityShaders
 #endif
 		}
 
+		bool ShouldBindPreNGBSLightingLLFVisibleConsumerShader(
+			ShaderStage a_stage,
+			std::int32_t a_shaderType,
+			std::string_view a_normalizedFxpFilename,
+			std::uint32_t a_descriptor)
+		{
+#if defined(FALLOUT_PRE_NG)
+			static const bool enabled = ReadDescriptorEnvironmentSwitch(kPreNGBSLightingLLFBindEnv);
+			return enabled &&
+			       IsPreNGBSLightingContractDescriptorShader(
+				       a_stage,
+				       a_shaderType,
+				       a_normalizedFxpFilename,
+				       a_descriptor);
+#else
+			(void)a_stage;
+			(void)a_shaderType;
+			(void)a_normalizedFxpFilename;
+			(void)a_descriptor;
+			return false;
+#endif
+		}
+
 		bool IsPreNGDFLightFullContractDescriptorShader(
 			ShaderStage a_stage,
 			std::int32_t a_shaderType,
@@ -686,6 +711,11 @@ namespace CommunityShaders
 				       a_shaderType,
 				       a_normalizedFxpFilename,
 				       a_descriptor) ||
+			       ShouldBindPreNGBSLightingLLFVisibleConsumerShader(
+				       a_stage,
+				       a_shaderType,
+				       a_normalizedFxpFilename,
+				       a_descriptor) ||
 			       ShouldUsePreNGDFCompositeVanillaSafeBindShader(
 				       a_stage,
 				       a_shaderType,
@@ -758,6 +788,14 @@ namespace CommunityShaders
 					kPreNGBSLightingFxpName,
 					a_descriptor)) {
 				result.storage.emplace_back("FO4CS_BSLIGHTING_LLF_CONSUMER_DESCRIPTOR", "1");
+			}
+			if (ShouldBindPreNGBSLightingLLFVisibleConsumerShader(
+					a_stage,
+					a_shaderType,
+					kPreNGBSLightingFxpName,
+					a_descriptor)) {
+				result.storage.emplace_back("FO4CS_BSLIGHTING_LLF_CONSUMER_DESCRIPTOR", "1");
+				result.storage.emplace_back("FO4CS_BSLIGHTING_LLF_VISIBLE_CONSUMER", "1");
 			}
 			if (a_stage == ShaderStage::Pixel &&
 				a_shaderType == kPreNGDFLightingShaderType &&
@@ -905,6 +943,18 @@ namespace CommunityShaders
 
 	std::optional<std::string> ShaderCache::ResolveDescriptorShaderSource(const DescriptorShaderKey& a_key)
 	{
+		// Visible LLF consumer takes precedence over the compile-only probe when
+		// FO4CS_LLF_PRENG_BSLIGHTING_LLF_BIND is enabled. The probe path stays as
+		// the fallback for compile/observe profiles.
+		if (ShouldBindPreNGBSLightingLLFVisibleConsumerShader(a_key.stage, a_key.shaderType, a_key.fxpFilename, a_key.descriptor)) {
+			const auto diskPath = std::filesystem::path("Data\\Shaders") / std::filesystem::path(kPreNGBSLightingLLFConsumerVisibleSource);
+			std::error_code ec;
+			if (std::filesystem::exists(diskPath, ec) && std::filesystem::is_regular_file(diskPath, ec)) {
+				return std::string{ kPreNGBSLightingLLFConsumerVisibleSource };
+			}
+			return std::nullopt;
+		}
+
 		if (ShouldCompilePreNGBSLightingConsumerShader(a_key.stage, a_key.shaderType, a_key.fxpFilename, a_key.descriptor)) {
 			const auto diskPath = std::filesystem::path("Data\\Shaders") / std::filesystem::path(kPreNGBSLightingConsumerProbeSource);
 			std::error_code ec;
