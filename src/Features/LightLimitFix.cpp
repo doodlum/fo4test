@@ -161,6 +161,16 @@ namespace
 	};
 	std::atomic_uint64_t s_preNGBSLightingResourceProofBypassUntilFrame = 0;
 	std::atomic_uint32_t s_preNGBSLightingResourceProofBypassLogs = 0;
+	// Most recent raw shadow-scene bucket light total (pre-truncation). Preview
+	// menus (ExamineMenu etc.) latch the decode onto a world node with ~1000+
+	// lights; after the menu closes the node can stay selected for a few frames
+	// before the scene returns to its normal handful. Resuming the clustered
+	// prepass during that overload window causes the residual stutter. We hold
+	// the prepass until this count drops back below the threshold — a
+	// state-based resume gate, NOT a permanent light cap (Skyrim CS still
+	// supports dense scenes; this only avoids the preview-menu transition).
+	std::atomic_uint32_t s_preNGShadowSceneLastBucketTotal = 0;
+	constexpr std::uint32_t kPreNGShadowScenePreviewOverloadLights = 256;
 	constexpr std::uint64_t kPreNGBSLightingSetupGeometryNoLightBypassFrames = 30;
 	constexpr std::array kPreNGBSLightingSetupGeometryPreviewMenus{
 		std::string_view{ "PipboyMenu" },
@@ -1195,6 +1205,29 @@ namespace
 		return {};
 	}
 
+	// Cheap O(1) probe of the active world ShadowSceneNode bucket totals — reads
+	// only the bucket count fields, never walks/decodes the light pointers. Used
+	// by the resume gate so it can tell whether the dense preview-menu scene has
+	// drained without depending on the (proof-gated) full decode updating the
+	// count, which would deadlock the gate.
+	std::uint32_t ProbePreNGShadowSceneBucketTotal()
+	{
+		const auto shadowSceneNodeRef = GetPreNGWorldShadowSceneNode();
+		if (shadowSceneNodeRef.node == 0) {
+			return 0;
+		}
+		F4Runtime::PreNGShadowSceneBuckets buckets{};
+		const F4Runtime::PreNGShadowSceneNodeView shadowSceneView{ shadowSceneNodeRef.node };
+		if (!shadowSceneView.ReadBuckets(buckets)) {
+			return 0;
+		}
+		const std::uint64_t total =
+			static_cast<std::uint64_t>(buckets.active.count) +
+			static_cast<std::uint64_t>(buckets.shadow.count) +
+			static_cast<std::uint64_t>(buckets.extra.count);
+		return static_cast<std::uint32_t>(std::min<std::uint64_t>(total, 0xFFFFFFFFull));
+	}
+
 	bool ShouldDeferPreNGBSLightingResourceProofForMenu()
 	{
 		auto* runtime = CommunityShaders::Runtime::GetSingleton();
@@ -1225,6 +1258,21 @@ namespace
 			// bypassUntil for its own small buffer. See
 			// .codex/docs/preview-menu-prepass-suppression.md.
 			logDefer(menuBlock.data(), frame);
+			return true;
+		}
+
+		// Resume gate: a preview menu may have just closed, but the engine can
+		// keep the dense world ShadowSceneNode selected for a few frames before
+		// the scene returns to its normal light count. Resuming the clustered
+		// prepass during that overload window is what caused the residual
+		// post-close stutter. Hold until the raw bucket total drops back to a
+		// normal scene size. Uses a cheap live probe (not the proof-gated decode
+		// output) so the gate can never deadlock itself. This gates resume on
+		// scene state, not a timer, and is not a permanent light cap.
+		const auto liveBucketTotal = ProbePreNGShadowSceneBucketTotal();
+		s_preNGShadowSceneLastBucketTotal.store(liveBucketTotal, std::memory_order_relaxed);
+		if (liveBucketTotal >= kPreNGShadowScenePreviewOverloadLights) {
+			logDefer("post-menu-light-overload", frame);
 			return true;
 		}
 
