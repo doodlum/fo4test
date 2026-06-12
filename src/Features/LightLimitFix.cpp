@@ -154,7 +154,6 @@ namespace
 	};
 	std::atomic_uint64_t s_preNGBSLightingResourceProofBypassUntilFrame = 0;
 	std::atomic_uint32_t s_preNGBSLightingResourceProofBypassLogs = 0;
-	std::atomic_bool s_preNGBSLightingResourceProofSuppressedByLockpicking = false;
 	constexpr std::uint64_t kPreNGBSLightingSetupGeometryNoLightBypassFrames = 30;
 	constexpr std::array kPreNGBSLightingSetupGeometryPreviewMenus{
 		std::string_view{ "PipboyMenu" },
@@ -1209,16 +1208,12 @@ namespace
 		};
 
 		if (!menuBlock.empty()) {
-			if (!s_preNGBSLightingResourceProofSuppressedByLockpicking.exchange(true, std::memory_order_relaxed)) {
-				logger::info(
-					"[LightLimitFix] PreNG BSLighting resource proof suppressed after preview-menu descriptor path frame={} menu={}; resource-only proof already validated, skipping delayed clustered Prepass and deferred b3/t35-t37 bind for this process",
-					frame,
-					menuBlock.data());
-			}
-			if (s_preNGBSLightingResourceProofSuppressedByLockpicking.load(std::memory_order_relaxed)) {
-				return true;
-			}
-
+			// Scoped suppression: hold the clustered Prepass / deferred b3-t35-t37
+			// bind while a fullscreen preview menu (Lockpicking/Examine) is open
+			// and for a settle window after it closes, then resume. This replaces
+			// the old permanent process-wide latch so normal gameplay after a
+			// preview menu still gets clustered lighting once the visible consumer
+			// is live. See .codex/docs/preview-menu-prepass-suppression.md.
 			const auto newBypassUntil = frame + kPreNGBSLightingResourceProofMenuSettleFrames;
 			auto bypassUntil = s_preNGBSLightingResourceProofBypassUntilFrame.load(std::memory_order_relaxed);
 			while (bypassUntil < newBypassUntil) {
@@ -1247,10 +1242,6 @@ namespace
 
 	void ExtendPreNGBSLightingResourceProofDescriptorSettle()
 	{
-		if (s_preNGBSLightingResourceProofSuppressedByLockpicking.load(std::memory_order_relaxed)) {
-			return;
-		}
-
 		auto* runtime = CommunityShaders::Runtime::GetSingleton();
 		if (!runtime) {
 			return;
@@ -1755,21 +1746,10 @@ namespace
 			ShouldUsePreNGBSLightingDescriptorDemandResources() &&
 			bsLightingDescriptorObserved &&
 			descriptorResourceSubGateRequested;
-		const bool bsLightingResourceProofSuppressed =
-			s_preNGBSLightingResourceProofSuppressedByLockpicking.load(std::memory_order_relaxed);
-		if (bsLightingResourceProofGateRequested && bsLightingResourceProofSuppressed) {
-			static std::atomic_bool loggedLockpickingSuppression = false;
-			if (!loggedLockpickingSuppression.exchange(true, std::memory_order_relaxed)) {
-				logger::info(
-					"[LightLimitFix] PreNG clustered Prepass held for BSLighting resource proof because preview-menu (Lockpicking/Examine) suppression is active; descriptorObserved={} strictOrClusterGate={} env={}; delayed 1024-light proof work is skipped",
-					bsLightingDescriptorObserved,
-					descriptorResourceSubGateRequested,
-					kPreNGBSLightingResourceBindEnv);
-			}
-		}
+		// Preview-menu suppression is now scoped (settle window), applied below
+		// via bsLightingResourceProofMenuDeferred rather than a permanent latch.
 		const bool bsLightingResourceProofRequested =
-			bsLightingResourceProofGateRequested &&
-			!bsLightingResourceProofSuppressed;
+			bsLightingResourceProofGateRequested;
 		const bool bsLightingResourceProofMenuDeferred =
 			bsLightingResourceProofRequested &&
 			ShouldDeferPreNGBSLightingResourceProofForMenu();
@@ -1914,8 +1894,7 @@ namespace
 
 	void TryBindPreNGBSLightingDeferredDescriptorResources(LightLimitFix& a_feature)
 	{
-		if (s_preNGBSLightingResourceProofSuppressedByLockpicking.load(std::memory_order_relaxed) ||
-			!ShouldUsePreNGBSLightingDescriptorDemandResources() ||
+		if (!ShouldUsePreNGBSLightingDescriptorDemandResources() ||
 			!s_preNGBSLightingLLFConsumerDescriptorObserved.load(std::memory_order_relaxed) ||
 			s_preNGBSLightingDeferredResourceProofComplete.load(std::memory_order_relaxed) ||
 			!a_feature.HasPreNGBSLightingDescriptorConsumerData()) {
