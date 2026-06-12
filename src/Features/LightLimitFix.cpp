@@ -1708,6 +1708,18 @@ namespace
 		return enabled;
 	}
 
+	// True when the visible BSLighting LLF consumer bind gate is active. Used to
+	// keep the clustered prepass running every frame (Skyrim-CS per-frame model)
+	// instead of only inside the bounded proof window, so currentLightCount and
+	// the b3/t35-t37 payload stay valid for the per-draw consumer bind. Without
+	// this the consumer is always queried after the proof window has cleared
+	// currentLightCount to 0 and stays held (clustered-payload-pending).
+	bool ShouldBindPreNGBSLightingLLFVisibleConsumer()
+	{
+		static const bool enabled = IsTruthyEnvironmentSwitch(kPreNGBSLightingLLFBindEnv);
+		return enabled;
+	}
+
 	bool ShouldBindPreNGBSLightingSetupGeometryResources()
 	{
 		static const bool enabled = IsTruthyEnvironmentSwitch(kPreNGBSLightingSetupGeometryResourceBindEnv);
@@ -1762,11 +1774,22 @@ namespace
 			ShouldRunPreNGDFCompositeVisibleLLF() &&
 			s_preNGDFCompositeLLFConsumerDescriptorObserved.load(std::memory_order_relaxed) &&
 			(ShouldBindPreNGStrictLightCB() || ShouldBindPreNGClusterSRVs());
+		// BSLighting visible LLF consumer: keep the clustered prepass persistent
+		// (per-frame) once the consumer bind gate is on and a BSLighting
+		// descriptor has been observed, so currentLightCount / b3-t35-t37 stay
+		// valid for the per-draw consumer bind instead of being cleared after the
+		// 8-frame proof window.
+		const bool bsLightingVisibleConsumer =
+			ShouldBindPreNGBSLightingLLFVisibleConsumer() &&
+			s_preNGBSLightingLLFConsumerDescriptorObserved.load(std::memory_order_relaxed) &&
+			ShouldUsePreNGBSLightingDescriptorDemandResources() &&
+			(ShouldBindPreNGStrictLightCB() || ShouldBindPreNGClusterSRVs());
 
 		return ShouldBindPreNGDFLightDrawStateClusterSRVs() ||
 		       ShouldRunPreNGDFLightLLFAdditivePass() ||
 		       visibleFullContractConsumer ||
-		       dfCompositeVisibleConsumer;
+		       dfCompositeVisibleConsumer ||
+		       bsLightingVisibleConsumer;
 	}
 
 	bool ShouldRunPreNGClusterPrepassProof()
@@ -1838,10 +1861,15 @@ namespace
 		}
 
 		const bool persistentProofRequested = ShouldUsePreNGPersistentClusterPrepassConsumer();
+		// An on-demand visible LLF consumer (DFLight/DFComposite/BSLighting) needs
+		// the clustered prepass to run every frame so its per-draw bind always has
+		// a valid currentLightCount and b3/t35-t37 payload. Persist directly when a
+		// consumer is active, regardless of the PERSISTENT env (which stays for the
+		// consumer-less diagnostic case below).
+		if (persistentProofRequested) {
+			return true;
+		}
 		if (ShouldPersistPreNGClusterPrepass()) {
-			if (persistentProofRequested) {
-				return true;
-			}
 			static bool loggedPersistentFinite = false;
 			if (!loggedPersistentFinite) {
 				logger::info(
