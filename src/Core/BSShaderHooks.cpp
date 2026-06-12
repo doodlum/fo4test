@@ -798,6 +798,11 @@ namespace CommunityShaders
 	std::atomic_uint32_t s_preNGBSLightingLLFConsumerBindAttempts = 0;
 	std::atomic_uint32_t s_preNGBSLightingLLFConsumerBoundCount = 0;
 	std::atomic_bool s_preNGBSLightingLLFConsumerBindProofCompleteLogged = false;
+	// Tracks the last frame the consumer rebound b3/t35-t37. The clustered
+	// resources are LLF-private high registers that the engine's other draws do
+	// not touch, so (Skyrim-CS parity) they only need binding once per frame, not
+	// per BSLighting draw. Per-draw rebinding was the 90-light ~10 FPS cost.
+	std::atomic_uint64_t s_preNGBSLightingLLFConsumerResourceBoundFrame = UINT64_MAX;
 	std::mutex s_preNGDFLightVanillaDumpLock;
 	std::vector<PreNGDFLightVanillaDumpKey> s_preNGDFLightVanillaDumpKeys;
 	std::atomic_uint32_t s_preNGDFLightVanillaDumpAttempts = 0;
@@ -1908,16 +1913,36 @@ namespace CommunityShaders
 		bindShaders(F4Runtime::PreNG::RENDERER_STATE.address(), vertexEntry, hullEntry, domainEntry, pixelEntry);
 
 		const auto bindIndex = s_preNGBSLightingLLFConsumerBoundCount.fetch_add(1, std::memory_order_relaxed) + 1;
-		resourceState = llfFeature->BindPreNGBSLightingDescriptorResourcesToPixelShader();
-		llfFeature->TracePreNGActiveLightingBindings(
-			"descriptor-bslighting-llf-bind",
-			static_cast<std::int32_t>(a_shader->shaderType),
-			static_cast<std::uint32_t>(a_vertexDescriptor),
-			pixelDescriptor,
-			a_found,
-			consumerPSD3D);
 
-		const bool consumerComplete = resourceState.strictCBBound && resourceState.clusterSRVsBound;
+		// Bind b3/t35-t37 once per frame (Skyrim-CS parity), not per draw. These
+		// are LLF-private registers; binding them on the first eligible BSLighting
+		// draw of the frame leaves them valid for the rest of the frame's draws
+		// because the unified bind helper only swaps shader objects (not resource
+		// slots) and the engine's other draws do not write these high registers.
+		auto* runtime = Runtime::GetSingleton();
+		const auto frame = runtime ? runtime->GetFrameCount() : 0;
+		const auto lastResourceFrame =
+			s_preNGBSLightingLLFConsumerResourceBoundFrame.load(std::memory_order_relaxed);
+		bool consumerComplete = false;
+		if (lastResourceFrame != frame) {
+			resourceState = llfFeature->BindPreNGBSLightingDescriptorResourcesToPixelShader();
+			consumerComplete = resourceState.strictCBBound && resourceState.clusterSRVsBound;
+			if (consumerComplete) {
+				s_preNGBSLightingLLFConsumerResourceBoundFrame.store(frame, std::memory_order_relaxed);
+			}
+			llfFeature->TracePreNGActiveLightingBindings(
+				"descriptor-bslighting-llf-bind",
+				static_cast<std::int32_t>(a_shader->shaderType),
+				static_cast<std::uint32_t>(a_vertexDescriptor),
+				pixelDescriptor,
+				a_found,
+				consumerPSD3D);
+		} else {
+			// Resources already bound this frame; the PS swap above is all this
+			// draw needs. Treat as complete so the detour still returns 1.
+			consumerComplete = true;
+		}
+
 		logBind("bound", "llf-consumer-current-vs-bound", vertexEntry, pixelEntry, consumerPSD3D, bindIndex, consumerComplete);
 
 		if (consumerComplete &&
