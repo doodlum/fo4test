@@ -3207,6 +3207,7 @@ namespace CommunityShaders
 		const bool preNGBSLightingDescriptorObserveEnabled = ShouldObservePreNGBSLightingDescriptors();
 		const bool preNGBSLightingResourceBindEnabled = ShouldBindPreNGBSLightingDescriptorResources();
 		const bool preNGBSLightingVanillaBindEnabled = ShouldBindPreNGBSLightingVanillaDescriptorShader();
+		const bool preNGBSLightingLLFBindEnabled = ShouldBindPreNGBSLightingLLFConsumerShader();
 		const bool preNGDescriptorPathEnabled =
 			preNGShaderLookupDiagEnabled ||
 			preNGDescriptorMutateEnabled ||
@@ -3233,7 +3234,7 @@ namespace CommunityShaders
 					lookupAddr,
 					reinterpret_cast<std::uintptr_t>(PreNGBSShaderLookup::thunk)));
 			logger::info(
-				"[BSShaderHooks] Detoured PreNG shader lookup diagnostic/descriptor/bind/dump at 0x{:X}; original=0x{:X}; lookupDiag={} descriptorMutate={} descriptorCompile={} descriptorBind={} dflightDescriptorObserve={} bsLightingContractCompile={} bsLightingConsumerCompile={} bsLightingDescriptorObserve={} bsLightingResourceBind={} bsLightingVanillaBind={} dfCompositeDescriptorObserve={} dfCompositeDescriptorCompile={} dfCompositeResourceBind={} dfCompositeSafeBind={} dfCompositeFogSafeBind={} dflightFullContractDescriptorCompile={} dflightFullContractDescriptorBind={} dflightFullShadowedDescriptorConsumer={} dflightFullShadowedBind={} bsLightingVanillaDump={} dflightVanillaDump={} dfCompositeVanillaDump={} shader replacement remains held except gated descriptor-owned consumers and narrow dump/observe/compile/resource gates",
+				"[BSShaderHooks] Detoured PreNG shader lookup diagnostic/descriptor/bind/dump at 0x{:X}; original=0x{:X}; lookupDiag={} descriptorMutate={} descriptorCompile={} descriptorBind={} dflightDescriptorObserve={} bsLightingContractCompile={} bsLightingConsumerCompile={} bsLightingDescriptorObserve={} bsLightingResourceBind={} bsLightingVanillaBind={} bsLightingLLFBind={} dfCompositeDescriptorObserve={} dfCompositeDescriptorCompile={} dfCompositeResourceBind={} dfCompositeSafeBind={} dfCompositeFogSafeBind={} dflightFullContractDescriptorCompile={} dflightFullContractDescriptorBind={} dflightFullShadowedDescriptorConsumer={} dflightFullShadowedBind={} bsLightingVanillaDump={} dflightVanillaDump={} dfCompositeVanillaDump={} shader replacement remains held except gated descriptor-owned consumers and narrow dump/observe/compile/resource gates",
 				lookupAddr,
 				reinterpret_cast<std::uintptr_t>(PreNGBSShaderLookup::func),
 				preNGShaderLookupDiagEnabled,
@@ -3246,6 +3247,7 @@ namespace CommunityShaders
 				preNGBSLightingDescriptorObserveEnabled,
 				preNGBSLightingResourceBindEnabled,
 				preNGBSLightingVanillaBindEnabled,
+				preNGBSLightingLLFBindEnabled,
 				preNGDFCompositeDescriptorObserveEnabled,
 				preNGDFCompositeDescriptorCompileEnabled,
 				preNGDFCompositeResourceBindEnabled,
