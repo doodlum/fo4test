@@ -61,13 +61,6 @@ namespace
 {
 	constexpr std::uint32_t kClusterMaxLights = 128;
 	constexpr std::uint32_t kMaxLights = 1024;
-	// Above this collected-light count the clustered prepass (per-frame 1024-cluster
-	// cull over ~1000 lights) and its resource proof become a GPU/CPU sink that
-	// collapses framerate. Such dense buckets only appear in fullscreen preview
-	// scenes (e.g. ExamineMenu's legendary-weapon rig latches onto the world
-	// ShadowSceneNode), where visible LLF is not needed. Skip the clustered
-	// prepass for these frames. See .codex/docs/current-state.md (ExamineMenu FPS).
-	constexpr std::uint32_t kPreNGClusterPrepassMaxLights = 512;
 #if defined(FALLOUT_PRE_NG)
 	constexpr std::uint64_t kPreNGStableFrame = 5;
 	constexpr bool kPreNGEnableInternalPointLightHook = false;
@@ -2877,33 +2870,6 @@ void LightLimitFix::Prepass()
 
 	currentLightCount = static_cast<std::uint32_t>(frameLights.size());
 #if defined(FALLOUT_PRE_NG)
-	// Dense-bucket guard: skip the clustered prepass entirely when the decoded
-	// light set is huge (fullscreen preview scenes like ExamineMenu latch onto
-	// the world ShadowSceneNode with ~1000+ lights). The per-frame 1024-cluster
-	// cull over that many lights collapses framerate, and visible LLF is not
-	// needed for those frames. Mirrors the clearPixelLLFBindings/clear pattern of
-	// the proof-window-complete path so no stale clustered SRVs/CB linger.
-	if (currentLightCount > kPreNGClusterPrepassMaxLights) {
-		clearPixelLLFBindings();
-		seenLights.clear();
-		seenThisPass.clear();
-		seenCBHashes.clear();
-		frameLights.clear();
-		clusterPayloadCacheValid = false;
-		static std::atomic_uint32_t denseSkipCount = 0;
-		const auto skipIndex = ++denseSkipCount;
-		if (skipIndex <= 8 || skipIndex % 128 == 0) {
-			logger::info(
-				"[LightLimitFix] PreNG clustered Prepass skipped for dense light bucket skips={} frame={} lights={} threshold={}; per-frame 1024-cluster cull over this many lights collapses framerate (e.g. ExamineMenu world-node latch), visible LLF not needed here",
-				skipIndex,
-				frameNumber,
-				currentLightCount,
-				kPreNGClusterPrepassMaxLights);
-		}
-		currentLightCount = 0;
-		return;
-	}
-
 	const auto preNGClusterPayloadCurrent = MakePreNGClusterPayloadCacheState(
 		frameLights,
 		strictLightDataTemp,
