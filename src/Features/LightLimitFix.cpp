@@ -61,6 +61,13 @@ namespace
 {
 	constexpr std::uint32_t kClusterMaxLights = 128;
 	constexpr std::uint32_t kMaxLights = 1024;
+	// Above this collected-light count the clustered prepass (per-frame 1024-cluster
+	// cull over ~1000 lights) and its resource proof become a GPU/CPU sink that
+	// collapses framerate. Such dense buckets only appear in fullscreen preview
+	// scenes (e.g. ExamineMenu's legendary-weapon rig latches onto the world
+	// ShadowSceneNode), where visible LLF is not needed. Skip the clustered
+	// prepass for these frames. See .codex/docs/current-state.md (ExamineMenu FPS).
+	constexpr std::uint32_t kPreNGClusterPrepassMaxLights = 512;
 #if defined(FALLOUT_PRE_NG)
 	constexpr std::uint64_t kPreNGStableFrame = 5;
 	constexpr bool kPreNGEnableInternalPointLightHook = false;
@@ -141,8 +148,16 @@ namespace
 	std::atomic_bool s_preNGBSLightingDeferredResourceProofComplete = false;
 	constexpr std::uint64_t kPreNGBSLightingResourceProofMenuSettleFrames = 120;
 	constexpr std::string_view kPreNGBSLightingResourceProofLockpickingMenu{ "LockpickingMenu" };
+	// Fullscreen 3D preview menus that latch the LLF decode onto the world
+	// ShadowSceneNode (1000+ lights), collapsing framerate via the per-frame
+	// clustered prepass. Like LockpickingMenu, these need permanent suppression
+	// of the clustered prepass / deferred b3-t35-t37 bind for the process: the
+	// preview rig itself only needs its handful of vanilla lights, and visible
+	// LLF is not wanted while a preview menu is up. See .codex/docs/current-state.md.
 	constexpr std::array kPreNGBSLightingResourceProofBlockingMenus{
-		kPreNGBSLightingResourceProofLockpickingMenu
+		kPreNGBSLightingResourceProofLockpickingMenu,
+		std::string_view{ "ExamineMenu" },
+		std::string_view{ "ExamineConfirmMenu" }
 	};
 	std::atomic_uint64_t s_preNGBSLightingResourceProofBypassUntilFrame = 0;
 	std::atomic_uint32_t s_preNGBSLightingResourceProofBypassLogs = 0;
@@ -1201,10 +1216,9 @@ namespace
 		};
 
 		if (!menuBlock.empty()) {
-			if (menuBlock == kPreNGBSLightingResourceProofLockpickingMenu &&
-				!s_preNGBSLightingResourceProofSuppressedByLockpicking.exchange(true, std::memory_order_relaxed)) {
+			if (!s_preNGBSLightingResourceProofSuppressedByLockpicking.exchange(true, std::memory_order_relaxed)) {
 				logger::info(
-					"[LightLimitFix] PreNG BSLighting resource proof suppressed after LockpickingMenu descriptor path frame={} reason={}; resource-only proof already validated, skipping delayed clustered Prepass and deferred b3/t35-t37 bind for this process",
+					"[LightLimitFix] PreNG BSLighting resource proof suppressed after preview-menu descriptor path frame={} menu={}; resource-only proof already validated, skipping delayed clustered Prepass and deferred b3/t35-t37 bind for this process",
 					frame,
 					menuBlock.data());
 			}
@@ -1754,7 +1768,7 @@ namespace
 			static std::atomic_bool loggedLockpickingSuppression = false;
 			if (!loggedLockpickingSuppression.exchange(true, std::memory_order_relaxed)) {
 				logger::info(
-					"[LightLimitFix] PreNG clustered Prepass held for BSLighting resource proof because LockpickingMenu suppression is active; descriptorObserved={} strictOrClusterGate={} env={}; delayed 1024-light proof work is skipped",
+					"[LightLimitFix] PreNG clustered Prepass held for BSLighting resource proof because preview-menu (Lockpicking/Examine) suppression is active; descriptorObserved={} strictOrClusterGate={} env={}; delayed 1024-light proof work is skipped",
 					bsLightingDescriptorObserved,
 					descriptorResourceSubGateRequested,
 					kPreNGBSLightingResourceBindEnv);
@@ -2863,6 +2877,33 @@ void LightLimitFix::Prepass()
 
 	currentLightCount = static_cast<std::uint32_t>(frameLights.size());
 #if defined(FALLOUT_PRE_NG)
+	// Dense-bucket guard: skip the clustered prepass entirely when the decoded
+	// light set is huge (fullscreen preview scenes like ExamineMenu latch onto
+	// the world ShadowSceneNode with ~1000+ lights). The per-frame 1024-cluster
+	// cull over that many lights collapses framerate, and visible LLF is not
+	// needed for those frames. Mirrors the clearPixelLLFBindings/clear pattern of
+	// the proof-window-complete path so no stale clustered SRVs/CB linger.
+	if (currentLightCount > kPreNGClusterPrepassMaxLights) {
+		clearPixelLLFBindings();
+		seenLights.clear();
+		seenThisPass.clear();
+		seenCBHashes.clear();
+		frameLights.clear();
+		clusterPayloadCacheValid = false;
+		static std::atomic_uint32_t denseSkipCount = 0;
+		const auto skipIndex = ++denseSkipCount;
+		if (skipIndex <= 8 || skipIndex % 128 == 0) {
+			logger::info(
+				"[LightLimitFix] PreNG clustered Prepass skipped for dense light bucket skips={} frame={} lights={} threshold={}; per-frame 1024-cluster cull over this many lights collapses framerate (e.g. ExamineMenu world-node latch), visible LLF not needed here",
+				skipIndex,
+				frameNumber,
+				currentLightCount,
+				kPreNGClusterPrepassMaxLights);
+		}
+		currentLightCount = 0;
+		return;
+	}
+
 	const auto preNGClusterPayloadCurrent = MakePreNGClusterPayloadCacheState(
 		frameLights,
 		strictLightDataTemp,
