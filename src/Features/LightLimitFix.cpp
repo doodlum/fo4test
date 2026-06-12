@@ -139,7 +139,14 @@ namespace
 	std::atomic_bool s_preNGBSLightingLLFConsumerLastFound = false;
 	std::atomic<std::uintptr_t> s_preNGBSLightingLLFConsumerLastVanillaPixelShader = 0;
 	std::atomic_bool s_preNGBSLightingDeferredResourceProofComplete = false;
-	constexpr std::uint64_t kPreNGBSLightingResourceProofMenuSettleFrames = 120;
+	// Descriptor-burst settle buffer (frames) applied after BSLighting descriptor
+	// observation by ExtendPreNGBSLightingResourceProofDescriptorSettle. Kept very
+	// short so the clustered prepass resumes almost immediately once a preview
+	// menu closes (BOSS: resume clustered prepass right after the menu closes).
+	// Preview-menu suppression itself is live per-frame via menu detection and
+	// does not depend on this value. A tiny non-zero buffer still smooths the
+	// descriptor-burst transition without a visible delay.
+	constexpr std::uint64_t kPreNGBSLightingResourceProofMenuSettleFrames = 2;
 	constexpr std::string_view kPreNGBSLightingResourceProofLockpickingMenu{ "LockpickingMenu" };
 	// Fullscreen 3D preview menus that latch the LLF decode onto the world
 	// ShadowSceneNode (1000+ lights), collapsing framerate via the per-frame
@@ -1209,23 +1216,15 @@ namespace
 
 		if (!menuBlock.empty()) {
 			// Scoped suppression: hold the clustered Prepass / deferred b3-t35-t37
-			// bind while a fullscreen preview menu (Lockpicking/Examine) is open
-			// and for a settle window after it closes, then resume. This replaces
-			// the old permanent process-wide latch so normal gameplay after a
-			// preview menu still gets clustered lighting once the visible consumer
-			// is live. See .codex/docs/preview-menu-prepass-suppression.md.
-			const auto newBypassUntil = frame + kPreNGBSLightingResourceProofMenuSettleFrames;
-			auto bypassUntil = s_preNGBSLightingResourceProofBypassUntilFrame.load(std::memory_order_relaxed);
-			while (bypassUntil < newBypassUntil) {
-				if (s_preNGBSLightingResourceProofBypassUntilFrame.compare_exchange_weak(
-						bypassUntil,
-						newBypassUntil,
-						std::memory_order_relaxed,
-						std::memory_order_relaxed)) {
-					break;
-				}
-			}
-			logDefer(menuBlock.data(), newBypassUntil);
+			// bind only while a fullscreen preview menu (Lockpicking/Examine) is
+			// actually open. Detection is per-frame and live, so the moment the
+			// menu closes this returns false again and the prepass resumes
+			// immediately — no post-close settle delay (BOSS: resume clustered
+			// prepass right after the menu closes). The separate descriptor-burst
+			// path (ExtendPreNGBSLightingResourceProofDescriptorSettle) still uses
+			// bypassUntil for its own small buffer. See
+			// .codex/docs/preview-menu-prepass-suppression.md.
+			logDefer(menuBlock.data(), frame);
 			return true;
 		}
 
