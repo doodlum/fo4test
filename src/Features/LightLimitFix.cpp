@@ -53,7 +53,9 @@
 #include <imgui.h>
 
 #include <algorithm>
+#include <filesystem>
 #include <format>
+#include <mutex>
 #include <optional>
 #include <sstream>
 
@@ -780,7 +782,8 @@ namespace
 		kNone,
 		kProcess,
 		kUserRegistry,
-		kMachineRegistry
+		kMachineRegistry,
+		kDebugIni
 	};
 
 	struct EnvironmentSwitchState
@@ -806,72 +809,102 @@ namespace
 			return "user-reg";
 		case EnvironmentSwitchSource::kMachineRegistry:
 			return "machine-reg";
+		case EnvironmentSwitchSource::kDebugIni:
+			return "debug-ini";
 		default:
 			return "none";
 		}
 	}
 
-	bool ReadRegistryEnvironmentValue(
-		HKEY a_root,
-		const char* a_subKey,
-		const char* a_name,
-		char (&a_value)[16])
+	// Debug switches are read exclusively from
+	// Data\F4SE\Plugins\CommunityShaders\Debug.ini ([Switches] section), keyed by
+	// the same FO4CS_* names the code already uses. This deliberately replaces the
+	// previous process-env / HKCU / HKLM lookup so a polluted parent environment
+	// (e.g. a stale MO2 launcher env) can no longer flip LLF diagnostic gates.
+	constexpr const char* kDebugIniSwitchSection = "Switches";
+
+	// Absolute path to the DLL that contains this code, resolved at runtime so the
+	// Debug.ini lookup is robust under MO2's VFS. Returns empty on failure.
+	std::filesystem::path GetContainingModulePath()
 	{
-		DWORD type = 0;
-		DWORD size = static_cast<DWORD>(sizeof(a_value));
-		const auto result = RegGetValueA(
-			a_root,
-			a_subKey,
-			a_name,
-			RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ,
-			&type,
-			a_value,
-			&size);
-		if (result != ERROR_SUCCESS || size == 0) {
-			return false;
+		HMODULE module = nullptr;
+		if (!GetModuleHandleExW(
+				GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+				reinterpret_cast<LPCWSTR>(&GetContainingModulePath),
+				&module) ||
+			!module) {
+			return {};
 		}
 
-		a_value[sizeof(a_value) - 1] = '\0';
-		return true;
+		std::vector<wchar_t> buffer(MAX_PATH);
+		while (true) {
+			const auto length = GetModuleFileNameW(module, buffer.data(), static_cast<DWORD>(buffer.size()));
+			if (length == 0) {
+				return {};
+			}
+			if (length < static_cast<DWORD>(buffer.size() - 1)) {
+				return std::filesystem::path(std::wstring(buffer.data(), length));
+			}
+			buffer.resize(buffer.size() * 2);
+		}
+	}
+
+	std::filesystem::path GetDebugIniPath()
+	{
+		// Prefer the directory the loaded module actually lives in (robust under
+		// MO2's VFS), falling back to the canonical relative install path.
+		const auto modulePath = GetContainingModulePath();
+		if (!modulePath.empty()) {
+			return modulePath.parent_path() / "CommunityShaders" / "Debug.ini";
+		}
+		return std::filesystem::path("Data\\F4SE\\Plugins\\CommunityShaders") / "Debug.ini";
+	}
+
+	// Loaded once on first access. The file is small and switches are read-only at
+	// runtime, so a single parse is sufficient and avoids per-call disk I/O.
+	// CSimpleIniA is non-copyable, so the static is populated in place under a
+	// std::once_flag.
+	const CSimpleIniA& GetDebugIni()
+	{
+		static CSimpleIniA ini;
+		static std::once_flag loadFlag;
+		std::call_once(loadFlag, [] {
+			ini.SetUnicode();
+			const auto path = GetDebugIniPath();
+			std::error_code ec;
+			if (std::filesystem::exists(path, ec)) {
+				const auto rc = ini.LoadFile(path.string().c_str());
+				logger::info(
+					"[LightLimitFix] Debug switch source: {} (load rc={})",
+					path.string(),
+					static_cast<int>(rc));
+			} else {
+				logger::info(
+					"[LightLimitFix] Debug switch source {} not present; all LLF diagnostic switches default OFF",
+					path.string());
+			}
+		});
+		return ini;
+	}
+
+	// Returns the raw string value for a switch from Debug.ini, or nullptr if the
+	// key is absent.
+	const char* ReadDebugIniValue(const char* a_name)
+	{
+		return GetDebugIni().GetValue(kDebugIniSwitchSection, a_name, nullptr);
 	}
 
 	EnvironmentSwitchState ReadEnvironmentSwitch(const char* a_name)
 	{
-		char value[16]{};
-		if (ReadRegistryEnvironmentValue(HKEY_CURRENT_USER, "Environment", a_name, value)) {
-			return {
-				IsTruthyEnvironmentValue(value),
-				EnvironmentSwitchSource::kUserRegistry
-			};
+		const char* value = ReadDebugIniValue(a_name);
+		if (!value) {
+			return {};
 		}
 
-		if (ReadRegistryEnvironmentValue(
-				HKEY_LOCAL_MACHINE,
-				"SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment",
-				a_name,
-				value)) {
-			return {
-				IsTruthyEnvironmentValue(value),
-				EnvironmentSwitchSource::kMachineRegistry
-			};
-		}
-
-		SetLastError(ERROR_SUCCESS);
-		const auto length = GetEnvironmentVariableA(
-			a_name,
-			value,
-			static_cast<DWORD>(sizeof(value)));
-		if (length > 0) {
-			return {
-				length < sizeof(value) && IsTruthyEnvironmentValue(value),
-				EnvironmentSwitchSource::kProcess
-			};
-		}
-		if (GetLastError() != ERROR_ENVVAR_NOT_FOUND) {
-			return { false, EnvironmentSwitchSource::kProcess };
-		}
-
-		return {};
+		return {
+			IsTruthyEnvironmentValue(value),
+			EnvironmentSwitchSource::kDebugIni
+		};
 	}
 
 	bool ParseEnvironmentUIntValue(const char* a_value, std::uint32_t& a_result)
@@ -907,35 +940,12 @@ namespace
 
 	EnvironmentUIntState ReadEnvironmentUInt(const char* a_name)
 	{
-		char value[16]{};
-		if (ReadRegistryEnvironmentValue(HKEY_CURRENT_USER, "Environment", a_name, value)) {
-			return MakeEnvironmentUIntState(value, EnvironmentSwitchSource::kUserRegistry, true);
+		const char* value = ReadDebugIniValue(a_name);
+		if (!value) {
+			return {};
 		}
 
-		if (ReadRegistryEnvironmentValue(
-				HKEY_LOCAL_MACHINE,
-				"SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment",
-				a_name,
-				value)) {
-			return MakeEnvironmentUIntState(value, EnvironmentSwitchSource::kMachineRegistry, true);
-		}
-
-		SetLastError(ERROR_SUCCESS);
-		const auto length = GetEnvironmentVariableA(
-			a_name,
-			value,
-			static_cast<DWORD>(sizeof(value)));
-		if (length > 0) {
-			return MakeEnvironmentUIntState(
-				value,
-				EnvironmentSwitchSource::kProcess,
-				length < sizeof(value));
-		}
-		if (GetLastError() != ERROR_ENVVAR_NOT_FOUND) {
-			return MakeEnvironmentUIntState("", EnvironmentSwitchSource::kProcess, false);
-		}
-
-		return {};
+		return MakeEnvironmentUIntState(value, EnvironmentSwitchSource::kDebugIni, true);
 	}
 
 	std::uint32_t GetPreNGClusterPrepassProofFrameBudget()
