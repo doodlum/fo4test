@@ -78,6 +78,7 @@ namespace
 	constexpr const char* kPreNGPrepassResourceBindEnv = "FO4CS_LLF_PRENG_PREPASS_BIND_RESOURCES";
 	constexpr const char* kPreNGPersistentClusterPrepassEnv = "FO4CS_LLF_PRENG_PERSISTENT_CLUSTER_PREPASS";
 	constexpr const char* kPreNGPersistentClusterPrepassRefreshIntervalEnv = "FO4CS_LLF_PRENG_PERSISTENT_CLUSTER_PREPASS_REFRESH_INTERVAL";
+	constexpr const char* kPreNGClusterPrepassSubmitIntervalEnv = "FO4CS_LLF_PRENG_CLUSTER_PREPASS_SUBMIT_INTERVAL";
 	constexpr const char* kPreNGClusterPrepassReuseEnv = "FO4CS_LLF_PRENG_CLUSTER_PREPASS_REUSE";
 	constexpr const char* kPreNGShadowSceneFastReuseEnv = "FO4CS_LLF_PRENG_SHADOW_SCENE_FAST_REUSE";
 	constexpr const char* kPreNGShadowSceneFastReuseRefreshIntervalEnv = "FO4CS_LLF_PRENG_SHADOW_SCENE_FAST_REUSE_REFRESH_INTERVAL";
@@ -124,6 +125,16 @@ namespace
 	constexpr std::uint32_t kPreNGDefaultPersistentClusterPrepassRefreshInterval = 0;
 	constexpr std::uint32_t kPreNGMinPersistentClusterPrepassRefreshInterval = 0;
 	constexpr std::uint32_t kPreNGMaxPersistentClusterPrepassRefreshInterval = 600;
+	// Compute-submission throttle for the finite/proof prepass path. Submitting the
+	// clustered compute dispatch on the D3D11 immediate context every frame forces
+	// the FrameGen swapchain's per-present D3D11->D3D12 interop fence to wait on
+	// that GPU work each frame, inserting a sync bubble that idles BOTH CPU and GPU
+	// (observed <30% each, hard FPS floor for the proof window). Submitting at most
+	// every N frames and reusing the cached payload between submits removes the
+	// per-frame bubble while keeping clustered lighting valid. Default 4.
+	constexpr std::uint32_t kPreNGDefaultClusterPrepassSubmitInterval = 4;
+	constexpr std::uint32_t kPreNGMinClusterPrepassSubmitInterval = 1;
+	constexpr std::uint32_t kPreNGMaxClusterPrepassSubmitInterval = 600;
 	constexpr std::uint32_t kPreNGDefaultShadowSceneFastReuseRefreshInterval = 8;
 	constexpr std::uint32_t kPreNGMinShadowSceneFastReuseRefreshInterval = 1;
 	constexpr std::uint32_t kPreNGMaxShadowSceneFastReuseRefreshInterval = 600;
@@ -1590,6 +1601,39 @@ namespace
 		return interval;
 	}
 
+	std::uint32_t GetPreNGClusterPrepassSubmitInterval()
+	{
+		static const std::uint32_t interval = [] {
+			const auto state = ReadEnvironmentUInt(kPreNGClusterPrepassSubmitIntervalEnv);
+			auto resolved = kPreNGDefaultClusterPrepassSubmitInterval;
+			auto clamped = false;
+			if (state.present && state.valid) {
+				resolved = state.value;
+				if (resolved < kPreNGMinClusterPrepassSubmitInterval) {
+					resolved = kPreNGMinClusterPrepassSubmitInterval;
+					clamped = true;
+				} else if (resolved > kPreNGMaxClusterPrepassSubmitInterval) {
+					resolved = kPreNGMaxClusterPrepassSubmitInterval;
+					clamped = true;
+				}
+			}
+
+			logger::info(
+				"[LightLimitFix] PreNG clustered Prepass submit interval resolved {}={} source={} present={} valid={} clamped={} default={} range={}..{} note=1-submits-every-frame",
+				kPreNGClusterPrepassSubmitIntervalEnv,
+				resolved,
+				EnvironmentSwitchSourceName(state.source),
+				state.present,
+				state.valid,
+				clamped,
+				kPreNGDefaultClusterPrepassSubmitInterval,
+				kPreNGMinClusterPrepassSubmitInterval,
+				kPreNGMaxClusterPrepassSubmitInterval);
+			return resolved;
+		}();
+		return interval;
+	}
+
 	bool ShouldReusePreNGClusterPrepassPayload()
 	{
 		static const bool enabled = [] {
@@ -2960,6 +3004,60 @@ void LightLimitFix::Prepass()
 					clusterPayloadCache.StrictCBUploaded);
 			}
 			return;
+		}
+	}
+#endif
+
+#if defined(FALLOUT_PRE_NG)
+	// Finite/proof + on-demand consumer path (NOT the PERSISTENT env path above):
+	// throttle the clustered compute SUBMISSION to at most once every N frames.
+	// Submitting the dispatch on the D3D11 immediate context every frame stalls the
+	// FrameGen swapchain's per-present 11->12 interop fence, idling both CPU and GPU
+	// (observed <30% each, hard FPS floor for the proof window). Between submits we
+	// reuse the cached payload so currentLightCount / b3-t35-t37 stay valid and
+	// clustered lighting remains visible.
+	if (!persistentPrepassActive &&
+		ShouldReusePreNGClusterPrepassPayload() &&
+		clusterPayloadCacheValid &&
+		currentLightCount > 0) {
+		const auto submitInterval = GetPreNGClusterPrepassSubmitInterval();
+		if (submitInterval > 1) {
+			static std::atomic_uint32_t prepassSubmitFrameCount = 0;
+			const auto submitFrame = prepassSubmitFrameCount.fetch_add(1, std::memory_order_relaxed) + 1;
+			if (submitFrame % submitInterval != 0) {
+				seenLights.clear();
+				seenThisPass.clear();
+				seenCBHashes.clear();
+				frameLights.clear();
+				currentLightCount = clusterPayloadCache.LightCount;
+				currentStrictLightCount = clusterPayloadCache.StrictLightCount;
+				strictLightDataTemp.NumStrictLights = clusterPayloadCache.StrictLightCount;
+				strictLightDataTemp.ShadowBitMask = clusterPayloadCache.ShadowBitMask;
+
+				// Match the persistent throttle path: clear LLF PS slots on skipped
+				// frames so we never leak a stale prepass-side bind into the engine
+				// frame. The visible consumer rebinds b3/t35-t37 per draw, so this
+				// does not affect clustered-lighting visibility.
+				if (ShouldBindPreNGPrepassResources()) {
+					clearPixelLLFBindings();
+				}
+
+				static std::atomic_uint32_t submitThrottleCount = 0;
+				const auto throttleIndex = ++submitThrottleCount;
+				if (throttleIndex <= 8 || throttleIndex % 128 == 0) {
+					logger::info(
+						"[LightLimitFix] PreNG clustered Prepass submit-throttled reuse reuses={} frame={} submitFrame={} submitInterval={} lights={} strict={} clusters={} shadowMask=0x{:08X}; compute dispatch skipped this frame to avoid the FrameGen interop stall, cached payload reused",
+						throttleIndex,
+						frameNumber,
+						submitFrame,
+						submitInterval,
+						currentLightCount,
+						currentStrictLightCount,
+						clusterSize[0] * clusterSize[1] * clusterSize[2],
+						strictLightDataTemp.ShadowBitMask);
+				}
+				return;
+			}
 		}
 	}
 #endif
