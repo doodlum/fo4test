@@ -346,6 +346,13 @@ private:
 	PreNGDFLightResourceBindingState BindPreNGDFLightNoOpPassResources(
 		ID3D11DeviceContext* a_context,
 		const char* a_passName);
+	// GPU-timing helpers for the clustered compute block. BeginPreNGClusterGpuTimer
+	// returns the timer slot index to End/Resolve, or UINT32_MAX if timing is off
+	// or query creation failed. ResolvePreNGClusterGpuTimer reads the prior frame's
+	// disjoint+timestamp pair and logs the elapsed GPU milliseconds.
+	std::uint32_t BeginPreNGClusterGpuTimer(ID3D11DeviceContext* a_context, ID3D11Device* a_device);
+	void EndPreNGClusterGpuTimer(ID3D11DeviceContext* a_context, std::uint32_t a_slot);
+	void ResolvePreNGClusterGpuTimer(ID3D11DeviceContext* a_context, std::uint32_t a_slot, std::uint32_t a_frameNumber, std::uint32_t a_lightCount);
 #endif
 	// --- GPU Resources (RAII: winrt::com_ptr auto-releases on destruction) ---
 	winrt::com_ptr<ID3D11ComputeShader>          clusterBuildingCS;
@@ -369,4 +376,22 @@ private:
 	winrt::com_ptr<ID3D11UnorderedAccessView>    lightGridUAV;
 
 	std::uint32_t clusterSize[3] = { 8, 8, 16 };
+
+#if defined(FALLOUT_PRE_NG)
+	// Optional GPU timing for the clustered compute block (building + culling
+	// dispatch), gated by FO4CS_LLF_PRENG_GPU_TIMING. Double-buffered timestamp
+	// queries so GetData reads the previous frame's result without stalling the
+	// pipeline. Diagnostic only; created lazily in Prepass on first timed frame.
+	static constexpr std::uint32_t kPreNGGpuTimerFrames = 2;
+	struct PreNGGpuTimer
+	{
+		winrt::com_ptr<ID3D11Query> disjoint;
+		winrt::com_ptr<ID3D11Query> begin;
+		winrt::com_ptr<ID3D11Query> end;
+		bool pending = false;
+	};
+	PreNGGpuTimer preNGClusterGpuTimers[kPreNGGpuTimerFrames];
+	bool preNGClusterGpuTimersReady = false;
+	std::uint32_t preNGClusterGpuTimerIndex = 0;
+#endif
 };

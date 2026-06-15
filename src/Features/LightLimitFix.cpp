@@ -106,6 +106,7 @@ namespace
 	constexpr const char* kPreNGBSLightingLLFBindEnv = "FO4CS_LLF_PRENG_BSLIGHTING_LLF_BIND";
 	constexpr const char* kPreNGShaderObjectMetadataEnv = "FO4CS_LLF_PRENG_SHADER_OBJECT_METADATA";
 	constexpr const char* kPreNGTraceLLFPixelEnv = "FO4CS_TRACE_LLF_PS";
+	constexpr const char* kPreNGGpuTimingEnv = "FO4CS_LLF_PRENG_GPU_TIMING";
 	constexpr const char* kPreNGDFLightContractCompileEnv = "FO4CS_LLF_PRENG_DFLIGHT_CONTRACT_COMPILE";
 	constexpr const char* kPreNGDFLightCandidateCompileEnv = "FO4CS_LLF_PRENG_DFLIGHT_CANDIDATE_COMPILE";
 	constexpr const char* kPreNGDFLightContractProbeSource = "LightLimitFix\\DFLightContractProbePS.hlsl";
@@ -1736,6 +1737,12 @@ namespace
 		return enabled;
 	}
 
+	bool ShouldTimePreNGClusterPrepassGpu()
+	{
+		static const bool enabled = IsTruthyEnvironmentSwitch(kPreNGGpuTimingEnv);
+		return enabled;
+	}
+
 	void LogPreNGHookReachabilityWatchdog(std::uint64_t a_frame)
 	{
 		if (a_frame < 600) {
@@ -2721,6 +2728,98 @@ void LightLimitFix::PostPostLoad()
 #endif
 }
 
+#if defined(FALLOUT_PRE_NG)
+std::uint32_t LightLimitFix::BeginPreNGClusterGpuTimer(ID3D11DeviceContext* a_context, ID3D11Device* a_device)
+{
+	if (!ShouldTimePreNGClusterPrepassGpu() || !a_context || !a_device) {
+		return UINT32_MAX;
+	}
+
+	if (!preNGClusterGpuTimersReady) {
+		D3D11_QUERY_DESC disjointDesc{ D3D11_QUERY_TIMESTAMP_DISJOINT, 0 };
+		D3D11_QUERY_DESC tsDesc{ D3D11_QUERY_TIMESTAMP, 0 };
+		bool ok = true;
+		for (auto& timer : preNGClusterGpuTimers) {
+			if (FAILED(a_device->CreateQuery(&disjointDesc, timer.disjoint.put())) ||
+				FAILED(a_device->CreateQuery(&tsDesc, timer.begin.put())) ||
+				FAILED(a_device->CreateQuery(&tsDesc, timer.end.put()))) {
+				ok = false;
+				break;
+			}
+		}
+		if (!ok) {
+			static bool loggedFailure = false;
+			if (!loggedFailure) {
+				logger::warn("[LightLimitFix] PreNG GPU timing query creation failed; timing disabled this run");
+				loggedFailure = true;
+			}
+			return UINT32_MAX;
+		}
+		preNGClusterGpuTimersReady = true;
+	}
+
+	const auto slot = preNGClusterGpuTimerIndex;
+	auto& timer = preNGClusterGpuTimers[slot];
+	a_context->Begin(timer.disjoint.get());
+	a_context->End(timer.begin.get());  // timestamp queries record via End()
+	return slot;
+}
+
+void LightLimitFix::EndPreNGClusterGpuTimer(ID3D11DeviceContext* a_context, std::uint32_t a_slot)
+{
+	if (a_slot >= kPreNGGpuTimerFrames || !a_context) {
+		return;
+	}
+	auto& timer = preNGClusterGpuTimers[a_slot];
+	a_context->End(timer.end.get());
+	a_context->End(timer.disjoint.get());
+	timer.pending = true;
+	// Rotate to the other slot for the next timed frame so this frame's data has a
+	// full frame to become available before we GetData it.
+	preNGClusterGpuTimerIndex = (a_slot + 1) % kPreNGGpuTimerFrames;
+}
+
+void LightLimitFix::ResolvePreNGClusterGpuTimer(ID3D11DeviceContext* a_context, std::uint32_t a_slot, std::uint32_t a_frameNumber, std::uint32_t a_lightCount)
+{
+	if (a_slot >= kPreNGGpuTimerFrames || !a_context) {
+		return;
+	}
+
+	// Read the OTHER buffer (previous timed frame) so GetData does not stall.
+	const auto readSlot = (a_slot + 1) % kPreNGGpuTimerFrames;
+	auto& timer = preNGClusterGpuTimers[readSlot];
+	if (!timer.pending) {
+		return;
+	}
+
+	D3D11_QUERY_DATA_TIMESTAMP_DISJOINT disjointData{};
+	if (a_context->GetData(timer.disjoint.get(), &disjointData, sizeof(disjointData), 0) != S_OK) {
+		return;  // not ready yet; try next timed frame
+	}
+
+	std::uint64_t beginTs = 0;
+	std::uint64_t endTs = 0;
+	if (a_context->GetData(timer.begin.get(), &beginTs, sizeof(beginTs), 0) != S_OK ||
+		a_context->GetData(timer.end.get(), &endTs, sizeof(endTs), 0) != S_OK) {
+		return;
+	}
+
+	timer.pending = false;
+
+	if (disjointData.Disjoint || disjointData.Frequency == 0 || endTs <= beginTs) {
+		return;  // timing invalid this frame
+	}
+
+	const double ms = static_cast<double>(endTs - beginTs) * 1000.0 / static_cast<double>(disjointData.Frequency);
+	logger::info(
+		"[LightLimitFix] PreNG cluster compute GPU time frame={} lights={} clusters={} gpuMs={:.3f}",
+		a_frameNumber,
+		a_lightCount,
+		clusterSize[0] * clusterSize[1] * clusterSize[2],
+		ms);
+}
+#endif
+
 void LightLimitFix::Prepass()
 {
 	const auto frameNumber = ++diagFrameCounter;
@@ -2982,6 +3081,11 @@ void LightLimitFix::Prepass()
 	{
 		clearPixelClusterSRVs();
 
+#if defined(FALLOUT_PRE_NG)
+		auto* timingDevice = reinterpret_cast<ID3D11Device*>(rendererData->device);
+		const auto gpuTimerSlot = BeginPreNGClusterGpuTimer(context, timingDevice);
+#endif
+
 		if (currentLightCount > 0) {
 			const auto lightUploadBytes = static_cast<UINT>(currentLightCount * sizeof(LightData));
 			D3D11_BOX lightUploadBox{};
@@ -3119,6 +3223,10 @@ void LightLimitFix::Prepass()
 		clearComputeBindings();
 
 #if defined(FALLOUT_PRE_NG)
+		if (gpuTimerSlot != UINT32_MAX) {
+			EndPreNGClusterGpuTimer(context, gpuTimerSlot);
+			ResolvePreNGClusterGpuTimer(context, gpuTimerSlot, frameNumber, currentLightCount);
+		}
 		clusterPayloadCache = preNGClusterPayloadCurrent;
 		clusterPayloadCache.StrictCBUploaded = false;
 		clusterPayloadCacheValid = true;
