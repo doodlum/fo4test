@@ -2805,17 +2805,6 @@ void LightLimitFix::RunClusterPrepass()
 #if defined(FALLOUT_PRE_NG)
 		auto* timingDevice = reinterpret_cast<ID3D11Device*>(rendererData->device);
 		const auto gpuTimerSlot = BeginPreNGClusterGpuTimer(context, timingDevice);
-		// CPU wall-clock around the whole submission block. If this is large (~ms)
-		// the cost is a CPU-side BLOCK (a call waiting on the GPU) -> deferred
-		// context / relocation helps. If it stays tiny (~us) while FPS still drops,
-		// the cost is pure GPU pipeline serialization -> deferred context will NOT
-		// help; need resource double-buffering or submitting outside the present
-		// fence. Gated by the same GPU_TIMING switch.
-		const bool cpuTimeSubmit = ShouldTimePreNGClusterPrepassGpu();
-		LARGE_INTEGER cpuSubmitStart{};
-		if (cpuTimeSubmit) {
-			QueryPerformanceCounter(&cpuSubmitStart);
-		}
 #endif
 
 		if (currentLightCount > 0) {
@@ -2955,25 +2944,6 @@ void LightLimitFix::RunClusterPrepass()
 		clearComputeBindings();
 
 #if defined(FALLOUT_PRE_NG)
-		if (cpuTimeSubmit) {
-			LARGE_INTEGER cpuSubmitEnd{};
-			LARGE_INTEGER cpuFreq{};
-			QueryPerformanceCounter(&cpuSubmitEnd);
-			QueryPerformanceFrequency(&cpuFreq);
-			const double cpuMs = cpuFreq.QuadPart > 0 ?
-				static_cast<double>(cpuSubmitEnd.QuadPart - cpuSubmitStart.QuadPart) * 1000.0 /
-					static_cast<double>(cpuFreq.QuadPart) :
-				0.0;
-			static std::atomic_uint32_t cpuSubmitLogCount = 0;
-			const auto cpuLogIndex = ++cpuSubmitLogCount;
-			if (cpuLogIndex <= 32 || cpuLogIndex % 64 == 0) {
-				logger::info(
-					"[LightLimitFix] PreNG cluster compute CPU submit time frame={} lights={} cpuMs={:.4f}; large=CPU-block(deferred-ctx helps) tiny=GPU-bubble(needs double-buffer/relocate)",
-					frameNumber,
-					currentLightCount,
-					cpuMs);
-			}
-		}
 		if (gpuTimerSlot != UINT32_MAX) {
 			EndPreNGClusterGpuTimer(context, gpuTimerSlot);
 			ResolvePreNGClusterGpuTimer(context, gpuTimerSlot, frameNumber, currentLightCount);
