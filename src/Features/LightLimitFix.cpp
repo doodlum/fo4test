@@ -1752,7 +1752,22 @@ namespace
 
 	bool ShouldSubmitPreNGClusterPrepassEarly()
 	{
-		static const bool enabled = IsTruthyEnvironmentSwitch(kPreNGPrepassEarlyHookEnv);
+		// Default ON: submit the clustered compute from the shadow-map phase
+		// (EarlyPrepass) so it overlaps the engine's shadow GPU batch instead of the
+		// frame-start idle pocket that downclocks the GPU under the FrameGen interop
+		// fence. Confirmed to fix the post-LockpickingMenu downclock with FrameGen
+		// on. Set FO4CS_LLF_PRENG_PREPASS_EARLY_HOOK=0 to force the legacy
+		// Main_RenderWorld_Start site for diagnostics.
+		static const bool enabled = [] {
+			const auto state = ReadEnvironmentSwitch(kPreNGPrepassEarlyHookEnv);
+			const bool resolved = state.source == EnvironmentSwitchSource::kNone || state.enabled;
+			logger::info(
+				"[LightLimitFix] PreNG clustered prepass early-submit resolved {}={} source={} default=on",
+				kPreNGPrepassEarlyHookEnv,
+				resolved ? "on" : "off",
+				EnvironmentSwitchSourceName(state.source));
+			return resolved;
+		}();
 		return enabled;
 	}
 
