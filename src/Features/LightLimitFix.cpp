@@ -1837,9 +1837,10 @@ namespace
 		// via bsLightingResourceProofMenuDeferred rather than a permanent latch.
 		const bool bsLightingResourceProofRequested =
 			bsLightingResourceProofGateRequested;
-		const bool bsLightingResourceProofMenuDeferred =
-			bsLightingResourceProofRequested &&
-			ShouldDeferPreNGBSLightingResourceProofForMenu();
+		// Skyrim-parity step 1: menu suppression removed (BOSS). Skyrim CS runs the
+		// clustered prepass every frame regardless of menus; the preview-menu defer
+		// is no longer applied.
+		const bool bsLightingResourceProofMenuDeferred = false;
 		const bool descriptorDemandRequested =
 			(ShouldUsePreNGDFLightDescriptorDemandResources() ||
 			 fullContractDescriptorObserved ||
@@ -1877,101 +1878,13 @@ namespace
 			return false;
 		}
 
-		const bool persistentProofRequested = ShouldUsePreNGPersistentClusterPrepassConsumer();
-		// An on-demand visible LLF consumer (DFLight/DFComposite/BSLighting) needs
-		// the clustered prepass to run every frame so its per-draw bind always has
-		// a valid currentLightCount and b3/t35-t37 payload. Persist directly when a
-		// consumer is active, regardless of the PERSISTENT env (which stays for the
-		// consumer-less diagnostic case below).
-		if (persistentProofRequested) {
-			return true;
-		}
-		if (ShouldPersistPreNGClusterPrepass()) {
-			static bool loggedPersistentFinite = false;
-			if (!loggedPersistentFinite) {
-				logger::info(
-					"[LightLimitFix] PreNG persistent clustered Prepass requested but no on-demand persistent LLF consumer is active; Prepass-owned b3/t35-t37 resource proof and finite DFLight no-op proofs remain finite to avoid cached clustered payload affecting non-visible passes after their draw budget ends. Enable {} or {} for DFLight persistent proof work; {}, {}, and {} stay finite proof gates.",
-					kPreNGDFLightDrawStateClusterSRVBindEnv,
-					kPreNGDFLightLLFAdditivePassEnv,
-					kPreNGDFLightResourceNoOpPassEnv,
-					kPreNGDFLightFullContractNoOpPassEnv,
-					kPreNGPrepassResourceBindEnv);
-				loggedPersistentFinite = true;
-			}
-		}
-
-		static std::atomic_uint32_t proofFrameCount = 0;
-		const auto frameBudget = GetPreNGClusterPrepassProofFrameBudget();
-		const bool bsLightingPayloadPending =
-			bsLightingResourceProofRequested &&
-			!bsLightingResourceProofMenuDeferred &&
-			(!globals::features::lightLimitFix.loaded ||
-			 !globals::features::lightLimitFix.HasPreNGBSLightingDescriptorConsumerData());
-		const auto activeFrameBudget = bsLightingPayloadPending ?
-			std::max(frameBudget, GetPreNGBSLightingResourcePrepassProofFrameBudget()) :
-			frameBudget;
-		auto current = proofFrameCount.load(std::memory_order_relaxed);
-		while (current < activeFrameBudget) {
-			if (proofFrameCount.compare_exchange_weak(
-					current,
-					current + 1,
-					std::memory_order_relaxed,
-					std::memory_order_relaxed)) {
-				if (current == 0) {
-					logger::info(
-						"[LightLimitFix] PreNG clustered Prepass proof window active; limiting compute/bind proof to {} frames unless {}=1 with an on-demand persistent consumer",
-						frameBudget,
-						kPreNGPersistentClusterPrepassEnv);
-				}
-				if (bsLightingPayloadPending && current == frameBudget) {
-					static bool loggedBSLightingPayloadWait = false;
-					if (!loggedBSLightingPayloadWait) {
-						logger::info(
-							"[LightLimitFix] PreNG clustered Prepass proof window extended for BSLighting resource payload; baseFrames={} extendedFrames={} env={} descriptorObserved={} payloadReady=false",
-							frameBudget,
-							activeFrameBudget,
-							kPreNGBSLightingResourcePrepassProofFramesEnv,
-							bsLightingDescriptorObserved);
-						loggedBSLightingPayloadWait = true;
-					}
-				}
-				return true;
-			}
-		}
-
-		const auto refreshInterval = dflightLLFAdditiveRequested ? GetPreNGDFLightLLFAdditiveRefreshInterval() : 0;
-		if (refreshInterval > 0) {
-			static std::atomic_uint32_t postProofFrameCount = 0;
-			static std::atomic_uint32_t refreshCount = 0;
-			const auto postProofFrame = postProofFrameCount.fetch_add(1, std::memory_order_relaxed) + 1;
-			if (postProofFrame % refreshInterval == 0) {
-				const auto refreshIndex = refreshCount.fetch_add(1, std::memory_order_relaxed) + 1;
-				if (refreshIndex <= 8 || refreshIndex % 64 == 0) {
-					logger::info(
-						"[LightLimitFix] PreNG clustered Prepass DFLight LLF additive refresh active refreshes={} postProofFrames={} interval={} proofFrames={} env={}",
-						refreshIndex,
-						postProofFrame,
-						refreshInterval,
-						frameBudget,
-						kPreNGDFLightLLFAdditiveRefreshIntervalEnv);
-				}
-				return true;
-			}
-		}
-
-		static bool loggedComplete = false;
-		if (!loggedComplete) {
-			logger::info(
-				"[LightLimitFix] PreNG clustered Prepass proof window complete; holding per-frame light collection, cluster compute, b3, and t35-t37 after {} frames; baseFrames={} bsLightingPayloadPending={} legacyAdditiveRefreshInterval={} env={}; {}=1 requires an on-demand persistent consumer",
-				activeFrameBudget,
-				frameBudget,
-				bsLightingPayloadPending,
-				refreshInterval,
-				kPreNGDFLightLLFAdditiveRefreshIntervalEnv,
-				kPreNGPersistentClusterPrepassEnv);
-			loggedComplete = true;
-		}
-		return false;
+		// Skyrim-parity step 1 (BOSS): once any prepass/consumer demand is active,
+		// run the clustered prepass EVERY frame — no proof-window frame budget, no
+		// persistent-vs-finite distinction, no refresh interval. Skyrim CS
+		// dispatches build+cull every frame unconditionally; matching that removes
+		// the periodic-resubmit / proof-window-expiry behavior. The former
+		// frame-budget / persistent / refresh-interval tail was removed here.
+		return true;
 	}
 
 	bool ShouldCompilePreNGDFLightContractProbe()
@@ -2883,9 +2796,9 @@ void LightLimitFix::Prepass()
 	};
 
 #if defined(FALLOUT_PRE_NG)
-	const bool persistentPrepassActive =
-		ShouldPersistPreNGClusterPrepass() &&
-		ShouldUsePreNGPersistentClusterPrepassConsumer();
+	// Skyrim-parity step 1 (BOSS): no persistent/throttle distinction — the prepass
+	// dispatches build+cull and binds t35-t37/b3 every frame via the plain path
+	// below. If the proof gate says "don't run", clear and bail.
 	if (!ShouldRunPreNGClusterPrepassProof()) {
 		clearPixelLLFBindings();
 		seenLights.clear();
@@ -2913,54 +2826,6 @@ void LightLimitFix::Prepass()
 			shadowSceneFastReuse = {};
 		}
 		return;
-	}
-#endif
-
-#if defined(FALLOUT_PRE_NG)
-	if (persistentPrepassActive &&
-		ShouldReusePreNGClusterPrepassPayload() &&
-		clusterPayloadCacheValid &&
-		currentLightCount > 0) {
-		const auto refreshInterval = GetPreNGPersistentClusterPrepassRefreshInterval();
-		static std::atomic_uint32_t persistentPrepassFrameCount = 0;
-		const auto persistentFrame = persistentPrepassFrameCount.fetch_add(1, std::memory_order_relaxed) + 1;
-		if (refreshInterval == 0 || (refreshInterval > 1 && persistentFrame % refreshInterval != 0)) {
-			seenLights.clear();
-			seenThisPass.clear();
-			seenCBHashes.clear();
-			frameLights.clear();
-			currentLightCount = clusterPayloadCache.LightCount;
-			currentStrictLightCount = clusterPayloadCache.StrictLightCount;
-			strictLightDataTemp.NumStrictLights = clusterPayloadCache.StrictLightCount;
-			strictLightDataTemp.ShadowBitMask = clusterPayloadCache.ShadowBitMask;
-
-			clearPixelLLFBindings();
-			if (ShouldBindPreNGPrepassResources()) {
-				static bool loggedPersistentPrepassPixelBindingHold = false;
-				if (!loggedPersistentPrepassPixelBindingHold) {
-					logger::info(
-						"[LightLimitFix] PreNG persistent clustered Prepass pixel bindings held; cached b3/t35-t37 payload remains available, but PS slots are cleared until an on-demand visible consumer binds them");
-					loggedPersistentPrepassPixelBindingHold = true;
-				}
-			}
-
-			static std::atomic_uint32_t throttledReuseCount = 0;
-			const auto reuseIndex = ++throttledReuseCount;
-			if (reuseIndex <= 8 || reuseIndex % 128 == 0) {
-				logger::info(
-					"[LightLimitFix] PreNG persistent clustered Prepass CPU-throttled reuse reuses={} frame={} persistentFrame={} refreshInterval={} lights={} strict={} clusters={} shadowMask=0x{:08X} strictCBUploaded={}",
-					reuseIndex,
-					frameNumber,
-					persistentFrame,
-					refreshInterval,
-					currentLightCount,
-					currentStrictLightCount,
-					clusterSize[0] * clusterSize[1] * clusterSize[2],
-					strictLightDataTemp.ShadowBitMask,
-					clusterPayloadCache.StrictCBUploaded);
-			}
-			return;
-		}
 	}
 #endif
 
@@ -3042,27 +2907,10 @@ void LightLimitFix::Prepass()
 		CameraNear,
 		CameraFar,
 		clusterSize);
-	const bool preNGClusterPayloadReused =
-		ShouldReusePreNGClusterPrepassPayload() &&
-		clusterPayloadCacheValid &&
-		clusterBuildCacheValid &&
-		PreNGClusterPayloadInputsMatch(clusterPayloadCache, preNGClusterPayloadCurrent);
-	if (preNGClusterPayloadReused) {
-		static std::atomic_uint32_t payloadReuseCount = 0;
-		const auto reuseIndex = ++payloadReuseCount;
-		if (reuseIndex <= 8 || reuseIndex % 128 == 0) {
-			logger::info(
-				"[LightLimitFix] PreNG clustered Prepass reused LLF payload reuses={} frame={} lights={} strict={} clusters={} shadowMask=0x{:08X} lightsHash=0x{:016X} viewHash=0x{:016X}",
-				reuseIndex,
-				frameNumber,
-				currentLightCount,
-				currentStrictLightCount,
-				clusterSize[0] * clusterSize[1] * clusterSize[2],
-				strictLightDataTemp.ShadowBitMask,
-				preNGClusterPayloadCurrent.LightsHash,
-				preNGClusterPayloadCurrent.ViewHash);
-		}
-	}
+	// Skyrim-parity step 1 (BOSS): never reuse the cached payload — dispatch the
+	// cluster build+cull compute EVERY frame like Skyrim CS. The ViewHash/inputs
+	// reuse was the mechanism that, combined with periodic resubmit, produced the
+	// GPU power-state event; Skyrim avoids it by simply always dispatching.
 #endif
 
 	if (frameNumber % 300 == 0) {
@@ -3076,7 +2924,7 @@ void LightLimitFix::Prepass()
 	seenCBHashes.clear();
 
 #if defined(FALLOUT_PRE_NG)
-	if (!preNGClusterPayloadReused)
+	// Skyrim-parity: always run the compute submission block (no payload-reuse skip).
 #endif
 	{
 		clearPixelClusterSRVs();
@@ -3266,17 +3114,14 @@ void LightLimitFix::Prepass()
 
 #if defined(FALLOUT_PRE_NG)
 	if (ShouldBindPreNGPrepassResources()) {
-		bool prepassStrictCBUploaded =
-			preNGClusterPayloadReused &&
-			clusterPayloadCacheValid &&
-			clusterPayloadCache.StrictCBUploaded;
-		if (!prepassStrictCBUploaded && ShouldBindPreNGStrictLightCB()) {
-			prepassStrictCBUploaded = persistentPrepassActive ?
-				UpdatePreNGStrictLightDataCB(context) :
-				UploadPreNGStrictLightDataDiagnostic();
+		// Skyrim-parity step 1 (BOSS): every frame, upload+bind strict CB (b3) and
+		// bind clustered SRVs (t35-t37). No persistent/reuse/hold branches — Skyrim
+		// CS binds these from Prepass unconditionally each frame.
+		bool prepassStrictCBUploaded = false;
+		if (ShouldBindPreNGStrictLightCB()) {
+			prepassStrictCBUploaded = UploadPreNGStrictLightDataDiagnostic();
 		}
-		const bool prepassStrictCBBound = persistentPrepassActive ?
-			false :
+		const bool prepassStrictCBBound =
 			BindPreNGStrictLightDataCBToPixelShader(nullptr, currentLightCount, prepassStrictCBUploaded);
 		if ((prepassStrictCBBound || prepassStrictCBUploaded) && clusterPayloadCacheValid) {
 			clusterPayloadCache.StrictCBUploaded = true;
@@ -3296,7 +3141,7 @@ void LightLimitFix::Prepass()
 					prepassStrictCBUploaded);
 			}
 		}
-		if (ShouldBindPreNGClusterSRVs() && !persistentPrepassActive) {
+		if (ShouldBindPreNGClusterSRVs()) {
 			ID3D11ShaderResourceView* views[3]{
 				lightsSRV.get(),
 				lightIndexListSRV.get(),
@@ -3316,47 +3161,9 @@ void LightLimitFix::Prepass()
 					clusterSize[0] * clusterSize[1] * clusterSize[2],
 					strictLightDataTemp.ShadowBitMask);
 			}
-
-			if (currentLightCount > 0) {
-				static std::atomic_uint32_t nonZeroPrepassBindCount = 0;
-				const auto nonZeroPrepassBindIndex = ++nonZeroPrepassBindCount;
-				if (nonZeroPrepassBindIndex <= 8 || nonZeroPrepassBindIndex % 512 == 0) {
-					logger::info(
-						"[LightLimitFix] PreNG cluster SRVs Prepass nonzero bind proof nonzeroBinds={} binds={} frame={} lights={} strict={} clusters={} shadowMask=0x{:08X}",
-						nonZeroPrepassBindIndex,
-						prepassBindIndex,
-						frameNumber,
-						currentLightCount,
-						currentStrictLightCount,
-						clusterSize[0] * clusterSize[1] * clusterSize[2],
-						strictLightDataTemp.ShadowBitMask);
-				}
-			}
-		} else if (persistentPrepassActive) {
-			clearPixelLLFBindings();
-			static bool loggedPersistentPrepassPixelBindingHold = false;
-			if (!loggedPersistentPrepassPixelBindingHold) {
-				logger::info(
-					"[LightLimitFix] PreNG persistent clustered Prepass pixel bindings held after upload; cached b3/t35-t37 payload remains available, but PS slots are cleared until an on-demand visible consumer binds them");
-				loggedPersistentPrepassPixelBindingHold = true;
-			}
-		} else {
-			static bool loggedPreNGBindingHold = false;
-			if (!loggedPreNGBindingHold) {
-				logger::info("[LightLimitFix] PreNG compute Prepass active; Skyrim-style PS t35-t37 Prepass binding is gated by FO4CS_LLF_PRENG_BIND_CLUSTER_SRVS, strict CB b3 Prepass binding is gated by FO4CS_LLF_PRENG_BIND_STRICT_CB");
-				loggedPreNGBindingHold = true;
-			}
 		}
-	} else {
-		static bool loggedPreNGPrepassResourceBindHold = false;
-		if (!loggedPreNGPrepassResourceBindHold) {
-			logger::info(
-				"[LightLimitFix] PreNG Prepass resource binding held by {}; descriptor-owned DFlight/DFComposite/BSLighting consumers bind b3/t35-t37 on demand",
-				kPreNGPrepassResourceBindEnv);
-			loggedPreNGPrepassResourceBindHold = true;
-		}
-		TryBindPreNGBSLightingDeferredDescriptorResources(*this);
 	}
+	TryBindPreNGBSLightingDeferredDescriptorResources(*this);
 #else
 	if (frameNumber >= 3 && currentLightCount > 0) {
 		ID3D11ShaderResourceView* views[3]{
