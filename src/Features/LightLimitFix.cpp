@@ -77,12 +77,8 @@ namespace
 	constexpr const char* kPreNGClusterSRVBindEnv = "FO4CS_LLF_PRENG_BIND_CLUSTER_SRVS";
 	constexpr const char* kPreNGPrepassResourceBindEnv = "FO4CS_LLF_PRENG_PREPASS_BIND_RESOURCES";
 	constexpr const char* kPreNGPersistentClusterPrepassEnv = "FO4CS_LLF_PRENG_PERSISTENT_CLUSTER_PREPASS";
-	constexpr const char* kPreNGPersistentClusterPrepassRefreshIntervalEnv = "FO4CS_LLF_PRENG_PERSISTENT_CLUSTER_PREPASS_REFRESH_INTERVAL";
-	constexpr const char* kPreNGClusterPrepassReuseEnv = "FO4CS_LLF_PRENG_CLUSTER_PREPASS_REUSE";
 	constexpr const char* kPreNGShadowSceneFastReuseEnv = "FO4CS_LLF_PRENG_SHADOW_SCENE_FAST_REUSE";
 	constexpr const char* kPreNGShadowSceneFastReuseRefreshIntervalEnv = "FO4CS_LLF_PRENG_SHADOW_SCENE_FAST_REUSE_REFRESH_INTERVAL";
-	constexpr const char* kPreNGClusterPrepassProofFramesEnv = "FO4CS_LLF_PRENG_CLUSTER_PREPASS_PROOF_FRAMES";
-	constexpr const char* kPreNGBSLightingResourcePrepassProofFramesEnv = "FO4CS_LLF_PRENG_BSLIGHTING_RESOURCE_PREPASS_FRAMES";
 	constexpr const char* kPreNGDFLightDrawStateStrictCBBindEnv = "FO4CS_LLF_PRENG_DFLIGHT_BIND_STRICT_CB";
 	constexpr const char* kPreNGDFLightDrawStateClusterSRVBindEnv = "FO4CS_LLF_PRENG_DFLIGHT_BIND_CLUSTER_SRVS";
 	constexpr const char* kPreNGDFLightResourceNoOpPassEnv = "FO4CS_LLF_PRENG_DFLIGHT_RESOURCE_NOOP_PASS";
@@ -122,15 +118,6 @@ namespace
 	constexpr std::uint32_t kPreNGMaxSetupGeometryCallBudget = 1000000;
 	constexpr std::uint32_t kPreNGDefaultSetupGeometryFrameBudget = 2;
 	constexpr std::uint32_t kPreNGMaxSetupGeometryFrameBudget = 64;
-	constexpr std::uint32_t kPreNGDefaultClusterPrepassProofFrames = 8;
-	constexpr std::uint32_t kPreNGMinClusterPrepassProofFrames = 1;
-	constexpr std::uint32_t kPreNGMaxClusterPrepassProofFrames = 600;
-	constexpr std::uint32_t kPreNGDefaultBSLightingResourcePrepassProofFrames = 120;
-	constexpr std::uint32_t kPreNGMinBSLightingResourcePrepassProofFrames = 8;
-	constexpr std::uint32_t kPreNGMaxBSLightingResourcePrepassProofFrames = 600;
-	constexpr std::uint32_t kPreNGDefaultPersistentClusterPrepassRefreshInterval = 0;
-	constexpr std::uint32_t kPreNGMinPersistentClusterPrepassRefreshInterval = 0;
-	constexpr std::uint32_t kPreNGMaxPersistentClusterPrepassRefreshInterval = 600;
 	constexpr std::uint32_t kPreNGDefaultShadowSceneFastReuseRefreshInterval = 8;
 	constexpr std::uint32_t kPreNGMinShadowSceneFastReuseRefreshInterval = 1;
 	constexpr std::uint32_t kPreNGMaxShadowSceneFastReuseRefreshInterval = 600;
@@ -315,29 +302,6 @@ namespace
 		state.StrictHash = HashPreNGBytes(&a_strictLightData, sizeof(a_strictLightData));
 		state.ViewHash = HashPreNGBytes(&a_viewTransposed, sizeof(a_viewTransposed));
 		return state;
-	}
-
-	bool PreNGClusterPayloadInputsMatch(
-		const LightLimitFix::ClusterPayloadCacheState& a_cached,
-		const LightLimitFix::ClusterPayloadCacheState& a_current)
-	{
-		if (std::fabs(a_cached.LightsNear - a_current.LightsNear) > kPreNGClusterBuildReuseTolerance ||
-		    std::fabs(a_cached.LightsFar - a_current.LightsFar) > kPreNGClusterBuildReuseTolerance) {
-			return false;
-		}
-
-		for (std::uint32_t i = 0; i < 4; ++i) {
-			if (a_cached.ClusterSize[i] != a_current.ClusterSize[i]) {
-				return false;
-			}
-		}
-
-		return a_cached.LightCount == a_current.LightCount &&
-		       a_cached.StrictLightCount == a_current.StrictLightCount &&
-		       a_cached.ShadowBitMask == a_current.ShadowBitMask &&
-		       a_cached.LightsHash == a_current.LightsHash &&
-		       a_cached.StrictHash == a_current.StrictHash &&
-		       a_cached.ViewHash == a_current.ViewHash;
 	}
 
 	namespace F4Runtime = RE::FO4Runtime;
@@ -956,68 +920,6 @@ namespace
 		return MakeEnvironmentUIntState(value, EnvironmentSwitchSource::kDebugIni, true);
 	}
 
-	std::uint32_t GetPreNGClusterPrepassProofFrameBudget()
-	{
-		static const std::uint32_t budget = [] {
-			const auto state = ReadEnvironmentUInt(kPreNGClusterPrepassProofFramesEnv);
-			auto resolved = kPreNGDefaultClusterPrepassProofFrames;
-			auto clamped = false;
-			if (state.present && state.valid) {
-				const auto requested = state.value;
-				resolved = std::clamp(
-					requested,
-					kPreNGMinClusterPrepassProofFrames,
-					kPreNGMaxClusterPrepassProofFrames);
-				clamped = resolved != requested;
-			}
-
-			logger::info(
-				"[LightLimitFix] PreNG clustered Prepass proof frame budget resolved {}={} source={} present={} valid={} clamped={} default={} range={}..{}",
-				kPreNGClusterPrepassProofFramesEnv,
-				resolved,
-				EnvironmentSwitchSourceName(state.source),
-				state.present,
-				state.valid,
-				clamped,
-				kPreNGDefaultClusterPrepassProofFrames,
-				kPreNGMinClusterPrepassProofFrames,
-				kPreNGMaxClusterPrepassProofFrames);
-			return resolved;
-		}();
-		return budget;
-	}
-
-	std::uint32_t GetPreNGBSLightingResourcePrepassProofFrameBudget()
-	{
-		static const std::uint32_t budget = [] {
-			const auto state = ReadEnvironmentUInt(kPreNGBSLightingResourcePrepassProofFramesEnv);
-			auto resolved = kPreNGDefaultBSLightingResourcePrepassProofFrames;
-			auto clamped = false;
-			if (state.present && state.valid) {
-				const auto requested = state.value;
-				resolved = std::clamp(
-					requested,
-					kPreNGMinBSLightingResourcePrepassProofFrames,
-					kPreNGMaxBSLightingResourcePrepassProofFrames);
-				clamped = resolved != requested;
-			}
-
-			logger::info(
-				"[LightLimitFix] PreNG BSLighting resource Prepass proof frame budget resolved {}={} source={} present={} valid={} clamped={} default={} range={}..{}",
-				kPreNGBSLightingResourcePrepassProofFramesEnv,
-				resolved,
-				EnvironmentSwitchSourceName(state.source),
-				state.present,
-				state.valid,
-				clamped,
-				kPreNGDefaultBSLightingResourcePrepassProofFrames,
-				kPreNGMinBSLightingResourcePrepassProofFrames,
-				kPreNGMaxBSLightingResourcePrepassProofFrames);
-			return resolved;
-		}();
-		return budget;
-	}
-
 	std::uint32_t GetPreNGDFLightLLFAdditiveRefreshInterval()
 	{
 		static const std::uint32_t interval = [] {
@@ -1558,60 +1460,6 @@ namespace
 		return enabled;
 	}
 
-	bool ShouldPersistPreNGClusterPrepass()
-	{
-		static const bool enabled = IsTruthyEnvironmentSwitch(kPreNGPersistentClusterPrepassEnv);
-		return enabled;
-	}
-
-	std::uint32_t GetPreNGPersistentClusterPrepassRefreshInterval()
-	{
-		static const std::uint32_t interval = [] {
-			const auto state = ReadEnvironmentUInt(kPreNGPersistentClusterPrepassRefreshIntervalEnv);
-			auto resolved = kPreNGDefaultPersistentClusterPrepassRefreshInterval;
-			auto clamped = false;
-			if (state.present && state.valid) {
-				resolved = state.value;
-				if (resolved < kPreNGMinPersistentClusterPrepassRefreshInterval) {
-					resolved = kPreNGMinPersistentClusterPrepassRefreshInterval;
-					clamped = true;
-				} else if (resolved > kPreNGMaxPersistentClusterPrepassRefreshInterval) {
-					resolved = kPreNGMaxPersistentClusterPrepassRefreshInterval;
-					clamped = true;
-				}
-			}
-
-			logger::info(
-				"[LightLimitFix] PreNG persistent clustered Prepass refresh interval resolved {}={} source={} present={} valid={} clamped={} default={} range={}..{} note=0-holds-warmed-payload",
-				kPreNGPersistentClusterPrepassRefreshIntervalEnv,
-				resolved,
-				EnvironmentSwitchSourceName(state.source),
-				state.present,
-				state.valid,
-				clamped,
-				kPreNGDefaultPersistentClusterPrepassRefreshInterval,
-				kPreNGMinPersistentClusterPrepassRefreshInterval,
-				kPreNGMaxPersistentClusterPrepassRefreshInterval);
-			return resolved;
-		}();
-		return interval;
-	}
-
-	bool ShouldReusePreNGClusterPrepassPayload()
-	{
-		static const bool enabled = [] {
-			const auto state = ReadEnvironmentSwitch(kPreNGClusterPrepassReuseEnv);
-			const bool resolved = state.source == EnvironmentSwitchSource::kNone || state.enabled;
-			logger::info(
-				"[LightLimitFix] PreNG clustered Prepass payload reuse resolved {}={} source={} default=on",
-				kPreNGClusterPrepassReuseEnv,
-				resolved ? "on" : "off",
-				EnvironmentSwitchSourceName(state.source));
-			return resolved;
-		}();
-		return enabled;
-	}
-
 	bool ShouldReusePreNGShadowSceneFastReuse()
 	{
 		static const bool enabled = [] {
@@ -1807,34 +1655,6 @@ namespace
 		       ShouldRunPreNGDFLightFullContractNoOpPass() ||
 		       ShouldBindPreNGDFLightDrawStateClusterSRVs() ||
 		       ShouldRunPreNGDFLightLLFAdditivePass();
-	}
-
-	bool ShouldUsePreNGPersistentClusterPrepassConsumer()
-	{
-		const bool visibleFullContractConsumer =
-			ShouldRunPreNGDFLightFullContractVisibleLLF() &&
-			s_preNGDFLightLLFConsumerDescriptorObserved.load(std::memory_order_relaxed) &&
-			(ShouldBindPreNGStrictLightCB() || ShouldBindPreNGClusterSRVs());
-		const bool dfCompositeVisibleConsumer =
-			ShouldRunPreNGDFCompositeVisibleLLF() &&
-			s_preNGDFCompositeLLFConsumerDescriptorObserved.load(std::memory_order_relaxed) &&
-			(ShouldBindPreNGStrictLightCB() || ShouldBindPreNGClusterSRVs());
-		// BSLighting visible LLF consumer: keep the clustered prepass persistent
-		// (per-frame) once the consumer bind gate is on and a BSLighting
-		// descriptor has been observed, so currentLightCount / b3-t35-t37 stay
-		// valid for the per-draw consumer bind instead of being cleared after the
-		// 8-frame proof window.
-		const bool bsLightingVisibleConsumer =
-			ShouldBindPreNGBSLightingLLFVisibleConsumer() &&
-			s_preNGBSLightingLLFConsumerDescriptorObserved.load(std::memory_order_relaxed) &&
-			ShouldUsePreNGBSLightingDescriptorDemandResources() &&
-			(ShouldBindPreNGStrictLightCB() || ShouldBindPreNGClusterSRVs());
-
-		return ShouldBindPreNGDFLightDrawStateClusterSRVs() ||
-		       ShouldRunPreNGDFLightLLFAdditivePass() ||
-		       visibleFullContractConsumer ||
-		       dfCompositeVisibleConsumer ||
-		       bsLightingVisibleConsumer;
 	}
 
 	bool ShouldRunPreNGClusterPrepassProof()
