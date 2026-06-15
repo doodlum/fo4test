@@ -107,6 +107,13 @@ namespace
 	constexpr const char* kPreNGShaderObjectMetadataEnv = "FO4CS_LLF_PRENG_SHADER_OBJECT_METADATA";
 	constexpr const char* kPreNGTraceLLFPixelEnv = "FO4CS_TRACE_LLF_PS";
 	constexpr const char* kPreNGGpuTimingEnv = "FO4CS_LLF_PRENG_GPU_TIMING";
+	// Selects WHICH render-pipeline hook submits the clustered compute. Default
+	// (off/absent) = the historical Main_RenderWorld_Start site via Prepass().
+	// "early"/"1" = submit from EarlyPrepass() (Main_RenderShadowMaps phase), so the
+	// dispatch overlaps the engine's shadow-map GPU batch instead of landing in the
+	// frame-start idle pocket that tips NVIDIA power-mgmt into a downclock under the
+	// FrameGen interop fence ping-pong.
+	constexpr const char* kPreNGPrepassEarlyHookEnv = "FO4CS_LLF_PRENG_PREPASS_EARLY_HOOK";
 	constexpr const char* kPreNGDFLightContractCompileEnv = "FO4CS_LLF_PRENG_DFLIGHT_CONTRACT_COMPILE";
 	constexpr const char* kPreNGDFLightCandidateCompileEnv = "FO4CS_LLF_PRENG_DFLIGHT_CANDIDATE_COMPILE";
 	constexpr const char* kPreNGDFLightContractProbeSource = "LightLimitFix\\DFLightContractProbePS.hlsl";
@@ -1743,6 +1750,12 @@ namespace
 		return enabled;
 	}
 
+	bool ShouldSubmitPreNGClusterPrepassEarly()
+	{
+		static const bool enabled = IsTruthyEnvironmentSwitch(kPreNGPrepassEarlyHookEnv);
+		return enabled;
+	}
+
 	void LogPreNGHookReachabilityWatchdog(std::uint64_t a_frame)
 	{
 		if (a_frame < 600) {
@@ -2733,7 +2746,32 @@ void LightLimitFix::ResolvePreNGClusterGpuTimer(ID3D11DeviceContext* a_context, 
 }
 #endif
 
+// Dispatcher: the clustered compute can be submitted either from the default
+// Main_RenderWorld_Start site (Prepass) or, when FO4CS_LLF_PRENG_PREPASS_EARLY_HOOK
+// is set, from the Main_RenderShadowMaps phase (EarlyPrepass) so the dispatch
+// overlaps the engine's shadow GPU batch and avoids the frame-start idle pocket
+// that triggers the FrameGen-interop downclock. Exactly one site runs per frame.
 void LightLimitFix::Prepass()
+{
+#if defined(FALLOUT_PRE_NG)
+	if (ShouldSubmitPreNGClusterPrepassEarly()) {
+		return;  // handled in EarlyPrepass() this run
+	}
+#endif
+	RunClusterPrepass();
+}
+
+void LightLimitFix::EarlyPrepass()
+{
+#if defined(FALLOUT_PRE_NG)
+	if (!ShouldSubmitPreNGClusterPrepassEarly()) {
+		return;  // handled in Prepass() this run
+	}
+	RunClusterPrepass();
+#endif
+}
+
+void LightLimitFix::RunClusterPrepass()
 {
 	const auto frameNumber = ++diagFrameCounter;
 

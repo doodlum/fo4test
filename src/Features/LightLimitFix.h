@@ -237,7 +237,13 @@ struct LightLimitFix : Feature
 	void PostPostLoad() override;
 	void DataLoaded() override;
 	void Prepass() override;
+	void EarlyPrepass() override;
 	void Reset() override;
+private:
+	// Shared clustered-compute submission body invoked by exactly one of
+	// Prepass()/EarlyPrepass() per frame (selected by FO4CS_LLF_PRENG_PREPASS_EARLY_HOOK).
+	void RunClusterPrepass();
+public:
 
 	// --- SetupGeometry hooks ---
 	void SetupGeometryBefore(RE::BSRenderPass* a_pass);
