@@ -39,13 +39,9 @@
 #include "RE/Bethesda/TESBoundAnimObjects.h"
 #endif
 #if defined(FALLOUT_POST_AE)
-#include "RE/N/NiAVObject.h"
-#include "RE/N/NiBound.h"
-#include "RE/N/NiColor.h"
+#include "RE/N/NiLight.h"
 #else
-#include "RE/NetImmerse/NiAVObject.h"
-#include "RE/NetImmerse/NiBound.h"
-#include "RE/NetImmerse/NiColor.h"
+#include "RE/NetImmerse/NiLight.h"
 #endif
 
 #include "SimpleIni.h"
@@ -201,23 +197,6 @@ namespace
 		return "LightLimitFix\\";
 	}
 
-#pragma warning(push)
-#pragma warning(disable: 4324)
-	struct NiLightView : RE::NiAVObject
-	{
-		RE::NiColor amb;
-		RE::NiColor diff;
-		RE::NiColor spec;
-		float dimmer;
-		alignas(16) RE::NiBound modelBound;
-		void* rendererData;
-	};
-#pragma warning(pop)
-
-	static_assert(sizeof(NiLightView) == 0x170);
-	static_assert(offsetof(NiLightView, diff) == 0x12C);
-	static_assert(offsetof(NiLightView, modelBound) == 0x150);
-
 	bool LogResourceFailure(const char* a_name, HRESULT a_hr)
 	{
 		logger::error("[LightLimitFix] {} failed (hr=0x{:08X})",
@@ -306,11 +285,6 @@ namespace
 
 	namespace F4Runtime = RE::FO4Runtime;
 
-	bool IsReadableMemory(std::uintptr_t a_address, std::size_t a_size)
-	{
-		return F4Runtime::IsReadableAddress(a_address, a_size);
-	}
-
 	constexpr std::uint32_t kPreNGBSRenderPassSceneLightFirstIndex = F4Runtime::PreNG::BS_RENDER_PASS_SCENE_LIGHT_FIRST_INDEX;
 	constexpr std::uint32_t kPreNGInvalidShadowLightMaskIndex = F4Runtime::PreNG::INVALID_SHADOW_LIGHT_MASK_INDEX;
 	constexpr std::uint32_t kPreNGMaxShadowLightMaskBits = F4Runtime::PreNG::MAX_SHADOW_LIGHT_MASK_BITS;
@@ -318,12 +292,6 @@ namespace
 	constexpr std::uint32_t kPreNGMaxShadowSceneDecodeLights = kMaxLights;
 	constexpr float kPreNGLightContributionThreshold = 1.0e-4f;
 	constexpr float kPreNGLightRadiusThreshold = 1.0e-4f;
-
-	template <class T>
-	bool ReadPreNGValue(std::uintptr_t a_address, T& a_value)
-	{
-		return F4Runtime::ReadValue(a_address, a_value);
-	}
 
 	bool SamePreNGShadowSceneFastReuseKey(
 		const LightLimitFix::ShadowSceneFastReuseKey& a_lhs,
@@ -378,13 +346,12 @@ namespace
 		a_hash = kPreNGFNVOffsetBasis;
 		HashPreNGAppendBytes(a_hash, &a_bucket.entries, sizeof(a_bucket.entries));
 		HashPreNGAppendBytes(a_hash, &a_bucket.count, sizeof(a_bucket.count));
-		for (std::uint32_t i = 0; i < a_bucket.count; ++i) {
-			std::uintptr_t wrapperAddress = 0;
-			const auto entryAddress = a_bucket.entries + (i * sizeof(std::uintptr_t));
-			if (!ReadPreNGValue(entryAddress, wrapperAddress)) {
-				return false;
-			}
-			HashPreNGAppendBytes(a_hash, &wrapperAddress, sizeof(wrapperAddress));
+	for (std::uint32_t i = 0; i < a_bucket.count; ++i) {
+		std::uintptr_t wrapperAddress = 0;
+		if (!a_bucket.ReadLightWrapper(i, wrapperAddress)) {
+			return false;
+		}
+		HashPreNGAppendBytes(a_hash, &wrapperAddress, sizeof(wrapperAddress));
 		}
 		return true;
 	}
@@ -638,105 +605,45 @@ namespace
 		return PreNGLightDecodeResult::Decoded;
 	}
 
-	struct PreNGCallPatchState
-	{
-		bool readable = false;
-		std::uint8_t opcode = 0;
-		std::int32_t rel32 = 0;
-		std::uintptr_t callTarget = 0;
-	};
-
-	PreNGCallPatchState ReadPreNGCallPatch(std::uintptr_t a_call)
-	{
-		PreNGCallPatchState state{};
-		if (!IsReadableMemory(a_call, 5)) {
-			return state;
-		}
-
-		const auto* bytes = reinterpret_cast<const std::uint8_t*>(a_call);
-		state.readable = true;
-		state.opcode = bytes[0];
-		std::memcpy(&state.rel32, bytes + 1, sizeof(state.rel32));
-		state.callTarget = static_cast<std::uintptr_t>(
-			static_cast<std::intptr_t>(a_call + 5) + state.rel32);
-		return state;
-	}
-
-	std::uintptr_t ResolvePreNGAbsoluteJumpTarget(std::uintptr_t a_address)
-	{
-		std::uint8_t bytes[14]{};
-		if (!IsReadableMemory(a_address, sizeof(bytes))) {
-			return 0;
-		}
-
-		std::memcpy(bytes, reinterpret_cast<const void*>(a_address), sizeof(bytes));
-		if (bytes[0] != 0xFF || bytes[1] != 0x25) {
-			return 0;
-		}
-
-		std::int32_t disp = 0;
-		std::memcpy(&disp, bytes + 2, sizeof(disp));
-		const auto slot = static_cast<std::uintptr_t>(
-			static_cast<std::intptr_t>(a_address + 6) + disp);
-
-		std::uintptr_t target = 0;
-		if (!ReadPreNGValue(slot, target)) {
-			return 0;
-		}
-
-		return target;
-	}
-
-
 	bool ValidatePreNGPointLightCallsite()
 	{
-		const auto imageBase = F4Runtime::ModuleBase();
-		const auto runtimeSetup = F4Runtime::PreNG::BS_LIGHTING_SHADER_SETUP_GEOMETRY.address();
-		const auto runtimeCall = F4Runtime::PreNG::POINT_LIGHT_CALL.address();
-		const auto runtimeCallContext = runtimeCall - 8;
-		const auto runtimeTarget = F4Runtime::PreNG::POINT_LIGHT_TARGET.address();
-		const auto runtimeVTable = F4Runtime::PreNG::BS_LIGHTING_SHADER_VTABLE.address();
-		const auto runtimeVFuncEntry = F4Runtime::PreNG::BS_LIGHTING_SHADER_VFUNC_7.address();
-
-		const bool vfuncReadable = IsReadableMemory(runtimeVFuncEntry, sizeof(std::uintptr_t));
-		const bool callReadable = IsReadableMemory(runtimeCallContext, F4Runtime::PreNG::POINT_LIGHT_CALL_CONTEXT.size());
-		if (!vfuncReadable || !callReadable) {
+		const auto validation = F4Runtime::ValidatePreNGPointLightCallsite();
+		if (!validation.vfuncReadable || !validation.callContextReadable) {
 			logger::warn(
 				"[LightLimitFix] PreNG point-light callsite validation skipped: unreadable memory base=0x{:X} vfuncReadable={} callReadable={} vfunc[7]=0x{:X} callContext=0x{:X}",
-				imageBase, vfuncReadable, callReadable, runtimeVFuncEntry, runtimeCallContext);
+				validation.imageBase,
+				validation.vfuncReadable,
+				validation.callContextReadable,
+				validation.vfuncEntry,
+				validation.callContext);
 			return false;
 		}
 
-		const auto observedVFunc = *reinterpret_cast<const std::uintptr_t*>(runtimeVFuncEntry);
-		const auto* callBytes = reinterpret_cast<const std::uint8_t*>(runtimeCall);
-		std::int32_t callRel = 0;
-		std::memcpy(&callRel, callBytes + 1, sizeof(callRel));
-		const auto observedTarget = static_cast<std::uintptr_t>(
-			static_cast<std::intptr_t>(runtimeCall + 5) + callRel);
-		const bool contextMatches = std::memcmp(
-			reinterpret_cast<const void*>(runtimeCallContext),
-			F4Runtime::PreNG::POINT_LIGHT_CALL_CONTEXT.data(),
-			F4Runtime::PreNG::POINT_LIGHT_CALL_CONTEXT.size()) == 0;
-
-		if (observedVFunc == runtimeSetup && callBytes[0] == 0xE8 && observedTarget == runtimeTarget && contextMatches) {
+		if (validation.matches) {
 			logger::info(
 				"[LightLimitFix] PreNG point-light callsite validated base=0x{:X} setup=0x{:X} call=0x{:X} target=0x{:X} vtable=0x{:X} vfunc[7]=0x{:X}->0x{:X}",
-				imageBase, runtimeSetup, runtimeCall, observedTarget, runtimeVTable, runtimeVFuncEntry, observedVFunc);
+				validation.imageBase,
+				validation.setup,
+				validation.call,
+				validation.callPatch.callTarget,
+				validation.vtable,
+				validation.vfuncEntry,
+				validation.observedVFunc);
 			return true;
 		}
 
 		logger::warn(
 			"[LightLimitFix] PreNG point-light callsite mismatch base=0x{:X} vfunc[7]=0x{:X}->0x{:X} expectedSetup=0x{:X} call=0x{:X} opcode=0x{:02X} rel32=0x{:08X} observedTarget=0x{:X} expectedTarget=0x{:X} contextMatch={}",
-			imageBase,
-			runtimeVFuncEntry,
-			observedVFunc,
-			runtimeSetup,
-			runtimeCall,
-			static_cast<std::uint32_t>(callBytes[0]),
-			static_cast<std::uint32_t>(callRel),
-			observedTarget,
-			runtimeTarget,
-			contextMatches);
+			validation.imageBase,
+			validation.vfuncEntry,
+			validation.observedVFunc,
+			validation.setup,
+			validation.call,
+			static_cast<std::uint32_t>(validation.callPatch.opcode),
+			static_cast<std::uint32_t>(validation.callPatch.rel32),
+			validation.callPatch.callTarget,
+			validation.target,
+			validation.contextMatches);
 		return false;
 	}
 
@@ -2018,8 +1925,8 @@ namespace
 
 	bool VerifyPreNGPointLightHookPatch(std::uintptr_t a_runtimeCall)
 	{
-		const auto patch = ReadPreNGCallPatch(a_runtimeCall);
-		const auto branchTarget = patch.readable ? ResolvePreNGAbsoluteJumpTarget(patch.callTarget) : 0;
+		const auto patch = F4Runtime::ReadPreNGCallPatch(a_runtimeCall);
+		const auto branchTarget = patch.readable ? F4Runtime::ResolvePreNGAbsoluteJumpTarget(patch.callTarget) : 0;
 		const auto thunkTarget = reinterpret_cast<std::uintptr_t>(&PreNGPointLightSetupCall::thunk);
 		const auto originalTarget = F4Runtime::PreNG::POINT_LIGHT_TARGET.address();
 		const bool directToThunk = patch.callTarget == thunkTarget;
@@ -3170,14 +3077,9 @@ void LightLimitFix::CollectLightsFromPass(RE::BSRenderPass* a_pass)
 {
 	if (!a_pass) return;
 
-	auto* shaderProp = *reinterpret_cast<RE::BSShaderProperty**>(reinterpret_cast<std::uintptr_t>(a_pass) + 0x10);
-	if (!shaderProp) return;
-
-	auto* fadeNode = *reinterpret_cast<RE::BSFadeNode**>(reinterpret_cast<std::uintptr_t>(shaderProp) + 0x48);
-	if (!fadeNode) return;
-
-	auto* lightData = reinterpret_cast<RE::BSShaderPropertyLightData*>(reinterpret_cast<std::uintptr_t>(fadeNode) + 0x140);
-	if (lightData->lightList.empty()) return;
+	const RE::FO4Runtime::PreNGBSRenderPassView passView{ a_pass };
+	auto* lightData = passView.GetShaderPropertyLightData();
+	if (!lightData || lightData->lightList.empty()) return;
 
 	for (auto* light : lightData->lightList) {
 		if (!light || seenLights.contains(light)) continue;
@@ -3470,11 +3372,10 @@ std::uint32_t LightLimitFix::CollectLightsFromPreNGShadowScene()
 	std::uint32_t unreadableShadowMaskCount = 0;
 	std::uint32_t invalidShadowMaskCount = 0;
 
-	auto decodeArray = [&](std::uintptr_t a_arrayAddress, std::uint32_t a_count) {
+	auto decodeBucket = [&](const F4Runtime::PreNGShadowSceneBucket& a_bucket, std::uint32_t a_count) {
 		for (std::uint32_t i = 0; i < a_count && (frameLights.size() < kMaxLights || strictWriteCount < kMaxStrictLights); ++i) {
 			std::uintptr_t wrapperAddress = 0;
-			const auto entryAddress = a_arrayAddress + (i * sizeof(std::uintptr_t));
-			if (!ReadPreNGValue(entryAddress, wrapperAddress) || wrapperAddress == 0) {
+			if (!a_bucket.ReadLightWrapper(i, wrapperAddress) || wrapperAddress == 0) {
 				++missingEntryCount;
 				continue;
 			}
@@ -3530,9 +3431,9 @@ std::uint32_t LightLimitFix::CollectLightsFromPreNGShadowScene()
 		}
 	};
 
-	decodeArray(activeLightsAddress, decodeActiveLightCount);
-	decodeArray(activeShadowLightsAddress, decodeActiveShadowLightCount);
-	decodeArray(activeExtraLightsAddress, decodeActiveExtraLightCount);
+	decodeBucket(buckets.active, decodeActiveLightCount);
+	decodeBucket(buckets.shadow, decodeActiveShadowLightCount);
+	decodeBucket(buckets.extra, decodeActiveExtraLightCount);
 
 	strictLightDataTemp.NumStrictLights = strictWriteCount;
 	currentStrictLightCount = strictWriteCount;
@@ -4670,7 +4571,7 @@ void LightLimitFix::CollectLightsFromBSLight()
 {
 	for (auto* light : seenLights) {
 		if (!light || frameLights.size() >= kMaxLights) break;
-		auto* niLight = reinterpret_cast<NiLightView*>(light);
+		auto* niLight = reinterpret_cast<RE::NiLight*>(light);
 		LightData data{};
 		data.color.x = niLight->diff.r;
 		data.color.y = niLight->diff.g;
@@ -4702,7 +4603,7 @@ void LightLimitFix::CollectLightsFromScene()
 		auto* niObj = ref->Get3D();
 		if (!niObj) continue;
 
-		auto* niLight = reinterpret_cast<NiLightView*>(niObj);
+		auto* niLight = reinterpret_cast<RE::NiLight*>(niObj);
 		if (!niLight) continue;
 
 		auto* lightKey = reinterpret_cast<RE::BSLight*>(niLight);

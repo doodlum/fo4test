@@ -1,6 +1,7 @@
 #include "Core/Globals.h"
 
 #include "Features/LightLimitFix.h"
+#include "Features/ExtendedMaterials.h"
 #include "Features/ShaderDump.h"
 #include "Features/FrameGeneration.h"
 #include "Features/Overlay.h"
@@ -10,6 +11,7 @@
 namespace globals::features
 {
 	LightLimitFix lightLimitFix;
+	FeatureExtendedMaterials extendedMaterials;
 	ShaderDump shaderDump;
 	FeatureUpscaling upscaling;
 	FeatureFrameGeneration frameGeneration;
@@ -23,6 +25,7 @@ namespace CommunityShaders
 	{
 		static std::vector<Feature*> features = {
 		&globals::features::lightLimitFix,
+		&globals::features::extendedMaterials,
 		&globals::features::shaderDump,
 		&globals::features::upscaling,
 		&globals::features::frameGeneration,

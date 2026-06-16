@@ -7,6 +7,11 @@
 #include "Core/ShaderCache.h"
 #include "Core/State.h"
 #include <RE/FO4Runtime.h>
+#if defined(FALLOUT_POST_AE)
+#include "RE/B/BSShader.h"
+#else
+#include "RE/Bethesda/BSShader.h"
+#endif
 
 #include <filesystem>
 #include <fstream>
@@ -61,27 +66,328 @@ namespace
 
 namespace
 {
-	constexpr auto kGBufferAlbedo   = 22;
-	constexpr auto kGBufferNormal   = 20;
-	constexpr auto kGBufferEmissive = 23;
-	constexpr auto kGBufferMaterial = 24;
+	const Deferred::GBufferTargetBindings kGBufferTargets{ {
+		{ Deferred::GBufferTarget::kNormal, RE::FO4Runtime::RenderTargetIndex::kGBufferNormal, DXGI_FORMAT_R10G10B10A2_UNORM, "NormalRoughness" },
+		{ Deferred::GBufferTarget::kAlbedo, RE::FO4Runtime::RenderTargetIndex::kGBufferAlbedo, DXGI_FORMAT_R10G10B10A2_UNORM, "Albedo" },
+		{ Deferred::GBufferTarget::kEmissive, RE::FO4Runtime::RenderTargetIndex::kGBufferEmissive, DXGI_FORMAT_R11G11B10_FLOAT, "Emissive" },
+		{ Deferred::GBufferTarget::kMaterial, RE::FO4Runtime::RenderTargetIndex::kGBufferMaterial, DXGI_FORMAT_R11G11B10_FLOAT, "Material" },
+	} };
+
+	const Deferred::DeferredRenderTargetBindings kDeferredRenderTargets{ {
+		{ 2, Deferred::GBufferTarget::kNormal, "NormalRoughness" },
+		{ 3, Deferred::GBufferTarget::kAlbedo, "Albedo" },
+		{ 4, Deferred::GBufferTarget::kEmissive, "Emissive" },
+		{ 5, Deferred::GBufferTarget::kMaterial, "Material" },
+	} };
+
+	[[nodiscard]] std::size_t ToGBufferIndex(Deferred::GBufferTarget a_target) noexcept
+	{
+		return static_cast<std::size_t>(a_target);
+	}
+
+	[[nodiscard]] const Deferred::GBufferTargetBinding* GetGBufferBinding(Deferred::GBufferTarget a_target) noexcept
+	{
+		const auto index = ToGBufferIndex(a_target);
+		return index < kGBufferTargets.size() ? &kGBufferTargets[index] : nullptr;
+	}
+
+	[[nodiscard]] ID3D11RenderTargetView* GetRendererTargetRTV(std::uint32_t a_index) noexcept
+	{
+		auto* rendererData = fo4cs::GetRendererData();
+		if (!rendererData || a_index >= RE::FO4Runtime::RenderTargetIndex::kCount) {
+			return nullptr;
+		}
+
+		return reinterpret_cast<ID3D11RenderTargetView*>(rendererData->renderTargets[a_index].rtView);
+	}
+
+	[[nodiscard]] ID3D11DepthStencilView* GetRendererDepthStencilView(std::uint32_t a_index) noexcept
+	{
+		auto* rendererData = fo4cs::GetRendererData();
+		if (!rendererData || a_index >= RE::FO4Runtime::DepthStencilTargetIndex::kCount) {
+			return nullptr;
+		}
+
+		return reinterpret_cast<ID3D11DepthStencilView*>(rendererData->depthStencilTargets[a_index].dsView[0]);
+	}
+}
+
+const Deferred::GBufferTargetBindings& Deferred::GetGBufferTargetBindings() noexcept
+{
+	return kGBufferTargets;
+}
+
+const Deferred::DeferredRenderTargetBindings& Deferred::GetDeferredRenderTargetBindings() noexcept
+{
+	return kDeferredRenderTargets;
+}
+
+Deferred::ShaderLookupDescriptorState Deferred::BuildShaderLookupDescriptorState(
+	const RE::BSShader& a_shader,
+	std::uint32_t a_vertexDescriptor,
+	std::uint32_t a_pixelDescriptor,
+	bool a_forceDeferred) const noexcept
+{
+	ShaderLookupDescriptorState state{};
+	state.shaderType = a_shader.shaderType;
+	state.originalVertexDescriptor = a_vertexDescriptor;
+	state.originalPixelDescriptor = a_pixelDescriptor;
+	state.vertexDescriptor = a_vertexDescriptor;
+	state.pixelDescriptor = a_pixelDescriptor;
+	state.deferredRequested = a_forceDeferred || deferredPass;
+	state.reason = state.deferredRequested ? "unsupported-shader-type" : "forward-pass";
+
+	if (!state.deferredRequested) {
+		return state;
+	}
+	if (!a_forceDeferred && !gBufferResourcesReady) {
+		state.reason = "gbuffer-not-ready";
+		return state;
+	}
+
+	if (a_shader.shaderType == RE::FO4Runtime::ShaderType::kLighting) {
+		state.deferredSupported = true;
+		state.pixelDescriptor |= RE::FO4Runtime::ShaderDescriptorFlags::kDeferredLightingPixel;
+		state.modified =
+			state.vertexDescriptor != state.originalVertexDescriptor ||
+			state.pixelDescriptor != state.originalPixelDescriptor;
+		state.reason = state.modified ? "lighting-deferred-flag-added" : "lighting-deferred-flag-present";
+	}
+
+	return state;
+}
+
+D3D11_TEXTURE2D_DESC Deferred::GetGBufferDesc(GBufferTarget a_target) const noexcept
+{
+	const auto index = ToGBufferIndex(a_target);
+	return index < gBufferDescriptions.size() ? gBufferDescriptions[index] : D3D11_TEXTURE2D_DESC{};
+}
+
+ID3D11Texture2D* Deferred::GetGBufferTexture(GBufferTarget a_target) const noexcept
+{
+	const auto* binding = GetGBufferBinding(a_target);
+	auto* rendererData = fo4cs::GetRendererData();
+	if (!binding || !rendererData) {
+		return nullptr;
+	}
+
+	return reinterpret_cast<ID3D11Texture2D*>(rendererData->renderTargets[binding->rendererTargetIndex].texture);
+}
+
+ID3D11ShaderResourceView* Deferred::GetGBufferSRV(GBufferTarget a_target) const noexcept
+{
+	const auto* binding = GetGBufferBinding(a_target);
+	auto* rendererData = fo4cs::GetRendererData();
+	if (!binding || !rendererData) {
+		return nullptr;
+	}
+
+	return reinterpret_cast<ID3D11ShaderResourceView*>(rendererData->renderTargets[binding->rendererTargetIndex].srView);
+}
+
+ID3D11RenderTargetView* Deferred::GetGBufferRTV(GBufferTarget a_target) const noexcept
+{
+	const auto* binding = GetGBufferBinding(a_target);
+	auto* rendererData = fo4cs::GetRendererData();
+	if (!binding || !rendererData) {
+		return nullptr;
+	}
+
+	return reinterpret_cast<ID3D11RenderTargetView*>(rendererData->renderTargets[binding->rendererTargetIndex].rtView);
+}
+
+void Deferred::ClearForwardRenderTargetBackup() noexcept
+{
+	for (auto& renderTargetView : forwardRenderTargetViews) {
+		renderTargetView = nullptr;
+	}
+	forwardDepthStencilView = nullptr;
 }
 
 void Deferred::SetupResources()
 {
-	// GBuffer render target creation will go here.
-	// The existing Upscaling code already handles render target resizing —
-	// Deferred adds extra GBuffer slots beyond the engine's forward-only layout.
-	//
-	// Typical setup (matches Skyrim CS pattern):
-	//   1. Clone main RT descriptor
-	//   2. Create Albedo RT  (R10G10B10A2_UNORM)
-	//   3. Create Normal RT  (R10G10B10A2_UNORM)
-	//   4. Create Emissive RT (R11G11B10_FLOAT or R10G10B10A2_UNORM)
-	//   5. Create Material RT (R11G11B10_FLOAT or R16G16B16A16_FLOAT)
-	//   6. Create samplers (linear + point, clamp addressing)
-	//   7. Create composite blend state + depth stencil state + rasterizer
-	logger::info("[Deferred] GBuffer setup deferred (render targets not yet allocated)");
+	auto* rendererData = fo4cs::GetRendererData();
+	if (!rendererData || !rendererData->device) {
+		gBufferResourcesReady = false;
+		return;
+	}
+
+	auto* device = reinterpret_cast<ID3D11Device*>(rendererData->device);
+	auto createSampler = [&](D3D11_FILTER a_filter, const char* a_name, winrt::com_ptr<ID3D11SamplerState>& a_sampler) {
+		if (a_sampler) {
+			return true;
+		}
+
+		D3D11_SAMPLER_DESC desc{};
+		desc.Filter = a_filter;
+		desc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
+		desc.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
+		desc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+		desc.MaxAnisotropy = 1;
+		desc.ComparisonFunc = D3D11_COMPARISON_NEVER;
+		desc.MinLOD = 0.0f;
+		desc.MaxLOD = D3D11_FLOAT32_MAX;
+
+		const auto hr = device->CreateSamplerState(&desc, a_sampler.put());
+		if (FAILED(hr)) {
+			logger::warn("[Deferred] CreateSamplerState({}) failed hr=0x{:08X}", a_name, static_cast<std::uint32_t>(hr));
+			return false;
+		}
+
+		return true;
+	};
+
+	bool ready = createSampler(D3D11_FILTER_MIN_MAG_MIP_LINEAR, "linear", linearSampler) &&
+	             createSampler(D3D11_FILTER_MIN_MAG_MIP_POINT, "point", pointSampler);
+
+	for (const auto& binding : kGBufferTargets) {
+		auto* texture = GetGBufferTexture(binding.target);
+		auto* srv = GetGBufferSRV(binding.target);
+		auto* rtv = GetGBufferRTV(binding.target);
+		if (!texture || !srv || !rtv) {
+			ready = false;
+			continue;
+		}
+
+		texture->GetDesc(&gBufferDescriptions[ToGBufferIndex(binding.target)]);
+	}
+
+	const bool wasReady = gBufferResourcesReady;
+	gBufferResourcesReady = ready;
+
+	static bool loggedPending = false;
+	if (gBufferResourcesReady) {
+		loggedPending = false;
+		if (!wasReady) {
+			const auto normalDesc = GetGBufferDesc(GBufferTarget::kNormal);
+			logger::info(
+				"[Deferred] GBuffer resources ready targets={} size={}x{} linearSampler={} pointSampler={}",
+				kGBufferTargets.size(),
+				normalDesc.Width,
+				normalDesc.Height,
+				linearSampler != nullptr,
+				pointSampler != nullptr);
+		}
+	} else if (!loggedPending) {
+		logger::warn("[Deferred] GBuffer resources pending; deferred consumers remain disabled until renderer targets are available");
+		loggedPending = true;
+	}
+}
+
+void Deferred::OverrideRenderTargets()
+{
+	if (renderTargetsOverridden) {
+		return;
+	}
+	if (!gBufferResourcesReady) {
+		SetupResources();
+	}
+	if (!gBufferResourcesReady) {
+		return;
+	}
+
+	auto* rendererData = fo4cs::GetRendererData();
+	if (!rendererData || !rendererData->context) {
+		return;
+	}
+
+	auto* context = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
+	ClearForwardRenderTargetBackup();
+
+	std::array<ID3D11RenderTargetView*, kMaxBoundRenderTargetCount> currentRTVs{};
+	ID3D11DepthStencilView* currentDSV = nullptr;
+	context->OMGetRenderTargets(
+		static_cast<UINT>(currentRTVs.size()),
+		currentRTVs.data(),
+		&currentDSV);
+
+	for (std::size_t i = 0; i < currentRTVs.size(); ++i) {
+		forwardRenderTargetViews[i].attach(currentRTVs[i]);
+	}
+	forwardDepthStencilView.attach(currentDSV);
+
+	std::array<ID3D11RenderTargetView*, kMaxBoundRenderTargetCount> deferredRTVs{};
+	for (std::size_t i = 0; i < kForwardRenderTargetPreserveCount; ++i) {
+		deferredRTVs[i] = forwardRenderTargetViews[i].get();
+	}
+
+	if (!deferredRTVs[0]) {
+		deferredRTVs[0] = GetRendererTargetRTV(RE::FO4Runtime::RenderTargetIndex::kMain);
+	}
+	if (!deferredRTVs[1]) {
+		deferredRTVs[1] = GetRendererTargetRTV(RE::FO4Runtime::RenderTargetIndex::kMotionVectors);
+	}
+
+	const DeferredRenderTargetBinding* missingBinding = nullptr;
+	for (const auto& binding : kDeferredRenderTargets) {
+		if (binding.outputSlot >= deferredRTVs.size()) {
+			missingBinding = &binding;
+			break;
+		}
+
+		auto* rtv = GetGBufferRTV(binding.target);
+		if (!rtv) {
+			missingBinding = &binding;
+			break;
+		}
+
+		deferredRTVs[binding.outputSlot] = rtv;
+	}
+
+	static bool loggedMissing = false;
+	if (!deferredRTVs[0] || missingBinding) {
+		if (!loggedMissing) {
+			logger::warn(
+				"[Deferred] Render target override held; forwardRT0={} missingBinding={}",
+				deferredRTVs[0] != nullptr,
+				missingBinding ? missingBinding->name : "<none>");
+			loggedMissing = true;
+		}
+		ClearForwardRenderTargetBackup();
+		return;
+	}
+
+	auto* depthStencilView = forwardDepthStencilView.get();
+	if (!depthStencilView) {
+		depthStencilView = GetRendererDepthStencilView(RE::FO4Runtime::DepthStencilTargetIndex::kMain);
+	}
+
+	context->OMSetRenderTargets(
+		static_cast<UINT>(kDeferredRenderTargetCount),
+		deferredRTVs.data(),
+		depthStencilView);
+	renderTargetsOverridden = true;
+
+	static bool loggedReady = false;
+	if (!loggedReady) {
+		logger::info(
+			"[Deferred] Render target override ready forwardSlots={} gbufferSlots={} boundTargets={} depthStencil={}",
+			kForwardRenderTargetPreserveCount,
+			kDeferredRenderTargets.size(),
+			kDeferredRenderTargetCount,
+			depthStencilView != nullptr);
+		loggedReady = true;
+	}
+}
+
+void Deferred::RestoreRenderTargets()
+{
+	auto* rendererData = fo4cs::GetRendererData();
+	if (renderTargetsOverridden && rendererData && rendererData->context) {
+		auto* context = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
+		std::array<ID3D11RenderTargetView*, kMaxBoundRenderTargetCount> restoreRTVs{};
+		for (std::size_t i = 0; i < restoreRTVs.size(); ++i) {
+			restoreRTVs[i] = forwardRenderTargetViews[i].get();
+		}
+
+		context->OMSetRenderTargets(
+			static_cast<UINT>(restoreRTVs.size()),
+			restoreRTVs.data(),
+			forwardDepthStencilView.get());
+	}
+
+	renderTargetsOverridden = false;
+	ClearForwardRenderTargetBackup();
 }
 
 void Deferred::ReflectionsPrepasses()
@@ -128,6 +434,10 @@ void Deferred::PrepassPasses()
 
 void Deferred::StartDeferred()
 {
+	if (!gBufferResourcesReady) {
+		SetupResources();
+	}
+
 	deferredPass = true;
 	try {
 		PrepassPasses();
@@ -136,17 +446,27 @@ void Deferred::StartDeferred()
 	} catch (...) {
 		logger::error("[Deferred] StartDeferred unknown exception");
 	}
+#if defined(FALLOUT_PRE_NG) || defined(FALLOUT_POST_NG)
+	OverrideRenderTargets();
+	if (renderTargetsOverridden) {
+		OverrideBlendStates();
+	}
+#endif
 }
 
 void Deferred::EndDeferred()
 {
-	DeferredPasses();
-	ResetBlendStates();
-	deferredPass = false;
+	try {
+		DeferredPasses();
+	} catch (const std::exception& e) {
+		logger::error("[Deferred] EndDeferred exception: {}", e.what());
+	} catch (...) {
+		logger::error("[Deferred] EndDeferred unknown exception");
+	}
 
-	auto rendererData = fo4cs::GetRendererData();
-	auto context = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
-	context->OMSetRenderTargets(0, nullptr, nullptr);
+	ResetBlendStates();
+	RestoreRenderTargets();
+	deferredPass = false;
 }
 
 void Deferred::DeferredPasses()
@@ -190,7 +510,10 @@ void Deferred::DeferredPasses()
 			desc.RenderTarget[i] = desc.RenderTarget[0];
 		}
 
-		auto* device = reinterpret_cast<ID3D11Device*>(fo4cs::GetRendererData()->device);
+		auto* rendererData = fo4cs::GetRendererData();
+		if (!rendererData || !rendererData->device) return a_original;
+
+		auto* device = reinterpret_cast<ID3D11Device*>(rendererData->device);
 		if (!device) return a_original;
 
 		winrt::com_ptr<ID3D11BlendState> extended;
@@ -230,11 +553,16 @@ void Deferred::DeferredPasses()
 
 	void Deferred::OverrideBlendStates()
 	{
+		auto* rendererData = fo4cs::GetRendererData();
+		if (!rendererData || !rendererData->context) {
+			return;
+		}
+
 		blendStatesOverridden = true;
 
 		// Lazy-install OMSetBlendState vtable hook (ID3D11DeviceContext vfunc 26)
 		if (!blendHookInstalled) {
-			auto* ctx = reinterpret_cast<ID3D11DeviceContext*>(fo4cs::GetRendererData()->context);
+			auto* ctx = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
 			if (ctx) {
 				*(uintptr_t*)&originalOMSetBlendState =
 					Detours::X64::DetourClassVTable(*(uintptr_t*)ctx, &OMSetBlendStateHook, 26);
@@ -410,27 +738,42 @@ void Deferred::Hooks::Install()
 				}
 				logger::info("[Deferred] --- end scanner ---");
 				
-				// World_Start: detour at function entry (verified working)
+				auto resolvePreNGRelocation = [&](const RE::FO4Runtime::RelocationID& a_location) -> std::optional<std::uintptr_t> {
+					const auto rva = GetRELOffset(a_location.id.id());
+					if (!rva) {
+						return std::nullopt;
+					}
 
-				// Helper: decode CALL (0xE8) at address, return target
-				auto decodeCallTarget = [](uintptr_t a_callAddr) -> uintptr_t {
-					auto ptr = reinterpret_cast<const uint8_t*>(a_callAddr);
-					if (*ptr != 0xE8) return 0;
-					int32_t rel = *reinterpret_cast<const int32_t*>(ptr + 1);
-					return a_callAddr + 5 + rel;
+					const auto address = base + *rva;
+					if (a_location.offset < 0) {
+						return address - static_cast<std::uintptr_t>(-a_location.offset);
+					}
+					return address + static_cast<std::uintptr_t>(a_location.offset);
 				};
 
 				// World_Start: detour at function entry
-				detour_thunk_at<Main_RenderWorld_Start>(base + *GetRELOffset(1108521));
+				const auto worldStart = resolvePreNGRelocation(
+					RE::FO4Runtime::RelocationID{ F4Hooks::DEFERRED_MAIN_RENDER_WORLD_START });
+				if (worldStart) {
+					detour_thunk_at<Main_RenderWorld_Start>(*worldStart);
+				} else {
+					logger::warn("[Deferred] PreNG: Main_RenderWorld_Start missing; deferred start hook skipped");
+				}
 
 				// ShadowMaps: write_thunk_call at CALL -50 (verified)
-				stl::write_thunk_call<Main_RenderShadowMaps>(base + *GetRELOffset(620025) - 50);
+				const auto shadowMapsCall = resolvePreNGRelocation(F4Hooks::DEFERRED_MAIN_RENDER_SHADOW_MAPS_CALL);
+				if (shadowMapsCall) {
+					stl::write_thunk_call<Main_RenderShadowMaps>(*shadowMapsCall);
+				} else {
+					logger::warn("[Deferred] PreNG: Main_RenderShadowMaps callsite missing; early prepass hook skipped");
+				}
 
 				// BlendedDecals is intentionally not hooked on PreNG. Crash logs showed an AV
 				// inside the original decal call chain after this call-site hook was installed,
 				// while the thunk only added logging and no required rendering work.
+				// World_Start is a verified function scope. EndDeferred() runs when func() returns.
 				// ResetState: no standalone function in PreNG (inline D3D11 state changes)
-				logger::info("[Deferred] PreNG: World_Start + ShadowMaps installed; BlendedDecals skipped");
+				logger::info("[Deferred] PreNG: World_Start scope + ShadowMaps installed; BlendedDecals skipped");
 		} else {
 			logger::warn("[Deferred] PreNG: no hooks installed ({} IDs missing from .bin)", skipped);
 		}
@@ -464,8 +807,14 @@ void Deferred::Hooks::Main_RenderWorld_Start::thunk()
 {
 	try {
 		LogHookFire("Main_RenderWorld_Start");
-		GetSingleton()->StartDeferred();
+		auto* deferred = GetSingleton();
+		deferred->StartDeferred();
 		func();
+#if defined(FALLOUT_PRE_NG)
+		if constexpr (RE::FO4Runtime::PreNG::Hooks::DEFERRED_RESTORE_AFTER_MAIN_RENDER_WORLD_START) {
+			deferred->EndDeferred();
+		}
+#endif
 	} catch (...) {
 		logger::error("[Deferred] Main_RenderWorld_Start exception");
 	}
@@ -476,6 +825,9 @@ void Deferred::Hooks::Main_RenderWorld_BlendedDecals::thunk()
 	try {
 		func();  // call original first (preserves regs for write_thunk_call)
 		LogHookFire("Main_RenderWorld_BlendedDecals");
+#if defined(FALLOUT_POST_NG)
+		GetSingleton()->EndDeferred();
+#endif
 	} catch (...) {
 		logger::error("[Deferred] Main_RenderWorld_BlendedDecals exception");
 	}

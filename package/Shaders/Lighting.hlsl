@@ -5,6 +5,12 @@
 // PreNG note: BSShaderHooks holds ReplacePixelShaders on FALLOUT_PRE_NG, so this
 // file is not evidence that active FO4 lighting shaders consume LLF b3/t35-t37.
 
+#include "Common/GBuffer.hlsli"
+
+#if defined(EXTENDED_MATERIALS)
+#include "ExtendedMaterials/ExtendedMaterials.hlsli"
+#endif
+
 #if defined(LIGHT_LIMIT_FIX)
 #include "LightLimitFix/LightLimitFix.hlsli"
 
@@ -50,12 +56,20 @@
 
 // PS entry point — invoked by FO4's BSShader::SetupGeometry pipeline.
 // Input signature matches FO4's default lighting pixel shader layout.
+#if defined(DEFERRED)
+GBuffer::DeferredLightingOutput main(
+#else
 float4 main(
+#endif
 	float4 position  : SV_Position,
 	float3 worldPos  : TEXCOORD0,
 	float3 normal    : TEXCOORD1,
 	float2 texCoord  : TEXCOORD2
+#if defined(DEFERRED)
+)
+#else
 ) : SV_Target0
+#endif
 {
 	float3 totalLight = float3(0.03, 0.03, 0.03); // ambient
 
@@ -84,5 +98,22 @@ float4 main(
 	}
 #endif
 
-	return float4(totalLight, 1.0);
+	float4 color = float4(totalLight, 1.0);
+
+#if defined(DEFERRED)
+	GBuffer::SurfaceData surface = GBuffer::MakeDefaultSurface(saturate(totalLight), normal);
+#	if defined(EXTENDED_MATERIALS)
+	ExtendedMaterials::MaterialState material = ExtendedMaterials::MakeMaterialState(surface.albedo, surface.normalWS);
+	material = ExtendedMaterials::Apply(material, texCoord, worldPos);
+	surface.albedo = material.albedo;
+	surface.normalWS = material.normalWS;
+	surface.roughness = material.roughness;
+	surface.metallic = material.metallic;
+	surface.emissive = material.emissive;
+	surface.materialID = material.materialID;
+#	endif
+	return GBuffer::BuildDeferredLightingOutput(color, surface);
+#else
+	return color;
+#endif
 }

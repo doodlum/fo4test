@@ -57,6 +57,7 @@ namespace CommunityShaders
 	{
 		d3d11Device = a_device;
 		Hooks::OnD3D11DeviceCreated(a_device);
+		Deferred::GetSingleton()->SetupResources();
 		SetupResources();
 	}
 

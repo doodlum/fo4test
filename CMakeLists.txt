@@ -52,6 +52,7 @@ set(FO4CS_COMMON_DEPENDENCIES
 
 set(FEATURE_VERSIONS
     "		{\"LightLimitFix\"sv, {0,1,0}}"
+    "		{\"ExtendedMaterials\"sv, {0,1,0}}"
     "		{\"ShaderDump\"sv, {0,1,0}}"
     "		{\"Upscaling\"sv, {1,0,0}}"
     "		{\"FrameGeneration\"sv, {1,0,0}}"
@@ -176,6 +177,8 @@ if(COMMUNITY_SHADERS)
     src/Core/ShaderCompiler.h
     src/Core/State.cpp
     src/Core/State.h
+    src/Features/ExtendedMaterials.cpp
+    src/Features/ExtendedMaterials.h
     src/Features/ShaderDump.cpp
     src/Features/ShaderDump.h
     src/Features/LightLimitFix.cpp

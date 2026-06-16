@@ -7,6 +7,7 @@
 #include <vector>
 
 struct LightLimitFix;
+struct FeatureExtendedMaterials;
 struct ShaderDump;
 struct FeatureUpscaling;
 struct FeatureFrameGeneration;
@@ -17,6 +18,7 @@ struct FeatureOverlay;
 namespace globals::features
 {
 	extern ::LightLimitFix lightLimitFix;
+	extern ::FeatureExtendedMaterials extendedMaterials;
 	extern ::ShaderDump shaderDump;
 	extern ::FeatureUpscaling upscaling;
 	extern ::FeatureFrameGeneration frameGeneration;

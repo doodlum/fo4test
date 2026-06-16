@@ -1,5 +1,6 @@
 #include "Core/BSShaderHooks.h"
 #include "Core/CommunityShaders.h"
+#include "Core/Deferred.h"
 #include "Core/Feature.h"
 #include "Core/Globals.h"
 #include "Core/ShaderCompiler.h"
@@ -2684,8 +2685,27 @@ namespace CommunityShaders
 							lookupPixelDescriptor = static_cast<std::int32_t>(
 								NormalizePreNGLightingPixelDescriptor(static_cast<std::uint32_t>(a_pixelDescriptor)));
 						}
+						Deferred::ShaderLookupDescriptorState deferredDescriptorState{};
+						if (a_shader) {
+							deferredDescriptorState = Deferred::GetSingleton()->BuildShaderLookupDescriptorState(
+								*a_shader,
+								static_cast<std::uint32_t>(lookupVertexDescriptor),
+								static_cast<std::uint32_t>(lookupPixelDescriptor));
+							lookupVertexDescriptor = static_cast<std::int32_t>(deferredDescriptorState.vertexDescriptor);
+							lookupPixelDescriptor = static_cast<std::int32_t>(deferredDescriptorState.pixelDescriptor);
+						}
 						const auto changed = lookupVertexDescriptor != a_vertexDescriptor ||
 						                     lookupPixelDescriptor != a_pixelDescriptor;
+						const char* mutationReason = changed ? "fo4-lighting-normalized" : "fo4-lighting-normalized-unchanged";
+						if (isDFLightLLFConsumerDescriptor) {
+							mutationReason = "fo4-dflight-llf-consumer-preserved";
+						}
+						if (isDFLightFullShadowedDescriptorConsumer) {
+							mutationReason = "fo4-dflight-full-shadowed-consumer-preserved";
+						}
+						if (deferredDescriptorState.modified) {
+							mutationReason = deferredDescriptorState.reason;
+						}
 						LogPreNGDescriptorMutation(
 							a_shader,
 							a_vertexDescriptor,
@@ -2693,11 +2713,7 @@ namespace CommunityShaders
 							lookupVertexDescriptor,
 							lookupPixelDescriptor,
 							"applied",
-							isDFLightFullShadowedDescriptorConsumer ?
-								"fo4-dflight-full-shadowed-consumer-preserved" :
-								(isDFLightLLFConsumerDescriptor ?
-										"fo4-dflight-llf-consumer-preserved" :
-										(changed ? "fo4-lighting-normalized" : "fo4-lighting-normalized-unchanged")));
+							mutationReason);
 					} else if (shaderLookupTraceActive) {
 						LogPreNGDescriptorMutation(
 							a_shader,

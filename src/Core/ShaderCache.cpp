@@ -775,6 +775,12 @@ namespace CommunityShaders
 				"1");
 
 #if defined(FALLOUT_PRE_NG)
+			if (a_stage == ShaderStage::Pixel &&
+				a_shaderType == kPreNGBSLightingShaderType &&
+				(a_descriptor & F4Runtime::ShaderDescriptorFlags::kDeferredLightingPixel) != 0) {
+				result.storage.emplace_back("DEFERRED", "1");
+				result.storage.emplace_back("FO4CS_DEFERRED_LIGHTING_DESCRIPTOR", "1");
+			}
 			if (ShouldCompilePreNGBSLightingContractShader(
 					a_stage,
 					a_shaderType,
