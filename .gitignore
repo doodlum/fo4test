@@ -11,7 +11,7 @@
 /.claude
 /.codex
 /.handoff
-/.code-review-graph
+/.codegraph
 
 # local history
 /.history
@@ -24,6 +24,6 @@
 # NVIDIA Streamline / DLSS runtime binaries must not be redistributed.
 /package/Common/F4SE/Plugins/Streamline/*.dll
 
-# MemPalace per-project files (issue #185)
+# MemPalace per-project files
 mempalace.yaml
 entities.json

@@ -4,6 +4,8 @@
 
 #include <RE/FO4Runtime.h>
 
+#include <cstdint>
+
 struct FeatureExtendedMaterials : Feature
 {
 	[[nodiscard]] std::string GetName() override { return "Extended Materials"; }
@@ -16,11 +18,11 @@ struct FeatureExtendedMaterials : Feature
 	[[nodiscard]] std::pair<std::string, std::vector<std::string>> GetFeatureSummary() override
 	{
 		return {
-			"Enables the shader define and descriptor handoff used by extended material shader variants.",
+			"Extended Materials adds advanced material effects including parallax occlusion mapping and complex material blending.",
 			{
-				"Lighting shader descriptor integration",
-				"Deferred-material define injection",
-				"Foundation for parallax and complex material support"
+				"Parallax occlusion mapping for depth",
+				"Complex material roughness and metallic output",
+				"Parallax soft shadow helpers"
 			}
 		};
 	}
@@ -29,4 +31,26 @@ struct FeatureExtendedMaterials : Feature
 	{
 		return a_shaderType == RE::FO4Runtime::ShaderType::kLighting;
 	}
+
+	struct alignas(16) Settings
+	{
+		std::uint32_t EnableComplexMaterial = 1;
+		std::uint32_t EnableParallax = 1;
+		std::uint32_t EnableShadows = 1;
+		std::uint32_t ExtendShadows = 1;
+		float DisplacementScale = 0.05f;
+		float DisplacementOffset = -0.025f;
+		float HeightScale = 1.0f;
+		float pad = 0.0f;
+	};
+	static_assert(sizeof(Settings) == 32, "Settings must be 32 bytes");
+	static_assert(alignof(Settings) == 16, "Settings must be 16-byte aligned");
+
+	Settings settings;
+
+	void DataLoaded() override;
+	void DrawSettings() override;
+	void LoadSettings() override;
+	void SaveSettings() override;
+	void RestoreDefaultSettings() override;
 };
