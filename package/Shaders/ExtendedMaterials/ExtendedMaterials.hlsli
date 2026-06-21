@@ -169,17 +169,22 @@ namespace ExtendedMaterials
 		return state;
 	}
 
-	MaterialState ApplyComplexMaterial(MaterialState state, float4 materialSample)
+	MaterialState ApplyComplexMaterial(MaterialState state, float4 smoothSpecSample)
 	{
-		state.roughness = saturate(1.0 - materialSample.g);
-		state.metallic = saturate(materialSample.a);
-		state.albedo = lerp(state.albedo, state.albedo * saturate(materialSample.r), state.metallic);
+		const float smoothness = saturate(smoothSpecSample.g);
+		state.roughness = saturate(1.0 - smoothness);
 		return state;
 	}
 
-	MaterialState Apply(MaterialState state, float2 texCoord, float3 worldPos)
+	MaterialState Apply(
+		MaterialState state,
+		float2 texCoord,
+		float3 worldPos,
+		Texture2D<float4> smoothSpecMaskTex,
+		SamplerState smoothSpecMaskSamp)
 	{
-		return state;
+		const float4 smoothSpecSample = smoothSpecMaskTex.Sample(smoothSpecMaskSamp, texCoord);
+		return ApplyComplexMaterial(state, smoothSpecSample);
 	}
 }
 

@@ -11,6 +11,11 @@
 #include "ExtendedMaterials/ExtendedMaterials.hlsli"
 #endif
 
+#if defined(DEFERRED) && defined(EXTENDED_MATERIALS)
+Texture2D<float4> SmoothSpecMaskTexture : register(t2);
+SamplerState SmoothSpecMaskSampler : register(s2);
+#endif
+
 #if defined(LIGHT_LIMIT_FIX)
 #include "LightLimitFix/LightLimitFix.hlsli"
 
@@ -62,19 +67,26 @@ GBuffer::DeferredLightingOutput main(
 float4 main(
 #endif
 	float4 position  : SV_Position,
-	float3 worldPos  : TEXCOORD0,
-	float3 normal    : TEXCOORD1,
-	float2 texCoord  : TEXCOORD2
+	float2 texCoord  : TEXCOORD0,
+	float4 worldData : TEXCOORD4,
+	float3 tangentWS : TEXCOORD1,
+	float3 bitangentWS : TEXCOORD2,
+	float3 normalWS  : TEXCOORD3,
+	float3 viewDirWS : TEXCOORD5,
+	float4 vertexColor : COLOR0,
+	bool frontFace : SV_IsFrontFace
 #if defined(DEFERRED)
 )
 #else
 ) : SV_Target0
 #endif
 {
+	float3 worldPos = worldData.xyz;
+	float3 normal = normalize(normalWS);
 	float3 totalLight = float3(0.03, 0.03, 0.03); // ambient
 
 #if defined(LIGHT_LIMIT_FIX)
-	float3 V = normalize(float3(0, 0, 1) - worldPos);
+	float3 V = normalize(viewDirWS);
 	uint clusterLightOffset = 0;
 	uint clusteredLightCount = 0;
 	LightLimitFix::TryGetCluster(
@@ -104,7 +116,7 @@ float4 main(
 	GBuffer::SurfaceData surface = GBuffer::MakeDefaultSurface(saturate(totalLight), normal);
 #	if defined(EXTENDED_MATERIALS)
 	ExtendedMaterials::MaterialState material = ExtendedMaterials::MakeMaterialState(surface.albedo, surface.normalWS);
-	material = ExtendedMaterials::Apply(material, texCoord, worldPos);
+	material = ExtendedMaterials::Apply(material, texCoord, worldPos, SmoothSpecMaskTexture, SmoothSpecMaskSampler);
 	surface.albedo = material.albedo;
 	surface.normalWS = material.normalWS;
 	surface.roughness = material.roughness;
