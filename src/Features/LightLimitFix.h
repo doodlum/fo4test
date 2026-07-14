@@ -290,6 +290,7 @@ public:
 	[[nodiscard]] bool HasPreNGDFLightDescriptorConsumerData() const;
 	[[nodiscard]] bool HasPreNGDFCompositeDescriptorConsumerData() const;
 	[[nodiscard]] bool HasPreNGBSLightingDescriptorConsumerData() const;
+	[[nodiscard]] bool ShouldSuppressPreNGBSLightingVisibleConsumerForMenu() const;
 	void NotifyPreNGDFLightLLFConsumerDescriptorObserved(
 		std::uint32_t a_vertexDescriptor,
 		std::uint32_t a_pixelDescriptor,

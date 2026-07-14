@@ -57,6 +57,21 @@
 			}
 		},
 		{
+			"name": "clangd",
+			"hidden": true,
+			"generator": "Ninja",
+			"cacheVariables": {
+				"CMAKE_CXX_STANDARD": "23",
+				"CMAKE_CXX_STANDARD_REQUIRED": true,
+				"CMAKE_CXX_EXTENSIONS": true,
+				"COMMUNITY_SHADERS": true
+			},
+			"environment": {
+				"CC": "cl",
+				"CXX": "cl"
+			}
+		},
+		{
 			"name": "Framegen",
 			"hidden": true,
 			"cacheVariables": {
@@ -120,7 +135,8 @@
 				"all",
 				"vcpkg",
 				"win64",
-				"msvc"
+				"msvc",
+				"clangd"
 			]
 		},
 		{
@@ -137,7 +153,8 @@
 				"all",
 				"vcpkg",
 				"win64",
-				"msvc"
+				"msvc",
+				"clangd"
 			]
 		},
 		{
@@ -154,7 +171,8 @@
 				"all",
 				"vcpkg",
 				"win64",
-				"msvc"
+				"msvc",
+				"clangd"
 			]
 		}
 	],

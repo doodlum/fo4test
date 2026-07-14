@@ -29,7 +29,7 @@ struct FeatureExtendedMaterials : Feature
 
 	[[nodiscard]] bool HasShaderDefine(std::int32_t a_shaderType) override
 	{
-		return a_shaderType == RE::FO4Runtime::ShaderType::kLighting;
+		return RE::FO4Runtime::IsLightingShaderType(a_shaderType);
 	}
 
 	struct alignas(16) Settings

@@ -1,4 +1,5 @@
 #include "Features/LightLimitFix.h"
+#include "Core/DebugSwitches.h"
 #include <DirectXMath.h>
 #include <array>
 #include <atomic>
@@ -154,6 +155,7 @@ namespace
 	};
 	std::atomic_uint64_t s_preNGBSLightingResourceProofBypassUntilFrame = 0;
 	std::atomic_uint32_t s_preNGBSLightingResourceProofBypassLogs = 0;
+	std::atomic_uint32_t s_preNGBSLightingVisibleConsumerMenuSuppressLogs = 0;
 	// Most recent raw shadow-scene bucket light total (pre-truncation). Preview
 	// menus (ExamineMenu etc.) latch the decode onto a world node with ~1000+
 	// lights; after the menu closes the node can stay selected for a few frames
@@ -647,21 +649,9 @@ namespace
 		return false;
 	}
 
-	bool IsTruthyEnvironmentValue(const char* a_value)
-	{
-		return std::strcmp(a_value, "1") == 0 ||
-		       std::strcmp(a_value, "true") == 0 ||
-		       std::strcmp(a_value, "TRUE") == 0 ||
-		       std::strcmp(a_value, "on") == 0 ||
-		       std::strcmp(a_value, "ON") == 0;
-	}
-
 	enum class EnvironmentSwitchSource
 	{
 		kNone,
-		kProcess,
-		kUserRegistry,
-		kMachineRegistry,
 		kDebugIni
 	};
 
@@ -682,12 +672,6 @@ namespace
 	const char* EnvironmentSwitchSourceName(EnvironmentSwitchSource a_source)
 	{
 		switch (a_source) {
-		case EnvironmentSwitchSource::kProcess:
-			return "process";
-		case EnvironmentSwitchSource::kUserRegistry:
-			return "user-reg";
-		case EnvironmentSwitchSource::kMachineRegistry:
-			return "machine-reg";
 		case EnvironmentSwitchSource::kDebugIni:
 			return "debug-ini";
 		default:
@@ -695,136 +679,31 @@ namespace
 		}
 	}
 
-	// Debug switches are read exclusively from
-	// Data\F4SE\Plugins\CommunityShaders\Debug.ini ([Switches] section), keyed by
-	// the same FO4CS_* names the code already uses. This deliberately replaces the
-	// previous process-env / HKCU / HKLM lookup so a polluted parent environment
-	// (e.g. a stale MO2 launcher env) can no longer flip LLF diagnostic gates.
-	constexpr const char* kDebugIniSwitchSection = "Switches";
-
-	// Absolute path to the DLL that contains this code, resolved at runtime so the
-	// Debug.ini lookup is robust under MO2's VFS. Returns empty on failure.
-	std::filesystem::path GetContainingModulePath()
+	EnvironmentSwitchSource ToEnvironmentSwitchSource(CommunityShaders::DebugSwitches::Source a_source)
 	{
-		HMODULE module = nullptr;
-		if (!GetModuleHandleExW(
-				GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-				reinterpret_cast<LPCWSTR>(&GetContainingModulePath),
-				&module) ||
-			!module) {
-			return {};
-		}
-
-		std::vector<wchar_t> buffer(MAX_PATH);
-		while (true) {
-			const auto length = GetModuleFileNameW(module, buffer.data(), static_cast<DWORD>(buffer.size()));
-			if (length == 0) {
-				return {};
-			}
-			if (length < static_cast<DWORD>(buffer.size() - 1)) {
-				return std::filesystem::path(std::wstring(buffer.data(), length));
-			}
-			buffer.resize(buffer.size() * 2);
-		}
-	}
-
-	std::filesystem::path GetDebugIniPath()
-	{
-		// Prefer the directory the loaded module actually lives in (robust under
-		// MO2's VFS), falling back to the canonical relative install path.
-		const auto modulePath = GetContainingModulePath();
-		if (!modulePath.empty()) {
-			return modulePath.parent_path() / "CommunityShaders" / "Debug.ini";
-		}
-		return std::filesystem::path("Data\\F4SE\\Plugins\\CommunityShaders") / "Debug.ini";
-	}
-
-	// Loaded once on first access. The file is small and switches are read-only at
-	// runtime, so a single parse is sufficient and avoids per-call disk I/O.
-	// CSimpleIniA is non-copyable, so the static is populated in place under a
-	// std::once_flag.
-	const CSimpleIniA& GetDebugIni()
-	{
-		static CSimpleIniA ini;
-		static std::once_flag loadFlag;
-		std::call_once(loadFlag, [] {
-			ini.SetUnicode();
-			const auto path = GetDebugIniPath();
-			std::error_code ec;
-			if (std::filesystem::exists(path, ec)) {
-				const auto rc = ini.LoadFile(path.string().c_str());
-				logger::info(
-					"[LightLimitFix] Debug switch source: {} (load rc={})",
-					path.string(),
-					static_cast<int>(rc));
-			} else {
-				logger::info(
-					"[LightLimitFix] Debug switch source {} not present; all LLF diagnostic switches default OFF",
-					path.string());
-			}
-		});
-		return ini;
-	}
-
-	// Returns the raw string value for a switch from Debug.ini, or nullptr if the
-	// key is absent.
-	const char* ReadDebugIniValue(const char* a_name)
-	{
-		return GetDebugIni().GetValue(kDebugIniSwitchSection, a_name, nullptr);
+		return a_source == CommunityShaders::DebugSwitches::Source::kDebugIni ?
+			EnvironmentSwitchSource::kDebugIni :
+			EnvironmentSwitchSource::kNone;
 	}
 
 	EnvironmentSwitchState ReadEnvironmentSwitch(const char* a_name)
 	{
-		const char* value = ReadDebugIniValue(a_name);
-		if (!value) {
-			return {};
-		}
-
+		const auto state = CommunityShaders::DebugSwitches::ReadSwitch(a_name);
 		return {
-			IsTruthyEnvironmentValue(value),
-			EnvironmentSwitchSource::kDebugIni
+			state.enabled,
+			ToEnvironmentSwitchSource(state.source)
 		};
-	}
-
-	bool ParseEnvironmentUIntValue(const char* a_value, std::uint32_t& a_result)
-	{
-		if (!a_value || *a_value == '\0') {
-			return false;
-		}
-
-		const char* end = a_value;
-		while (*end != '\0') {
-			++end;
-		}
-
-		const auto parsed = std::from_chars(a_value, end, a_result, 10);
-		return parsed.ec == std::errc{} && parsed.ptr == end;
-	}
-
-	EnvironmentUIntState MakeEnvironmentUIntState(
-		const char* a_value,
-		EnvironmentSwitchSource a_source,
-		bool a_available)
-	{
-		EnvironmentUIntState state{};
-		state.source = a_source;
-		state.present = true;
-		if (!a_available) {
-			return state;
-		}
-
-		state.valid = ParseEnvironmentUIntValue(a_value, state.value);
-		return state;
 	}
 
 	EnvironmentUIntState ReadEnvironmentUInt(const char* a_name)
 	{
-		const char* value = ReadDebugIniValue(a_name);
-		if (!value) {
-			return {};
-		}
-
-		return MakeEnvironmentUIntState(value, EnvironmentSwitchSource::kDebugIni, true);
+		const auto state = CommunityShaders::DebugSwitches::ReadUInt(a_name);
+		return {
+			state.value,
+			ToEnvironmentSwitchSource(state.source),
+			state.present,
+			state.valid
+		};
 	}
 
 	std::uint32_t GetPreNGDFLightLLFAdditiveRefreshInterval()
@@ -2974,6 +2853,27 @@ bool LightLimitFix::HasPreNGBSLightingDescriptorConsumerData() const
 	return HasResources() &&
 	       strictLightDataCB &&
 	       currentLightCount > 0;
+}
+
+bool LightLimitFix::ShouldSuppressPreNGBSLightingVisibleConsumerForMenu() const
+{
+	const auto menuBlock = DetectPreNGBSLightingResourceProofMenuBlock();
+	if (menuBlock.empty()) {
+		return false;
+	}
+
+	const auto suppressIndex = ++s_preNGBSLightingVisibleConsumerMenuSuppressLogs;
+	if (suppressIndex <= 8 || (suppressIndex & (suppressIndex - 1)) == 0) {
+		auto* runtime = CommunityShaders::Runtime::GetSingleton();
+		const auto frame = runtime ? runtime->GetFrameCount() : 0;
+		logger::info(
+			"[LightLimitFix] PreNG BSLighting visible consumer held for UI menu suppressions={} frame={} reason={}; vanilla BSLighting preserved",
+			suppressIndex,
+			frame,
+			menuBlock);
+	}
+
+	return true;
 }
 
 void LightLimitFix::NotifyPreNGDFLightLLFConsumerDescriptorObserved(

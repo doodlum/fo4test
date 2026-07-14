@@ -13,6 +13,7 @@
 #include "RE/Bethesda/BSShader.h"
 #endif
 
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <optional>
@@ -110,6 +111,41 @@ namespace
 
 		return reinterpret_cast<ID3D11DepthStencilView*>(rendererData->depthStencilTargets[a_index].dsView[0]);
 	}
+
+#if defined(FALLOUT_PRE_NG)
+	constexpr const char* kPreNGDeferredMRTScopeEnv = "FO4CS_DEFERRED_PRENG_MRT_SCOPE";
+
+	[[nodiscard]] bool IsTruthySwitchValue(const char* a_value) noexcept
+	{
+		return std::strcmp(a_value, "1") == 0 ||
+		       std::strcmp(a_value, "true") == 0 ||
+		       std::strcmp(a_value, "TRUE") == 0 ||
+		       std::strcmp(a_value, "on") == 0 ||
+		       std::strcmp(a_value, "ON") == 0;
+	}
+
+	[[nodiscard]] bool ShouldEnablePreNGDeferredMRTScope() noexcept
+	{
+		static const bool enabled = [] {
+			char value[16]{};
+			SetLastError(ERROR_SUCCESS);
+			const auto length = GetEnvironmentVariableA(
+				kPreNGDeferredMRTScopeEnv,
+				value,
+				static_cast<DWORD>(sizeof(value)));
+			const bool resolved =
+				length > 0 &&
+				length < sizeof(value) &&
+				IsTruthySwitchValue(value);
+			logger::info(
+				"[Deferred] PreNG MRT scope resolved {}={} source=process-env default=off",
+				kPreNGDeferredMRTScopeEnv,
+				resolved ? "on" : "off");
+			return resolved;
+		}();
+		return enabled;
+	}
+#endif
 }
 
 const Deferred::GBufferTargetBindings& Deferred::GetGBufferTargetBindings() noexcept
@@ -145,9 +181,9 @@ Deferred::ShaderLookupDescriptorState Deferred::BuildShaderLookupDescriptorState
 		return state;
 	}
 
-	if (a_shader.shaderType == RE::FO4Runtime::ShaderType::kLighting) {
+	if (RE::FO4Runtime::IsLightingShaderType(a_shader.shaderType)) {
 		state.deferredSupported = true;
-		state.pixelDescriptor |= RE::FO4Runtime::ShaderDescriptorFlags::kDeferredLightingPixel;
+		state.pixelDescriptor = RE::FO4Runtime::AddDeferredLightingPixelDescriptor(state.pixelDescriptor);
 		state.modified =
 			state.vertexDescriptor != state.originalVertexDescriptor ||
 			state.pixelDescriptor != state.originalPixelDescriptor;
@@ -807,6 +843,12 @@ void Deferred::Hooks::Main_RenderWorld_Start::thunk()
 {
 	try {
 		LogHookFire("Main_RenderWorld_Start");
+#if defined(FALLOUT_PRE_NG)
+		if (!ShouldEnablePreNGDeferredMRTScope()) {
+			func();
+			return;
+		}
+#endif
 		auto* deferred = GetSingleton();
 		deferred->StartDeferred();
 		func();

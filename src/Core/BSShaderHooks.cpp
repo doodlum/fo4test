@@ -1,5 +1,6 @@
 #include "Core/BSShaderHooks.h"
 #include "Core/CommunityShaders.h"
+#include "Core/DebugSwitches.h"
 #include "Core/Deferred.h"
 #include "Core/Feature.h"
 #include "Core/Globals.h"
@@ -113,68 +114,15 @@ namespace CommunityShaders
 		return F4Runtime::WriteValue(a_address, a_value);
 	}
 
-	bool IsTruthyPreNGEnvironmentValue(const char* a_value)
-	{
-		return std::strcmp(a_value, "1") == 0 ||
-		       std::strcmp(a_value, "true") == 0 ||
-		       std::strcmp(a_value, "TRUE") == 0 ||
-		       std::strcmp(a_value, "on") == 0 ||
-		       std::strcmp(a_value, "ON") == 0;
-	}
-
-	bool ReadPreNGRegistryEnvironmentValue(const char* a_name, HKEY a_root, const char* a_subKey, char (&a_value)[16])
-	{
-		DWORD type = 0;
-		DWORD size = static_cast<DWORD>(sizeof(a_value));
-		const auto result = RegGetValueA(
-			a_root,
-			a_subKey,
-			a_name,
-			RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ,
-			&type,
-			a_value,
-			&size);
-		if (result != ERROR_SUCCESS || size == 0) {
-			return false;
-		}
-
-		a_value[sizeof(a_value) - 1] = '\0';
-		return true;
-	}
-
 	bool ReadPreNGEnvironmentSwitch(const char* a_name)
 	{
-		char value[16]{};
-		if (ReadPreNGRegistryEnvironmentValue(a_name, HKEY_CURRENT_USER, "Environment", value)) {
-			return IsTruthyPreNGEnvironmentValue(value);
-		}
-
-		if (ReadPreNGRegistryEnvironmentValue(
-				a_name,
-				HKEY_LOCAL_MACHINE,
-				"SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment",
-				value)) {
-			return IsTruthyPreNGEnvironmentValue(value);
-		}
-
-		SetLastError(ERROR_SUCCESS);
-		const auto length = GetEnvironmentVariableA(a_name, value, static_cast<DWORD>(sizeof(value)));
-		if (length > 0) {
-			return length < sizeof(value) && IsTruthyPreNGEnvironmentValue(value);
-		}
-		if (GetLastError() != ERROR_ENVVAR_NOT_FOUND) {
-			return false;
-		}
-
-		return false;
+		return DebugSwitches::ReadSwitchEnabled(a_name);
 	}
 
 	enum class PreNGEnvironmentValueSource
 	{
 		kNone,
-		kProcess,
-		kUserRegistry,
-		kMachineRegistry
+		kDebugIni
 	};
 
 	struct PreNGEnvironmentUIntState
@@ -188,76 +136,29 @@ namespace CommunityShaders
 	const char* PreNGEnvironmentValueSourceName(PreNGEnvironmentValueSource a_source)
 	{
 		switch (a_source) {
-		case PreNGEnvironmentValueSource::kProcess:
-			return "process";
-		case PreNGEnvironmentValueSource::kUserRegistry:
-			return "user-reg";
-		case PreNGEnvironmentValueSource::kMachineRegistry:
-			return "machine-reg";
+		case PreNGEnvironmentValueSource::kDebugIni:
+			return "debug-ini";
 		default:
 			return "none";
 		}
 	}
 
-	bool ParsePreNGEnvironmentUIntValue(const char* a_value, std::uint32_t& a_result)
+	PreNGEnvironmentValueSource ToPreNGEnvironmentSource(DebugSwitches::Source a_source)
 	{
-		if (!a_value || *a_value == '\0') {
-			return false;
-		}
-
-		const char* end = a_value;
-		while (*end != '\0') {
-			++end;
-		}
-
-		const auto parsed = std::from_chars(a_value, end, a_result, 10);
-		return parsed.ec == std::errc{} && parsed.ptr == end;
-	}
-
-	PreNGEnvironmentUIntState MakePreNGEnvironmentUIntState(
-		const char* a_value,
-		PreNGEnvironmentValueSource a_source,
-		bool a_available)
-	{
-		PreNGEnvironmentUIntState state{};
-		state.source = a_source;
-		state.present = true;
-		if (!a_available) {
-			return state;
-		}
-
-		state.valid = ParsePreNGEnvironmentUIntValue(a_value, state.value);
-		return state;
+		return a_source == DebugSwitches::Source::kDebugIni ?
+			PreNGEnvironmentValueSource::kDebugIni :
+			PreNGEnvironmentValueSource::kNone;
 	}
 
 	PreNGEnvironmentUIntState ReadPreNGEnvironmentUInt(const char* a_name)
 	{
-		char value[16]{};
-		if (ReadPreNGRegistryEnvironmentValue(a_name, HKEY_CURRENT_USER, "Environment", value)) {
-			return MakePreNGEnvironmentUIntState(value, PreNGEnvironmentValueSource::kUserRegistry, true);
-		}
-
-		if (ReadPreNGRegistryEnvironmentValue(
-				a_name,
-				HKEY_LOCAL_MACHINE,
-				"SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment",
-				value)) {
-			return MakePreNGEnvironmentUIntState(value, PreNGEnvironmentValueSource::kMachineRegistry, true);
-		}
-
-		SetLastError(ERROR_SUCCESS);
-		const auto length = GetEnvironmentVariableA(a_name, value, static_cast<DWORD>(sizeof(value)));
-		if (length > 0) {
-			return MakePreNGEnvironmentUIntState(
-				value,
-				PreNGEnvironmentValueSource::kProcess,
-				length < sizeof(value));
-		}
-		if (GetLastError() != ERROR_ENVVAR_NOT_FOUND) {
-			return MakePreNGEnvironmentUIntState("", PreNGEnvironmentValueSource::kProcess, false);
-		}
-
-		return {};
+		const auto state = DebugSwitches::ReadUInt(a_name);
+		return {
+			state.value,
+			ToPreNGEnvironmentSource(state.source),
+			state.present,
+			state.valid
+		};
 	}
 
 	std::uint32_t GetPreNGDFLightFullShadowedCandidateBindBudget()
@@ -716,11 +617,7 @@ namespace CommunityShaders
 
 	bool IsPreNGBSLightingContractPixelDescriptor(std::uint32_t a_descriptor)
 	{
-		return a_descriptor == 0x00000001u ||
-		       a_descriptor == 0x00000101u ||
-		       a_descriptor == 0x00000111u ||
-		       a_descriptor == 0x00000141u ||
-		       a_descriptor == 0x00000201u;
+		return F4Runtime::PreNG::IsBSLightingContractPixelDescriptor(a_descriptor);
 	}
 
 	bool IsPreNGBSLightingContractDescriptorShader(RE::BSShader* a_shader, std::int32_t a_pixelDescriptor)
@@ -1871,6 +1768,10 @@ namespace CommunityShaders
 		}
 		if (!llfFeature || !llfFeature->HasPreNGBSLightingDescriptorConsumerData()) {
 			logBind("held", "clustered-payload-pending", 0, 0, 0, bound, false);
+			return false;
+		}
+		if (llfFeature->ShouldSuppressPreNGBSLightingVisibleConsumerForMenu()) {
+			logBind("held", "preview-menu-vanilla-preserved", 0, 0, 0, bound, false);
 			return false;
 		}
 

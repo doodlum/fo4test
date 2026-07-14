@@ -1,6 +1,7 @@
 #include "Core/ShaderCache.h"
 
 #include "Core/CommunityShaders.h"
+#include "Core/DebugSwitches.h"
 #include "Core/Feature.h"
 #include "Core/ShaderCompiler.h"
 #include "Core/State.h"
@@ -28,9 +29,9 @@ namespace CommunityShaders
 	namespace
 	{
 		constexpr const char* kDescriptorCompileEnv = "FO4CS_LLF_PRENG_DESCRIPTOR_COMPILE";
-#if defined(FALLOUT_PRE_NG)
 		namespace F4Runtime = RE::FO4Runtime;
 		constexpr std::int32_t kPreNGBSLightingShaderType = static_cast<std::int32_t>(F4Runtime::PreNG::BS_LIGHTING_SHADER_TYPE);
+#if defined(FALLOUT_PRE_NG)
 		constexpr std::int32_t kPreNGDFLightingShaderType = static_cast<std::int32_t>(F4Runtime::PreNG::DF_LIGHTING_SHADER_TYPE);
 		constexpr std::int32_t kPreNGDFCompositeShaderType = static_cast<std::int32_t>(F4Runtime::PreNG::DF_COMPOSITE_SHADER_TYPE);
 		constexpr std::string_view kPreNGBSLightingFxpName = "lighting";
@@ -51,8 +52,6 @@ namespace CommunityShaders
 		constexpr const char* kPreNGDFCompositeVisibleLLFEnv = "FO4CS_LLF_PRENG_DFCOMPOSITE_VISIBLE_LLF";
 		constexpr const char* kPreNGDFCompositeVisibleLLFScale1024Env = "FO4CS_LLF_PRENG_DFCOMPOSITE_VISIBLE_LLF_SCALE_1024";
 		constexpr const char* kPreNGDFCompositeVisibleLLFMaxLightsEnv = "FO4CS_LLF_PRENG_DFCOMPOSITE_VISIBLE_LLF_MAX_LIGHTS";
-#else
-		constexpr std::int32_t kPreNGBSLightingShaderType = 8;
 #endif
 		constexpr std::string_view kPreNGBSLightingContractProbeSource = "LightLimitFix/BSLightingContractProbePS.hlsl";
 		constexpr std::string_view kPreNGBSLightingConsumerProbeSource = "LightLimitFix/BSLightingLLFConsumerProbePS.hlsl";
@@ -87,68 +86,9 @@ namespace CommunityShaders
 		}
 #endif
 
-		bool IsTruthyDescriptorEnvironmentValue(const char* a_value)
-		{
-			return std::strcmp(a_value, "1") == 0 ||
-			       std::strcmp(a_value, "true") == 0 ||
-			       std::strcmp(a_value, "TRUE") == 0 ||
-			       std::strcmp(a_value, "on") == 0 ||
-			       std::strcmp(a_value, "ON") == 0;
-		}
-
-		bool ReadDescriptorRegistryValue(const char* a_name, HKEY a_root, const char* a_subKey, char (&a_value)[16])
-		{
-			DWORD type = 0;
-			DWORD size = static_cast<DWORD>(sizeof(a_value));
-			const auto result = RegGetValueA(
-				a_root,
-				a_subKey,
-				a_name,
-				RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ,
-				&type,
-				a_value,
-				&size);
-			if (result != ERROR_SUCCESS || size == 0) {
-				return false;
-			}
-
-			a_value[sizeof(a_value) - 1] = '\0';
-			return true;
-		}
-
-		bool ReadDescriptorEnvironmentValue(const char* a_name, char (&a_value)[16])
-		{
-			if (ReadDescriptorRegistryValue(a_name, HKEY_CURRENT_USER, "Environment", a_value)) {
-				return true;
-			}
-
-			if (ReadDescriptorRegistryValue(
-					a_name,
-					HKEY_LOCAL_MACHINE,
-					"SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment",
-					a_value)) {
-				return true;
-			}
-
-			SetLastError(ERROR_SUCCESS);
-			const auto length = GetEnvironmentVariableA(
-				a_name,
-				a_value,
-				static_cast<DWORD>(sizeof(a_value)));
-			if (length > 0) {
-				return length < sizeof(a_value);
-			}
-			if (GetLastError() != ERROR_ENVVAR_NOT_FOUND) {
-				return false;
-			}
-
-			return false;
-		}
-
 		bool ReadDescriptorEnvironmentSwitch(const char* a_name)
 		{
-			char value[16]{};
-			return ReadDescriptorEnvironmentValue(a_name, value) && IsTruthyDescriptorEnvironmentValue(value);
+			return DebugSwitches::ReadSwitchEnabled(a_name);
 		}
 
 		std::uint32_t ReadDescriptorEnvironmentUInt(
@@ -157,19 +97,7 @@ namespace CommunityShaders
 			std::uint32_t a_minValue,
 			std::uint32_t a_maxValue)
 		{
-			char value[16]{};
-			if (!ReadDescriptorEnvironmentValue(a_name, value)) {
-				return a_defaultValue;
-			}
-
-			char* end = nullptr;
-			const auto parsed = std::strtoul(value, &end, 10);
-			if (end == value || *end != '\0') {
-				return a_defaultValue;
-			}
-
-			const auto clamped = std::clamp(parsed, static_cast<unsigned long>(a_minValue), static_cast<unsigned long>(a_maxValue));
-			return static_cast<std::uint32_t>(clamped);
+			return DebugSwitches::ReadUIntClamped(a_name, a_defaultValue, a_minValue, a_maxValue);
 		}
 
 		bool ReadDescriptorCompileSwitch()
@@ -374,11 +302,7 @@ namespace CommunityShaders
 
 		bool IsPreNGBSLightingContractPixelDescriptor(std::uint32_t a_descriptor)
 		{
-			return a_descriptor == 0x00000001u ||
-			       a_descriptor == 0x00000101u ||
-			       a_descriptor == 0x00000111u ||
-			       a_descriptor == 0x00000141u ||
-			       a_descriptor == 0x00000201u;
+			return F4Runtime::PreNG::IsBSLightingContractPixelDescriptor(a_descriptor);
 		}
 
 		bool IsPreNGBSLightingContractDescriptorShader(
@@ -777,7 +701,7 @@ namespace CommunityShaders
 #if defined(FALLOUT_PRE_NG)
 			if (a_stage == ShaderStage::Pixel &&
 				a_shaderType == kPreNGBSLightingShaderType &&
-				(a_descriptor & F4Runtime::ShaderDescriptorFlags::kDeferredLightingPixel) != 0) {
+				F4Runtime::IsDeferredLightingPixelDescriptor(a_descriptor)) {
 				result.storage.emplace_back("DEFERRED", "1");
 				result.storage.emplace_back("FO4CS_DEFERRED_LIGHTING_DESCRIPTOR", "1");
 			}
