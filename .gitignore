@@ -2,6 +2,13 @@
 /build
 /dist
 /bin
+
+# zip files
+*.zip
+*.7z
+*.rar
+
+# CMake auto-generated files
 /compile_commands.json
 
 # References
