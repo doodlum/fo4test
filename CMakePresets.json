@@ -23,7 +23,7 @@
 			"name": "vcpkg",
 			"hidden": true,
 			"cacheVariables": {
-				"CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+				"CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/Fo4csMsvcVcpkgToolchain.cmake",
 				"VCPKG_TARGET_TRIPLET": "x64-windows-static-md"
 			}
 		},
@@ -39,13 +39,7 @@
 			"name": "msvc",
 			"hidden": true,
 			"cacheVariables": {
-				"CMAKE_CXX_FLAGS": "/EHsc /MP /W4 /WX $penv{CXXFLAGS}",
-				"CMAKE_C_COMPILER": "cl",
-				"CMAKE_CXX_COMPILER": "cl"
-			},
-			"environment": {
-				"CC": "cl",
-				"CXX": "cl"
+				"CMAKE_CXX_FLAGS": "/EHsc /MP /W4 /WX $penv{CXXFLAGS}"
 			},
 			"generator": "Visual Studio 17 2022",
 			"vendor": {
@@ -65,10 +59,6 @@
 				"CMAKE_CXX_STANDARD_REQUIRED": true,
 				"CMAKE_CXX_EXTENSIONS": true,
 				"COMMUNITY_SHADERS": true
-			},
-			"environment": {
-				"CC": "cl",
-				"CXX": "cl"
 			}
 		},
 		{
