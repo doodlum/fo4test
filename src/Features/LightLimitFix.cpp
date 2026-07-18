@@ -150,12 +150,20 @@ namespace
 	// LLF is not wanted while a preview menu is up. See .codex/docs/current-state.md.
 	constexpr std::array kPreNGBSLightingResourceProofBlockingMenus{
 		kPreNGBSLightingResourceProofLockpickingMenu,
+		std::string_view{ "PipboyMenu" },
+		std::string_view{ "TerminalMenu" },
 		std::string_view{ "ExamineMenu" },
-		std::string_view{ "ExamineConfirmMenu" }
+		std::string_view{ "ExamineConfirmMenu" },
+		std::string_view{ "ContainerMenu" },
+		std::string_view{ "BarterMenu" },
+		std::string_view{ "PowerArmorModMenu" }
 	};
 	std::atomic_uint64_t s_preNGBSLightingResourceProofBypassUntilFrame = 0;
 	std::atomic_uint32_t s_preNGBSLightingResourceProofBypassLogs = 0;
 	std::atomic_uint32_t s_preNGBSLightingVisibleConsumerMenuSuppressLogs = 0;
+	std::atomic_uint32_t s_preNGBSLightingPreviewMenuLastReason = 0;
+	std::atomic_bool s_preNGBSLightingPreviewMenuResumePending = false;
+	std::atomic_bool s_preNGBSLightingPreviewMenuConsumerResumePending = false;
 	// Most recent raw shadow-scene bucket light total (pre-truncation). Preview
 	// menus (ExamineMenu etc.) latch the decode onto a world node with ~1000+
 	// lights; after the menu closes the node can stay selected for a few frames
@@ -902,8 +910,10 @@ namespace
 			return {};
 		}
 
-		for (const auto menu : kPreNGBSLightingResourceProofBlockingMenus) {
+		for (std::uint32_t i = 0; i < kPreNGBSLightingResourceProofBlockingMenus.size(); ++i) {
+			const auto menu = kPreNGBSLightingResourceProofBlockingMenus[i];
 			if (ui->GetMenuOpen(menu.data())) {
+				s_preNGBSLightingPreviewMenuLastReason.store(i + 1, std::memory_order_relaxed);
 				return menu;
 			}
 		}
@@ -934,6 +944,15 @@ namespace
 		return static_cast<std::uint32_t>(std::min<std::uint64_t>(total, 0xFFFFFFFFull));
 	}
 
+	std::string_view GetPreNGBSLightingLastPreviewMenuReason()
+	{
+		const auto reason = s_preNGBSLightingPreviewMenuLastReason.load(std::memory_order_relaxed);
+		if (reason > 0 && reason <= kPreNGBSLightingResourceProofBlockingMenus.size()) {
+			return kPreNGBSLightingResourceProofBlockingMenus[reason - 1];
+		}
+		return "unknown-preview-menu";
+	}
+
 	bool ShouldDeferPreNGBSLightingResourceProofForMenu()
 	{
 		auto* runtime = CommunityShaders::Runtime::GetSingleton();
@@ -954,6 +973,7 @@ namespace
 		};
 
 		if (!menuBlock.empty()) {
+			s_preNGBSLightingPreviewMenuResumePending.store(true, std::memory_order_relaxed);
 			// Scoped suppression: hold the clustered Prepass / deferred b3-t35-t37
 			// bind only while a fullscreen preview menu (Lockpicking/Examine) is
 			// actually open. Detection is per-frame and live, so the moment the
@@ -1735,23 +1755,27 @@ namespace
 			bool strictCBUploaded = false;
 			bool strictCBBound = false;
 			bool clusterSRVsBound = false;
+			bool previewMenuSuppressed = false;
 			std::uint32_t requestedLightCount = 0;
 			LightLimitFix* self = nullptr;
 			if (globals::features::lightLimitFix.loaded && a_lightCount > 0) {
 				self = &globals::features::lightLimitFix;
-				requestedLightCount = static_cast<std::uint32_t>(a_lightCount);
-				collected = self->CollectLightsFromPreNGSceneLights(
-					a_pass,
-					requestedLightCount,
-					a_shadowArg > 0 ? static_cast<std::uint32_t>(a_shadowArg) : 0);
-				strict = self->currentStrictLightCount;
-				strictShadowBitMask = self->strictLightDataTemp.ShadowBitMask;
+				previewMenuSuppressed = self->ShouldSuppressPreNGBSLightingVisibleConsumerForMenu();
+				if (!previewMenuSuppressed) {
+					requestedLightCount = static_cast<std::uint32_t>(a_lightCount);
+					collected = self->CollectLightsFromPreNGSceneLights(
+						a_pass,
+						requestedLightCount,
+						a_shadowArg > 0 ? static_cast<std::uint32_t>(a_shadowArg) : 0);
+					strict = self->currentStrictLightCount;
+					strictShadowBitMask = self->strictLightDataTemp.ShadowBitMask;
+				}
 			}
 
 			const auto result = func(a_pixelShader, a_pass, a_transform, a_lightCount, a_shadowArg, a_worldScale, a_unknown);
 			const auto currentPixelShader = ReadPreNGCurrentPixelShaderEntryState();
 
-			if (self) {
+			if (self && !previewMenuSuppressed) {
 				strictCBUploaded = self->UploadPreNGStrictLightDataDiagnostic();
 				strictCBBound = self->BindPreNGStrictLightDataCBToPixelShader(a_pass, requestedLightCount, strictCBUploaded);
 				clusterSRVsBound = self->BindPreNGClusterSRVsToPixelShader(a_pass, requestedLightCount, strictCBBound);
@@ -1772,7 +1796,7 @@ namespace
 
 			if (logThisCall) {
 				logger::info(
-					"[LightLimitFix] PreNG internal point-light hook reached calls={} constantGroup=0x{:X} pass=0x{:X} requested={} collected={} strict={} strictCB={} b3={} t35t37={} bindOrder=post-vanilla shadowArg={} strictShadowMask=0x{:08X} worldScale={:.3f} unknown={} currentPSEntry=0x{:X} currentPSD3D=0x{:X} currentPSId=0x{:X} currentPSEntryReadable={} currentPSSlots(88={},89={},94={},96={})",
+					"[LightLimitFix] PreNG internal point-light hook reached calls={} constantGroup=0x{:X} pass=0x{:X} requested={} collected={} strict={} strictCB={} b3={} t35t37={} previewMenuSuppressed={} bindOrder=post-vanilla shadowArg={} strictShadowMask=0x{:08X} worldScale={:.3f} unknown={} currentPSEntry=0x{:X} currentPSD3D=0x{:X} currentPSId=0x{:X} currentPSEntryReadable={} currentPSSlots(88={},89={},94={},96={})",
 					callIndex,
 					a_pixelShader,
 					reinterpret_cast<std::uintptr_t>(a_pass),
@@ -1782,6 +1806,7 @@ namespace
 					strictCBUploaded ? "uploaded" : "held",
 					strictCBBound ? "bound" : "held",
 					clusterSRVsBound ? "bound" : "held",
+					previewMenuSuppressed,
 					a_shadowArg,
 					strictShadowBitMask,
 					a_worldScale,
@@ -2455,6 +2480,38 @@ void LightLimitFix::RunClusterPrepass()
 	};
 
 #if defined(FALLOUT_PRE_NG)
+	// The consumer fallback alone is insufficient for 3D preview menus: the
+	// clustered compute and b3/t35-t37 bindings otherwise continue to run every
+	// frame behind vanilla BSLighting. Stop the whole LLF workload while the menu
+	// is live, then resume only after the existing post-menu scene-state gate.
+	if (ShouldDeferPreNGBSLightingResourceProofForMenu()) {
+		clearComputeBindings();
+		clearPixelLLFBindings();
+		seenLights.clear();
+		seenThisPass.clear();
+		seenCBHashes.clear();
+		frameLights.clear();
+
+		static std::atomic_uint32_t previewMenuPrepassHoldCount = 0;
+		const auto holdIndex = ++previewMenuPrepassHoldCount;
+		if (holdIndex <= 8 || (holdIndex & (holdIndex - 1)) == 0) {
+			logger::info(
+				"[LightLimitFix] PreNG clustered Prepass held for UI preview holds={} frame={} reason={}; compute and b3/t35-t37 cleared",
+				holdIndex,
+				runtime->GetFrameCount(),
+				GetPreNGBSLightingLastPreviewMenuReason());
+		}
+		return;
+	}
+
+	if (s_preNGBSLightingPreviewMenuResumePending.exchange(false, std::memory_order_relaxed)) {
+		s_preNGBSLightingPreviewMenuConsumerResumePending.store(true, std::memory_order_relaxed);
+		logger::info(
+			"[LightLimitFix] PreNG UI preview closed; clustered Prepass resumed frame={} lastMenu={}; awaiting llfConsumerComplete=true world bind",
+			runtime->GetFrameCount(),
+			GetPreNGBSLightingLastPreviewMenuReason());
+	}
+
 	// Skyrim-parity step 1 (BOSS): no persistent/throttle distinction — the prepass
 	// dispatches build+cull and binds t35-t37/b3 every frame via the plain path
 	// below. If the proof gate says "don't run", clear and bail.
@@ -2862,6 +2919,12 @@ bool LightLimitFix::ShouldSuppressPreNGBSLightingVisibleConsumerForMenu() const
 		return false;
 	}
 
+	// Some preview menus do not execute the world EarlyPrepass/Prepass hooks at
+	// all. Arm recovery from the consumer/point-light suppression path as well,
+	// otherwise the menu can be correctly protected but the post-menu recovery
+	// chain never emits its "resumed" and "recovery complete" proof markers.
+	s_preNGBSLightingPreviewMenuResumePending.store(true, std::memory_order_relaxed);
+
 	const auto suppressIndex = ++s_preNGBSLightingVisibleConsumerMenuSuppressLogs;
 	if (suppressIndex <= 8 || (suppressIndex & (suppressIndex - 1)) == 0) {
 		auto* runtime = CommunityShaders::Runtime::GetSingleton();
@@ -2874,6 +2937,21 @@ bool LightLimitFix::ShouldSuppressPreNGBSLightingVisibleConsumerForMenu() const
 	}
 
 	return true;
+}
+
+void LightLimitFix::NotifyPreNGBSLightingVisibleConsumerResumeComplete()
+{
+	if (!s_preNGBSLightingPreviewMenuConsumerResumePending.exchange(false, std::memory_order_relaxed)) {
+		return;
+	}
+
+	auto* runtime = CommunityShaders::Runtime::GetSingleton();
+	logger::info(
+		"[LightLimitFix] PreNG UI preview LLF recovery complete frame={} lastMenu={} llfConsumerComplete=true strictCB=true clusterSRVs=true lights={} strict={}",
+		runtime ? runtime->GetFrameCount() : 0,
+		GetPreNGBSLightingLastPreviewMenuReason(),
+		currentLightCount,
+		currentStrictLightCount);
 }
 
 void LightLimitFix::NotifyPreNGDFLightLLFConsumerDescriptorObserved(
@@ -3782,6 +3860,9 @@ LightLimitFix::PreNGDFLightResourceBindingState LightLimitFix::BindPreNGBSLighti
 	state.shadowBitMask = strictLightDataTemp.ShadowBitMask;
 
 	if (!ShouldBindPreNGBSLightingSetupGeometryResources()) {
+		return state;
+	}
+	if (ShouldSuppressPreNGBSLightingVisibleConsumerForMenu()) {
 		return state;
 	}
 

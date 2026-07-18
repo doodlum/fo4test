@@ -16,6 +16,7 @@ struct FeatureFrameGeneration : Feature
 	{
 		bool frameGenerationMode = true;
 		bool frameLimitMode = true;
+		float realFrameRateLimit = 0.0f;
 		int frameGenerationBackend = 1;
 	} settings;
 

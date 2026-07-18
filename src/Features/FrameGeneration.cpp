@@ -68,20 +68,23 @@ void FeatureFrameGeneration::LoadSettings()
 
 		settings.frameGenerationMode = ini.GetBoolValue("Settings", "bFrameGenerationMode", settings.frameGenerationMode);
 		settings.frameLimitMode = ini.GetBoolValue("Settings", "bFrameLimitMode", settings.frameLimitMode);
+		settings.realFrameRateLimit = static_cast<float>(ini.GetDoubleValue("Settings", "fRealFrameRateLimit", settings.realFrameRateLimit));
 		settings.frameGenerationBackend = static_cast<int>(ini.GetLongValue("Settings", "iFrameGenerationBackend", Upscaling::kFrameGenerationBackendDLSS));
 	}
 
 	// Sync to shared Upscaling singleton
 	upscaling->settings.frameGenerationMode = settings.frameGenerationMode;
 	upscaling->settings.frameLimitMode = settings.frameLimitMode;
+	upscaling->settings.realFrameRateLimit = settings.realFrameRateLimit;
 	upscaling->settings.frameGenerationBackend = settings.frameGenerationBackend;
 	upscaling->ApplyRuntimeFallbacks();
 	settings.frameGenerationMode = upscaling->settings.frameGenerationMode;
 	settings.frameLimitMode = upscaling->settings.frameLimitMode;
+	settings.realFrameRateLimit = upscaling->settings.realFrameRateLimit;
 	settings.frameGenerationBackend = upscaling->settings.frameGenerationBackend;
 
-	logger::info("[Feature::FrameGeneration] Settings (enabled={}, limiter={}, backend={})",
-		settings.frameGenerationMode, settings.frameLimitMode, settings.frameGenerationBackend);
+	logger::info("[Feature::FrameGeneration] Settings (enabled={}, limiter={}, realFPS={}, backend={})",
+		settings.frameGenerationMode, settings.frameLimitMode, settings.realFrameRateLimit, settings.frameGenerationBackend);
 }
 
 void FeatureFrameGeneration::SaveSettings()
@@ -89,10 +92,12 @@ void FeatureFrameGeneration::SaveSettings()
 	if (upscaling) {
 		upscaling->settings.frameGenerationMode = settings.frameGenerationMode;
 		upscaling->settings.frameLimitMode = settings.frameLimitMode;
+		upscaling->settings.realFrameRateLimit = settings.realFrameRateLimit;
 		upscaling->settings.frameGenerationBackend = settings.frameGenerationBackend;
 		upscaling->ApplyRuntimeFallbacks();
 		settings.frameGenerationMode = upscaling->settings.frameGenerationMode;
 		settings.frameLimitMode = upscaling->settings.frameLimitMode;
+		settings.realFrameRateLimit = upscaling->settings.realFrameRateLimit;
 		settings.frameGenerationBackend = upscaling->settings.frameGenerationBackend;
 	}
 
@@ -106,6 +111,7 @@ void FeatureFrameGeneration::SaveSettings()
 
 	ini.SetBoolValue("Settings", "bFrameGenerationMode", settings.frameGenerationMode);
 	ini.SetBoolValue("Settings", "bFrameLimitMode", settings.frameLimitMode);
+	ini.SetDoubleValue("Settings", "fRealFrameRateLimit", settings.realFrameRateLimit);
 	ini.SetLongValue("Settings", "iFrameGenerationBackend", settings.frameGenerationBackend);
 
 	std::filesystem::create_directories(GetSettingsPath().parent_path(), ec);
@@ -114,6 +120,7 @@ void FeatureFrameGeneration::SaveSettings()
 	if (upscaling) {
 		upscaling->settings.frameGenerationMode = settings.frameGenerationMode;
 		upscaling->settings.frameLimitMode = settings.frameLimitMode;
+		upscaling->settings.realFrameRateLimit = settings.realFrameRateLimit;
 		upscaling->settings.frameGenerationBackend = settings.frameGenerationBackend;
 	}
 }
@@ -132,6 +139,10 @@ void FeatureFrameGeneration::DrawSettings()
 		changed |= ImGui::Checkbox("Enabled", &settings.frameGenerationMode) ? 1 : 0;
 		ImGui::SameLine();
 		changed |= ImGui::Checkbox("Frame Limit", &settings.frameLimitMode) ? 1 : 0;
+		changed |= ImGui::InputFloat("Real Rendered FPS", &settings.realFrameRateLimit, 1.0f, 10.0f, "%.1f") ? 1 : 0;
+		if (ImGui::IsItemHovered()) {
+			ImGui::SetTooltip("0 = automatic policy. Verified untied physics is unlimited; otherwise the safety cap is 60 FPS. Positive values are clamped to 30-1000 FPS.");
+		}
 
 		if (upscaling) {
 			upscaling->settings.frameGenerationBackend = settings.frameGenerationBackend;
@@ -152,9 +163,11 @@ void FeatureFrameGeneration::DrawSettings()
 		if (changed && upscaling) {
 			upscaling->settings.frameGenerationMode = settings.frameGenerationMode;
 			upscaling->settings.frameLimitMode = settings.frameLimitMode;
+			upscaling->settings.realFrameRateLimit = settings.realFrameRateLimit;
 			upscaling->settings.frameGenerationBackend = settings.frameGenerationBackend;
 			upscaling->ApplyRuntimeFallbacks();
 			settings.frameGenerationBackend = upscaling->settings.frameGenerationBackend;
+			settings.realFrameRateLimit = upscaling->settings.realFrameRateLimit;
 		}
 	}
 }

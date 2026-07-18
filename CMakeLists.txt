@@ -76,6 +76,7 @@ add_library(Core OBJECT
     src/DX12SwapChain.h
     src/FidelityFX.cpp
     src/FidelityFX.h
+    src/PresentationMenuPolicy.h
     src/Streamline.cpp
     src/Streamline.h
     src/Upscaler.cpp

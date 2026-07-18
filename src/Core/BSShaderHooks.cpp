@@ -1846,6 +1846,9 @@ namespace CommunityShaders
 		}
 
 		logBind("bound", "llf-consumer-current-vs-bound", vertexEntry, pixelEntry, consumerPSD3D, bindIndex, consumerComplete);
+		if (consumerComplete) {
+			llfFeature->NotifyPreNGBSLightingVisibleConsumerResumeComplete();
+		}
 
 		if (consumerComplete &&
 			!s_preNGBSLightingLLFConsumerBindProofCompleteLogged.exchange(true, std::memory_order_relaxed)) {

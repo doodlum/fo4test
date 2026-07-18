@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <filesystem>
+#include <format>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -131,6 +133,31 @@ namespace
 			logger::warn("[Upscaler] {}={} is out of range, clamping to {}", settingName, value, clamped);
 		}
 		return clamped;
+	}
+
+	float NormalizeRealFrameRateLimit(float value, const char* settingName)
+	{
+		if (!std::isfinite(value) || value < 0.0f) {
+			logger::warn("[FrameGen] {}={} is invalid, using automatic policy", settingName, value);
+			return 0.0f;
+		}
+		if (value == 0.0f)
+			return 0.0f;
+
+		const float clamped = std::clamp(value, 30.0f, 1000.0f);
+		if (clamped != value) {
+			logger::warn("[FrameGen] {}={} is out of range, clamping to {}", settingName, value, clamped);
+		}
+		return clamped;
+	}
+
+	std::string FormatRealFrameRate(float value)
+	{
+		if (value == 0.0f)
+			return "0";
+		if (std::floor(value) == value)
+			return std::format("{:.0f}", value);
+		return std::format("{:.3f}", value);
 	}
 
 	std::optional<std::string> GetEnvironmentValue(const char* name)
@@ -364,6 +391,9 @@ void Upscaling::LoadFrameGenerationSettings()
 
 	settings.frameGenerationMode = ini.GetBoolValue("Settings", "bFrameGenerationMode", true);
 	settings.frameLimitMode = ini.GetBoolValue("Settings", "bFrameLimitMode", true);
+	settings.realFrameRateLimit = NormalizeRealFrameRateLimit(
+		static_cast<float>(ini.GetDoubleValue("Settings", "fRealFrameRateLimit", settings.realFrameRateLimit)),
+		"fRealFrameRateLimit");
 	settings.frameGenerationBackend = ClampIntSetting(
 		static_cast<int>(ini.GetLongValue("Settings", "iFrameGenerationBackend", kFrameGenerationBackendDLSS)),
 		0,
@@ -461,9 +491,10 @@ void Upscaling::LoadSettings()
 	ApplyRuntimeFallbacks();
 
 	logger::info(
-		"[Settings] FrameGen(enabled={}, limiter={}, backend={}), Upscaler(method={}, quality={}, dlssPreset={}), Reflex(mode={}), Debug(enabled={}, streamlineLogLevel={}, frames={})",
+		"[Settings] FrameGen(enabled={}, limiter={}, realFPS={}, backend={}), Upscaler(method={}, quality={}, dlssPreset={}), Reflex(mode={}), Debug(enabled={}, streamlineLogLevel={}, frames={})",
 		settings.frameGenerationMode,
 		settings.frameLimitMode,
+		settings.realFrameRateLimit,
 		settings.frameGenerationBackend,
 		settings.upscaleMethodPreference,
 		settings.qualityMode,
@@ -476,6 +507,8 @@ void Upscaling::LoadSettings()
 
 void Upscaling::ApplyRuntimeFallbacks()
 {
+	settings.realFrameRateLimit = NormalizeRealFrameRateLimit(settings.realFrameRateLimit, "fRealFrameRateLimit");
+
 	if (settings.frameGenerationBackend != kFrameGenerationBackendDLSS &&
 		settings.frameGenerationBackend != kFrameGenerationBackendFSR) {
 		settings.frameGenerationBackend = kFrameGenerationBackendDLSS;
@@ -592,9 +625,59 @@ bool Upscaling::UsesReflex() const
 
 void Upscaling::PostPostLoad()
 {
-	highFPSPhysicsFixLoaded = GetModuleHandleA("Data\\F4SE\\Plugins\\HighFPSPhysicsFix.dll") != nullptr;
+	highFPSPhysicsFixLoaded = GetModuleHandleW(L"HighFPSPhysicsFix.dll") != nullptr;
+	highFPSPhysicsFixIniReadable = false;
+	highFPSPhysicsFixUntiesSpeed = false;
+	highFPSPhysicsFixOwnLimiterActive = false;
+	highFPSPhysicsFixInGameLimit = 0.0f;
+	highFPSPhysicsFixExteriorLimit = 0.0f;
+	highFPSPhysicsFixInteriorLimit = 0.0f;
 
-	logger::debug("[FrameGen] HighFPSPhysicsFix.dll loaded: {}", highFPSPhysicsFixLoaded);
+	if (highFPSPhysicsFixLoaded) {
+		constexpr auto iniPath = "Data\\F4SE\\Plugins\\HighFPSPhysicsFix.ini";
+		CSimpleIniA ini;
+		ini.SetUnicode();
+
+		std::error_code ec;
+		if (!std::filesystem::exists(iniPath, ec)) {
+			logger::warn("[FrameGen] High FPS Physics Fix INI is not VFS-visible at {}; using conservative limiter policy", iniPath);
+		} else if (ini.LoadFile(iniPath) < 0) {
+			logger::warn("[FrameGen] Failed to read {}; using conservative limiter policy", iniPath);
+		} else {
+			const bool hasRequiredSettings =
+				ini.GetValue("Main", "UntieSpeedFromFPS") &&
+				ini.GetValue("Limiter", "InGameFPS") &&
+				ini.GetValue("Limiter", "ExteriorFPS") &&
+				ini.GetValue("Limiter", "InteriorFPS");
+			if (!hasRequiredSettings) {
+				logger::warn("[FrameGen] {} is missing required physics/limiter keys; using conservative limiter policy", iniPath);
+			} else {
+				highFPSPhysicsFixUntiesSpeed = ini.GetBoolValue("Main", "UntieSpeedFromFPS", false);
+				highFPSPhysicsFixInGameLimit = static_cast<float>(ini.GetDoubleValue("Limiter", "InGameFPS", 0.0));
+				highFPSPhysicsFixExteriorLimit = static_cast<float>(ini.GetDoubleValue("Limiter", "ExteriorFPS", 0.0));
+				highFPSPhysicsFixInteriorLimit = static_cast<float>(ini.GetDoubleValue("Limiter", "InteriorFPS", 0.0));
+
+				highFPSPhysicsFixIniReadable =
+					std::isfinite(highFPSPhysicsFixInGameLimit) &&
+					std::isfinite(highFPSPhysicsFixExteriorLimit) &&
+					std::isfinite(highFPSPhysicsFixInteriorLimit);
+				if (!highFPSPhysicsFixIniReadable) {
+					logger::warn("[FrameGen] {} contains non-finite limiter values; using conservative limiter policy", iniPath);
+					highFPSPhysicsFixUntiesSpeed = false;
+					highFPSPhysicsFixInGameLimit = 0.0f;
+					highFPSPhysicsFixExteriorLimit = 0.0f;
+					highFPSPhysicsFixInteriorLimit = 0.0f;
+				}
+			}
+		}
+	}
+
+	highFPSPhysicsFixOwnLimiterActive =
+		highFPSPhysicsFixLoaded && highFPSPhysicsFixIniReadable &&
+		(highFPSPhysicsFixInGameLimit != 0.0f ||
+		 highFPSPhysicsFixExteriorLimit != 0.0f ||
+		 highFPSPhysicsFixInteriorLimit != 0.0f);
+	ResolveFrameLimiterPolicy(true);
 
 	renderBackendEnabled = pluginMode == PluginMode::kUpscaler &&
 		((UsesDLSSUpscaling() && Streamline::GetSingleton()->featureDLSS) ||
@@ -1227,49 +1310,112 @@ void Upscaling::TimerSleepQPC(int64_t targetQPC)
 	} while (currentQPC.QuadPart < targetQPC);
 }
 
-void Upscaling::FrameLimiter(bool a_useFrameGeneration)
+void Upscaling::ResolveFrameLimiterPolicy(bool a_startup)
 {
-	static LARGE_INTEGER lastFrame = {};
+	settings.realFrameRateLimit = NormalizeRealFrameRateLimit(settings.realFrameRateLimit, "fRealFrameRateLimit");
+	const bool physicsUntiedVerified =
+		highFPSPhysicsFixLoaded && highFPSPhysicsFixIniReadable && highFPSPhysicsFixUntiesSpeed;
 
-	const bool frameGenActive = d3d12Interop;
-	if (frameGenActive && settings.frameLimitMode) {
-
-		// Stick within VRR bounds
-		double bestRefreshRate = refreshRate - (refreshRate * refreshRate) / 3600.0;
-
-		LARGE_INTEGER qpf;
-		QueryPerformanceFrequency(&qpf);
-
-		int64_t targetFrameTicks = int64_t(double(qpf.QuadPart) / (bestRefreshRate * (a_useFrameGeneration ? 0.5 : 1.0)));
-
-		LARGE_INTEGER timeNow;
-		QueryPerformanceCounter(&timeNow);
-		int64_t delta = timeNow.QuadPart - lastFrame.QuadPart;
-		if (delta < targetFrameTicks) {
-			TimerSleepQPC(lastFrame.QuadPart + targetFrameTicks);
+	FrameLimiterPolicy nextPolicy = FrameLimiterPolicy::kDisabled;
+	float nextLimit = 0.0f;
+	const char* reason = "user-override";
+	if (settings.frameLimitMode) {
+		if (physicsUntiedVerified && highFPSPhysicsFixOwnLimiterActive) {
+			nextPolicy = FrameLimiterPolicy::kExternal;
+			reason = "HighFPSPhysicsFix-own-limiter";
+		} else if (physicsUntiedVerified && settings.realFrameRateLimit == 0.0f) {
+			nextPolicy = FrameLimiterPolicy::kUnlimited;
+			reason = "physics-untied";
+		} else if (physicsUntiedVerified) {
+			nextPolicy = FrameLimiterPolicy::kLimited;
+			nextLimit = settings.realFrameRateLimit;
+			reason = "user-real-fps";
+		} else {
+			nextPolicy = FrameLimiterPolicy::kLimited;
+			nextLimit = settings.realFrameRateLimit > 0.0f ? std::min(settings.realFrameRateLimit, 60.0f) : 60.0f;
+			reason = "physics-unverified-conservative";
 		}
 	}
 
-	QueryPerformanceCounter(&lastFrame);
+	const bool changed =
+		!frameLimiterPolicyInitialized ||
+		frameLimiterPolicy != nextPolicy ||
+		resolvedRealFrameRateLimit != nextLimit ||
+		frameLimiterConfiguredRealFrameRateLimit != settings.realFrameRateLimit;
+	if (!a_startup && !changed)
+		return;
+
+	frameLimiterPolicy = nextPolicy;
+	resolvedRealFrameRateLimit = nextLimit;
+	frameLimiterConfiguredRealFrameRateLimit = settings.realFrameRateLimit;
+	frameLimiterPolicyInitialized = true;
+
+	const char* resolvedMode = "disabled";
+	std::string resolvedValue;
+	switch (frameLimiterPolicy) {
+	case FrameLimiterPolicy::kExternal:
+		resolvedMode = "held";
+		break;
+	case FrameLimiterPolicy::kUnlimited:
+		resolvedMode = "unlimited";
+		break;
+	case FrameLimiterPolicy::kLimited:
+		resolvedValue = FormatRealFrameRate(resolvedRealFrameRateLimit);
+		resolvedMode = resolvedValue.c_str();
+		break;
+	default:
+		break;
+	}
+
+	logger::info(
+		"[FrameGen] limiter policy physicsFixLoaded={} iniReadable={} untie={} externalLimiter={} configuredRealFPS={} resolved={} reason={} inGame={} exterior={} interior={}",
+		highFPSPhysicsFixLoaded,
+		highFPSPhysicsFixIniReadable,
+		highFPSPhysicsFixUntiesSpeed,
+		highFPSPhysicsFixOwnLimiterActive,
+		FormatRealFrameRate(settings.realFrameRateLimit),
+		resolvedMode,
+		reason,
+		FormatRealFrameRate(highFPSPhysicsFixInGameLimit),
+		FormatRealFrameRate(highFPSPhysicsFixExteriorLimit),
+		FormatRealFrameRate(highFPSPhysicsFixInteriorLimit));
+
+	if (frameLimiterPolicy == FrameLimiterPolicy::kDisabled && !physicsUntiedVerified) {
+		logger::warn("[FrameGen] bFrameLimitMode=false while physics untie is unverified; game speed safety is user-controlled");
+	}
 }
 
-void Upscaling::GameFrameLimiter()
+void Upscaling::FrameLimiter(std::uint32_t a_syncInterval)
 {
-	double bestRefreshRate = 60.0f;
+	ResolveFrameLimiterPolicy(false);
 
-	LARGE_INTEGER qpf;
-	QueryPerformanceFrequency(&qpf);
-
-	int64_t targetFrameTicks = int64_t(double(qpf.QuadPart) / bestRefreshRate);
+	const bool vsyncHeld = a_syncInterval != 0;
+	if (vsyncHeld != frameLimiterVSyncHeld) {
+		if (vsyncHeld) {
+			logger::info("[FrameGen] limiter held reason=vsync-present syncInterval={}", a_syncInterval);
+		} else {
+			logger::info("[FrameGen] limiter released reason=vsync-present syncInterval=0");
+		}
+		frameLimiterVSyncHeld = vsyncHeld;
+	}
 
 	static LARGE_INTEGER lastFrame = {};
 	LARGE_INTEGER timeNow;
 	QueryPerformanceCounter(&timeNow);
-	int64_t delta = timeNow.QuadPart - lastFrame.QuadPart;
-	if (delta < targetFrameTicks) {
+	if (vsyncHeld || frameLimiterPolicy != FrameLimiterPolicy::kLimited || resolvedRealFrameRateLimit <= 0.0f) {
+		lastFrame = timeNow;
+		return;
+	}
+
+	LARGE_INTEGER qpf;
+	QueryPerformanceFrequency(&qpf);
+	const int64_t targetFrameTicks =
+		static_cast<int64_t>(static_cast<double>(qpf.QuadPart) / static_cast<double>(resolvedRealFrameRateLimit));
+	const int64_t delta = timeNow.QuadPart - lastFrame.QuadPart;
+	if (lastFrame.QuadPart != 0 && delta < targetFrameTicks) {
 		TimerSleepQPC(lastFrame.QuadPart + targetFrameTicks);
 	}
-	QueryPerformanceCounter(&lastFrame);	
+	QueryPerformanceCounter(&lastFrame);
 }
 
 /*

@@ -16,6 +16,7 @@
 #include "Diagnostics/HangTrace.h"
 #include "DX12SwapChain.h"
 #include "FidelityFX.h"
+#include "PresentationMenuPolicy.h"
 #include "Streamline.h"
 
 extern bool enbLoaded;
@@ -181,9 +182,7 @@ namespace
 	{
 		fo4cs::Diagnostics::WriteHangTraceLine("RestoreNativeRenderState:begin");
 		auto* upscaling = Upscaling::GetSingleton();
-		upscaling->upscaleMethodNoMenu = Upscaling::UpscaleMethod::kDisabled;
-		upscaling->upscaleMethod = Upscaling::UpscaleMethod::kDisabled;
-		upscaling->postLoadingSkipUpscale = true;
+		upscaling->jitter = { 0.0f, 0.0f };
 
 		if (a_gameViewport) {
 			fo4cs::Diagnostics::WriteHangTraceLine("RestoreNativeRenderState:viewport-reset:begin");
@@ -209,6 +208,18 @@ namespace
 		fo4cs::Diagnostics::WriteHangTraceLine("RestoreNativeRenderState:end");
 	}
 
+	const char* GetUpscaleMethodName(Upscaling::UpscaleMethod a_method)
+	{
+		switch (a_method) {
+		case Upscaling::UpscaleMethod::kFSR:
+			return "FSR";
+		case Upscaling::UpscaleMethod::kDLSS:
+			return "DLSS";
+		default:
+			return "disabled";
+		}
+	}
+
 }
 
 
@@ -230,10 +241,8 @@ Upscaling::UpscaleMethod Upscaling::GetUpscaleMethod(bool a_checkMenu) const
 		return UpscaleMethod::kDisabled;
 
 	if (a_checkMenu) {
-		if (auto ui = RE::UI::GetSingleton()) {
-			if (ui->GetMenuOpen("ExamineMenu") || ui->GetMenuOpen("PipboyMenu") || ui->GetMenuOpen("TerminalMenu"))
-				return UpscaleMethod::kDisabled;
-		}
+		if (fo4cs::PresentationMenuPolicy::GetOpenNativePresentationMenu())
+			return UpscaleMethod::kDisabled;
 	}
 
 	auto method = GetPreferredUpscaleMethod();
@@ -872,14 +881,28 @@ void Upscaling::UpdateUpscaling()
 	}
 
 	fo4cs::Diagnostics::WriteHangTraceLine("UpdateUpscaling:GetUpscaleMethod:begin");
+	const auto openNativePresentationMenu = fo4cs::PresentationMenuPolicy::GetOpenNativePresentationMenu();
+	const bool useNativePresentation = openNativePresentationMenu.has_value();
+	const bool enteringNativePresentation = useNativePresentation && !nativePresentationModeActive;
+	const bool exitingNativePresentation = !useNativePresentation && nativePresentationModeActive;
+
 	upscaleMethodNoMenu = GetUpscaleMethod(false);
-	upscaleMethod = GetUpscaleMethod(true);
+	upscaleMethod = useNativePresentation ? UpscaleMethod::kDisabled : GetUpscaleMethod(true);
+	if (enteringNativePresentation) {
+		nativePresentationModeActive = true;
+		nativePresentationMenu = *openNativePresentationMenu;
+		postLoadingSkipUpscale = true;
+	} else if (exitingNativePresentation) {
+		nativePresentationModeActive = false;
+		postLoadingSkipUpscale = true;
+	}
 	fo4cs::Diagnostics::WriteHangTraceLine("UpdateUpscaling:GetUpscaleMethod:end");
 
-
-	float resolutionScale = upscaleMethodNoMenu == UpscaleMethod::kDisabled ? 1.0f : 1.0f / GetUpscaleRatio(settings.qualityMode);
+	const float configuredResolutionScale =
+		upscaleMethodNoMenu == UpscaleMethod::kDisabled ? 1.0f : 1.0f / GetUpscaleRatio(settings.qualityMode);
+	float resolutionScale = useNativePresentation ? 1.0f : configuredResolutionScale;
 	float currentMipBias = std::log2f(resolutionScale);
-	if (upscaleMethodNoMenu != UpscaleMethod::kDisabled)
+	if (!useNativePresentation && upscaleMethodNoMenu != UpscaleMethod::kDisabled)
 		currentMipBias -= 1.0f;
 
 	fo4cs::Diagnostics::WriteHangTraceLine("UpdateUpscaling:UpdateSamplerStates:begin");
@@ -892,9 +915,6 @@ void Upscaling::UpdateUpscaling()
 	UpdateGameSettings();
 	fo4cs::Diagnostics::WriteHangTraceLine("UpdateUpscaling:UpdateGameSettings:end");
 
-	if (upscaleMethod == UpscaleMethod::kDisabled)
-		resolutionScale = 1.0f;
-
 	if (upscaleMethod != UpscaleMethod::kDisabled) {
 		const auto width = screenWidth;
 		const auto height = screenHeight;
@@ -904,19 +924,45 @@ void Upscaling::UpdateUpscaling()
 		GetJitterOffset(&jitter.x, &jitter.y, gameViewport->frameCount, phaseCount);
 		gameViewport->offsetX = 2.0f * -jitter.x / static_cast<float>(renderWidth);
 		gameViewport->offsetY = 2.0f * jitter.y / static_cast<float>(renderHeight);
+	} else {
+		jitter = { 0.0f, 0.0f };
+		gameViewport->offsetX = 0.0f;
+		gameViewport->offsetY = 0.0f;
 	}
 
 	renderTargetManager->dynamicWidthRatio = resolutionScale;
 	renderTargetManager->dynamicHeightRatio = resolutionScale;
 	renderTargetManager->isDynamicResolutionCurrentlyActivated = renderTargetManager->dynamicWidthRatio != 1.0f || renderTargetManager->dynamicHeightRatio != 1.0f;
 
-	fo4cs::Diagnostics::WriteHangTraceLine("UpdateUpscaling:CheckResources:begin");
-	CheckResources();
-	fo4cs::Diagnostics::WriteHangTraceLine("UpdateUpscaling:CheckResources:end");
+	if (!nativePresentationModeActive) {
+		fo4cs::Diagnostics::WriteHangTraceLine("UpdateUpscaling:CheckResources:begin");
+		CheckResources();
+		fo4cs::Diagnostics::WriteHangTraceLine("UpdateUpscaling:CheckResources:end");
+	}
 	if (!renderBackendEnabled || upscaleMethodNoMenu == UpscaleMethod::kDisabled) {
 		fo4cs::Diagnostics::WriteHangTraceLine("UpdateUpscaling:RestoreNativeRenderState:disabled:begin");
 		RestoreNativeRenderState(renderTargetManager, gameViewport);
 		fo4cs::Diagnostics::WriteHangTraceLine("UpdateUpscaling:RestoreNativeRenderState:disabled:end");
+	}
+
+	if (enteringNativePresentation) {
+		logger::info(
+			"[Presentation] native UI mode entered menu={} configuredUpscale={} effectiveUpscale=disabled backendReady={} interop={} frameGen=held taa=held scale=1.000 jitter=0",
+			nativePresentationMenu,
+			GetUpscaleMethodName(GetPreferredUpscaleMethod()),
+			renderBackendEnabled,
+			d3d12Interop);
+	} else if (exitingNativePresentation) {
+		logger::info(
+			"[Presentation] native UI mode exited menu={} configuredUpscale={} effectiveUpscale={} backendReady={} interop={} taa=restored scale={:.3f} frameGenSettle={}",
+			nativePresentationMenu,
+			GetUpscaleMethodName(GetPreferredUpscaleMethod()),
+			GetUpscaleMethodName(upscaleMethodNoMenu),
+			renderBackendEnabled,
+			d3d12Interop,
+			configuredResolutionScale,
+			fo4cs::PresentationMenuPolicy::kFrameGenerationPostMenuSettlePresents);
+		nativePresentationMenu = {};
 	}
 	fo4cs::Diagnostics::WriteHangTraceLine("UpdateUpscaling:exit");
 }
@@ -1230,7 +1276,10 @@ namespace
 	{
 		static bool thunk(void* This)
 		{
-			return Upscaling::GetSingleton()->upscaleMethod == Upscaling::UpscaleMethod::kDisabled && func(This);
+			auto* upscaling = Upscaling::GetSingleton();
+			return !upscaling->nativePresentationModeActive &&
+			       upscaling->upscaleMethod == Upscaling::UpscaleMethod::kDisabled &&
+			       func(This);
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 	};

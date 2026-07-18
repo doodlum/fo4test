@@ -94,6 +94,10 @@ namespace FGOverlay
 			changed |= ImGui::Checkbox("Enabled", &s->frameGenerationMode) ? 1 : 0;
 			ImGui::SameLine();
 			changed |= ImGui::Checkbox("Frame Limit", &s->frameLimitMode) ? 1 : 0;
+			changed |= ImGui::InputFloat("Real Rendered FPS", &s->realFrameRateLimit, 1.0f, 10.0f, "%.1f") ? 1 : 0;
+			if (ImGui::IsItemHovered()) {
+				ImGui::SetTooltip("0 = automatic policy; positive values limit real rendered FPS (30-1000).");
+			}
 
 			DrawDLSSRuntimeNotice();
 			changed |= DrawFrameGenerationBackendCombo(s->frameGenerationBackend);
@@ -112,6 +116,7 @@ namespace FGOverlay
 		ini.SetUnicode();
 		ini.SetValue("Settings", "bFrameGenerationMode", s.frameGenerationMode ? "true" : "false");
 		ini.SetValue("Settings", "bFrameLimitMode", s.frameLimitMode ? "true" : "false");
+		ini.SetDoubleValue("Settings", "fRealFrameRateLimit", s.realFrameRateLimit);
 		ini.SetValue("Settings", "iFrameGenerationBackend", std::to_string(s.frameGenerationBackend).c_str());
 		std::error_code ec;
 		std::filesystem::create_directories("Data\\F4SE\\Plugins\\FrameGen", ec);

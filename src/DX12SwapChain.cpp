@@ -13,6 +13,7 @@
 #include <directx/d3dx12.h>
 
 #include "FidelityFX.h"
+#include "PresentationMenuPolicy.h"
 #include "Streamline.h"
 #include "Upscaler.h"
 
@@ -248,19 +249,6 @@ struct FrameGenerationBlock
     constexpr bool operator==(const FrameGenerationBlock &) const = default;
 };
 
-// VATS, HUD, dialogue, and workshop remain FrameGen-enabled as gameplay surfaces.
-constexpr std::array kFrameGenerationBlockingMenus{
-    std::string_view{"MainMenu"},           std::string_view{"LoadingMenu"},
-    std::string_view{"FaderMenu"},          std::string_view{"PauseMenu"},
-    std::string_view{"PipboyMenu"},         std::string_view{"TerminalMenu"},
-    std::string_view{"ExamineMenu"},        std::string_view{"ExamineConfirmMenu"},
-    std::string_view{"ContainerMenu"},      std::string_view{"BarterMenu"},
-    std::string_view{"LockpickingMenu"},    std::string_view{"MessageBoxMenu"},
-    std::string_view{"SitWaitMenu"},        std::string_view{"HolotapeMenu"},
-    std::string_view{"PipboyHolotapeMenu"}, std::string_view{"TerminalHolotapeMenu"},
-    std::string_view{"PowerArmorModMenu"}};
-constexpr std::uint32_t kFrameGenerationPostMenuSettlePresents = 120;
-
 const char *GetFrameGenerationBlockReasonName(FrameGenerationBlockReason reason)
 {
     switch (reason)
@@ -286,9 +274,8 @@ std::optional<FrameGenerationBlock> GetFrameGenerationUIBlock()
         return FrameGenerationBlock{FrameGenerationBlockReason::kUIUnavailable, "UI"};
     }
 
-    const auto openMenu = std::ranges::find_if(kFrameGenerationBlockingMenus,
-                                               [ui](std::string_view menu) { return ui->GetMenuOpen(menu.data()); });
-    if (openMenu != kFrameGenerationBlockingMenus.end())
+    const auto openMenu = fo4cs::PresentationMenuPolicy::GetOpenFrameGenerationBlockingMenu();
+    if (openMenu)
     {
         return FrameGenerationBlock{FrameGenerationBlockReason::kBlockingMenuOpen, *openMenu};
     }
@@ -664,7 +651,8 @@ HRESULT DX12SwapChain::Present(UINT SyncInterval, UINT Flags)
             if (frameGenerationUIBlock &&
                 frameGenerationUIBlock->reason == FrameGenerationBlockReason::kBlockingMenuOpen)
             {
-                postMenuSettlePresents = kFrameGenerationPostMenuSettlePresents;
+                postMenuSettlePresents =
+                    fo4cs::PresentationMenuPolicy::kFrameGenerationPostMenuSettlePresents;
                 postMenuSettleDetail = frameGenerationUIBlock->detail;
             }
             else if (postMenuSettlePresents > 0)
@@ -789,16 +777,9 @@ HRESULT DX12SwapChain::Present(UINT SyncInterval, UINT Flags)
             upscaling->Reset();
         }
 
-        trace("game-frame-limiter");
-        if (upscaling->pluginMode != Upscaling::PluginMode::kReflex && upscaling->settings.frameLimitMode &&
-            !upscaling->highFPSPhysicsFixLoaded)
-        {
-            upscaling->GameFrameLimiter();
-        }
-
         trace("frame-limiter");
-        if (upscaling->pluginMode != Upscaling::PluginMode::kReflex && SyncInterval == 0)
-            upscaling->FrameLimiter(useFrameGenerationThisFrame);
+        if (upscaling->pluginMode != Upscaling::PluginMode::kReflex)
+            upscaling->FrameLimiter(SyncInterval);
 
         if (traceFrame)
         {

@@ -5,6 +5,7 @@
 #include <array>
 #include <cstdint>
 #include <memory>
+#include <string_view>
 #include <vector>
 
 #include "SimpleIni.h"
@@ -22,6 +23,7 @@ public:
 	{
 		bool frameGenerationMode = 1;
 		bool frameLimitMode = 1;
+		float realFrameRateLimit = 0.0f;
 		int frameGenerationBackend = 1;
 		int reflexMode = 1;
 		bool reflexSleepMode = true;
@@ -47,6 +49,14 @@ public:
 		kDLSS = 2
 	};
 
+	enum class FrameLimiterPolicy
+	{
+		kDisabled,
+		kExternal,
+		kUnlimited,
+		kLimited
+	};
+
 	static constexpr int kFrameGenerationBackendDLSS = 1;
 	static constexpr int kFrameGenerationBackendFSR = 2;
 
@@ -55,6 +65,17 @@ public:
 	PluginMode pluginMode = PluginMode::kFrameGen;
 	bool renderBackendEnabled = false;
 	bool highFPSPhysicsFixLoaded = false;
+	bool highFPSPhysicsFixIniReadable = false;
+	bool highFPSPhysicsFixUntiesSpeed = false;
+	bool highFPSPhysicsFixOwnLimiterActive = false;
+	float highFPSPhysicsFixInGameLimit = 0.0f;
+	float highFPSPhysicsFixExteriorLimit = 0.0f;
+	float highFPSPhysicsFixInteriorLimit = 0.0f;
+	FrameLimiterPolicy frameLimiterPolicy = FrameLimiterPolicy::kDisabled;
+	float resolvedRealFrameRateLimit = 0.0f;
+	float frameLimiterConfiguredRealFrameRateLimit = 0.0f;
+	bool frameLimiterPolicyInitialized = false;
+	bool frameLimiterVSyncHeld = false;
 	bool debugTraceCurrentPresent = false;
 
 	bool d3d12Interop = false;
@@ -84,6 +105,8 @@ public:
 
 	bool setupBuffers = false;
 	bool postLoadingSkipUpscale = false;
+	bool nativePresentationModeActive = false;
+	std::string_view nativePresentationMenu{};
 	std::array<bool, 2> hudLessFrameValid{};
 	std::array<std::uint64_t, 2> hudLessFrameIDs{};
 
@@ -108,9 +131,8 @@ public:
 
 	static void TimerSleepQPC(int64_t targetQPC);
 
-	void FrameLimiter(bool a_useFrameGeneration);
-
-	void GameFrameLimiter();
+	void ResolveFrameLimiterPolicy(bool a_startup);
+	void FrameLimiter(std::uint32_t a_syncInterval);
 
 	static double GetRefreshRate(HWND a_window);
 
