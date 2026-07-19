@@ -12,28 +12,70 @@
 #include <d3d11.h>
 #include <dxgi.h>
 
+#include <atomic>
+
 namespace
 {
-	ID3D11Device* g_device = nullptr;
+	std::atomic<ID3D11Device*> g_device{ nullptr };
+	std::atomic_bool g_deviceReady{ false };
+#if defined(FALLOUT_POST_AE)
+	std::atomic_bool g_existingRendererRecoveryAttempted{ false };
+#endif
 
 	void OnD3D11DeviceCreated(ID3D11Device* a_device)
 	{
 		fo4cs::Diagnostics::WriteHangTraceLine("D3D11DeviceCreated:enter");
-		if (!a_device || g_device) {
+		if (!a_device) {
 			fo4cs::Diagnostics::WriteHangTraceLine("D3D11DeviceCreated:skip");
 			return;
 		}
 
-		g_device = a_device;
+		ID3D11Device* expected = nullptr;
+		if (!g_device.compare_exchange_strong(expected, a_device, std::memory_order_acq_rel)) {
+			fo4cs::Diagnostics::WriteHangTraceLine("D3D11DeviceCreated:skip");
+			return;
+		}
 
 		fo4cs::Diagnostics::WriteHangTraceLine("Runtime:OnD3D11DeviceCreated:begin");
-		CommunityShaders::Runtime::GetSingleton()->OnD3D11DeviceCreated(g_device);
+		CommunityShaders::Runtime::GetSingleton()->OnD3D11DeviceCreated(a_device);
+		g_deviceReady.store(true, std::memory_order_release);
 		fo4cs::Diagnostics::WriteHangTraceLine("Runtime:OnD3D11DeviceCreated:end");
 	}
 
+#if defined(FALLOUT_POST_AE)
+	void RecoverExistingPostAERenderer()
+	{
+		bool expected = false;
+		if (!g_existingRendererRecoveryAttempted.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+			return;
+		}
+
+		if (DX12SwapChain::GetSingleton()->swapChain) {
+			logger::debug("[CommunityShaders] PostAE existing-renderer recovery skipped; D3D12 proxy is active");
+			return;
+		}
+
+		auto* rendererData = RE::BSGraphics::GetRendererData();
+		auto* renderWindow = RE::BSGraphics::GetCurrentRendererWindow();
+		if (!rendererData || !renderWindow) {
+			logger::warn(
+				"[CommunityShaders] PostAE existing-renderer recovery unavailable (rendererData=0x{:X}, renderWindow=0x{:X})",
+				reinterpret_cast<uintptr_t>(rendererData),
+				reinterpret_cast<uintptr_t>(renderWindow));
+			return;
+		}
+
+		auto* device = reinterpret_cast<ID3D11Device*>(rendererData->device);
+		auto* swapChain = reinterpret_cast<IDXGISwapChain*>(renderWindow->swapChain);
+		if (!DX11Hooks::RecoverExistingRenderer(device, swapChain)) {
+			logger::warn("[CommunityShaders] PostAE existing-renderer recovery did not attach");
+		}
+	}
+#endif
+
 	void OnPresent(IDXGISwapChain* a_swapChain)
 	{
-#if !defined(FALLOUT_PRE_NG)
+#if !defined(FALLOUT_PRE_NG) && !defined(FALLOUT_POST_NG)
 		(void)a_swapChain;
 #endif
 		fo4cs::Diagnostics::WriteHangTraceLine("Present:enter");
@@ -44,8 +86,10 @@ namespace
 			fo4cs::Diagnostics::WriteHangTraceLine("Runtime:OnFrame:end");
 		}
 
-#if defined(FALLOUT_PRE_NG)
-		if (!a_swapChain || !g_device) {
+#if defined(FALLOUT_PRE_NG) || defined(FALLOUT_POST_NG)
+		auto* device = g_deviceReady.load(std::memory_order_acquire) ?
+			g_device.load(std::memory_order_acquire) : nullptr;
+		if (!a_swapChain || !device) {
 			fo4cs::Diagnostics::WriteHangTraceLine("Present:exit:no-swapchain-or-device");
 			return;
 		}
@@ -57,11 +101,11 @@ namespace
 
 		ID3D11DeviceContext* context = nullptr;
 		fo4cs::Diagnostics::WriteHangTraceLine("D3D11:GetImmediateContext:begin");
-		g_device->GetImmediateContext(&context);
+		device->GetImmediateContext(&context);
 		fo4cs::Diagnostics::WriteHangTraceLine("D3D11:GetImmediateContext:end");
 		if (context) {
 			fo4cs::Diagnostics::WriteHangTraceLine("Menu:RenderD3D11:begin");
-			CommunityShaders::Menu::Render(g_device, context, a_swapChain);
+			CommunityShaders::Menu::Render(device, context, a_swapChain);
 			fo4cs::Diagnostics::WriteHangTraceLine("Menu:RenderD3D11:end");
 			context->Release();
 		}
@@ -84,6 +128,9 @@ namespace
 	{
 		if (message->type == F4SE::MessagingInterface::kPostPostLoad) {
 			CommunityShaders::Runtime::GetSingleton()->PostPostLoad();
+#if defined(FALLOUT_POST_AE)
+			RecoverExistingPostAERenderer();
+#endif
 		}
 	}
 }

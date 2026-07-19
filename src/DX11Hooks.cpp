@@ -1,7 +1,9 @@
 #include "DX11Hooks.h"
 
+#include <atomic>
 #include <d3d11.h>
 #include <iterator>
+#include <mutex>
 #pragma comment(lib, "d3d11.lib")
 
 #include "Upscaler.h"
@@ -20,7 +22,8 @@ CreateSwapChainFn ptrCreateSwapChain;
 using CreateSwapChainForHwndFn = HRESULT(WINAPI*)(IDXGIFactory2*, IUnknown*, HWND, const DXGI_SWAP_CHAIN_DESC1*, const DXGI_SWAP_CHAIN_FULLSCREEN_DESC*, IDXGIOutput*, IDXGISwapChain1**);
 CreateSwapChainForHwndFn ptrCreateSwapChainForHwnd;
 using PresentFn = HRESULT(STDMETHODCALLTYPE*)(IDXGISwapChain*, UINT, UINT);
-PresentFn ptrPresent;
+std::atomic<PresentFn> ptrPresent{ nullptr };
+std::mutex g_presentHookMutex;
 bool g_swapChainVTableHooked = false;
 DX11Hooks::DeviceCreatedCallback g_deviceCreatedCallback = nullptr;
 DX11Hooks::PresentCallback g_presentCallbacks[4]{};
@@ -71,17 +74,44 @@ namespace
 			}
 		}
 
-		return ptrPresent(a_swapChain, a_syncInterval, a_flags);
+		auto originalPresent = ptrPresent.load(std::memory_order_acquire);
+		if (!originalPresent) {
+			logger::critical("[CommunityShaders] D3D11 Present hook has no original function");
+			return DXGI_ERROR_INVALID_CALL;
+		}
+		return originalPresent(a_swapChain, a_syncInterval, a_flags);
 	}
 
-	void InstallSwapChainPresentHook(IDXGISwapChain* a_swapChain)
+	bool InstallSwapChainPresentHook(IDXGISwapChain* a_swapChain)
 	{
-		if (!a_swapChain || ptrPresent) {
-			return;
+		if (!a_swapChain) {
+			return false;
 		}
 
-		*(uintptr_t*)&ptrPresent = Detours::X64::DetourClassVTable(*(uintptr_t*)a_swapChain, &hk_IDXGISwapChain_Present, 8);
+		std::lock_guard lock(g_presentHookMutex);
+		if (ptrPresent.load(std::memory_order_acquire)) {
+			return true;
+		}
+
+		auto* vtable = *reinterpret_cast<uintptr_t**>(a_swapChain);
+		if (!vtable || !vtable[8]) {
+			logger::error("[CommunityShaders] D3D11 swap chain has no Present vtable entry");
+			return false;
+		}
+
+		// Publish the original before patching so a concurrent Present can never
+		// enter our hook while the original function pointer is still null.
+		ptrPresent.store(reinterpret_cast<PresentFn>(vtable[8]), std::memory_order_release);
+		auto detouredOriginal = reinterpret_cast<PresentFn>(
+			Detours::X64::DetourClassVTable(reinterpret_cast<uintptr_t>(vtable), &hk_IDXGISwapChain_Present, 8));
+		if (!detouredOriginal) {
+			ptrPresent.store(nullptr, std::memory_order_release);
+			logger::error("[CommunityShaders] Failed to install D3D11 Present hook");
+			return false;
+		}
+		ptrPresent.store(detouredOriginal, std::memory_order_release);
 		logger::info("[CommunityShaders] D3D11 Present hook installed");
+		return true;
 	}
 }
 
@@ -490,4 +520,65 @@ void DX11Hooks::NotifyD3D11DeviceCreated(ID3D11Device* a_device)
 	if (g_deviceCreatedCallback) {
 		g_deviceCreatedCallback(a_device);
 	}
+}
+
+bool DX11Hooks::RecoverExistingRenderer(ID3D11Device* a_device, IDXGISwapChain* a_swapChain)
+{
+	if (!a_device || !a_swapChain) {
+		logger::warn("[CommunityShaders] Existing D3D11 renderer recovery unavailable (device={}, swapChain={})",
+			reinterpret_cast<uintptr_t>(a_device),
+			reinterpret_cast<uintptr_t>(a_swapChain));
+		return false;
+	}
+
+	if (DX12SwapChain::GetSingleton()->swapChain) {
+		logger::debug("[CommunityShaders] Existing D3D11 renderer recovery skipped; D3D12 proxy is active");
+		return false;
+	}
+	const bool presentHookAlreadyInstalled = ptrPresent.load(std::memory_order_acquire) != nullptr;
+
+	DXGI_SWAP_CHAIN_DESC desc{};
+	const auto descResult = a_swapChain->GetDesc(&desc);
+	if (FAILED(descResult) || !desc.OutputWindow || !IsWindow(desc.OutputWindow)) {
+		logger::warn(
+			"[CommunityShaders] Existing D3D11 renderer recovery rejected invalid swap chain (hr=0x{:08X}, hwnd=0x{:X})",
+			static_cast<uint32_t>(descResult),
+			reinterpret_cast<uintptr_t>(desc.OutputWindow));
+		return false;
+	}
+
+	ID3D11Device* swapChainDevice = nullptr;
+	const auto deviceResult = a_swapChain->GetDevice(IID_PPV_ARGS(&swapChainDevice));
+	if (FAILED(deviceResult) || !swapChainDevice) {
+		logger::warn(
+			"[CommunityShaders] Existing D3D11 renderer recovery could not query swap-chain device (hr=0x{:08X})",
+			static_cast<uint32_t>(deviceResult));
+		return false;
+	}
+
+	const bool matchingDevice = swapChainDevice == a_device;
+	swapChainDevice->Release();
+	if (!matchingDevice) {
+		logger::warn("[CommunityShaders] Existing D3D11 renderer recovery rejected mismatched device");
+		return false;
+	}
+
+	NotifyD3D11DeviceCreated(a_device);
+	if (!InstallSwapChainPresentHook(a_swapChain)) {
+		return false;
+	}
+	if (presentHookAlreadyInstalled) {
+		logger::debug("[CommunityShaders] Existing D3D11 renderer recovery skipped; Present hook is already installed");
+		return true;
+	}
+
+	logger::info(
+		"[CommunityShaders] Existing D3D11 renderer recovered (device=0x{:X}, swapChain=0x{:X}, hwnd=0x{:X}, {}x{}, thread={})",
+		reinterpret_cast<uintptr_t>(a_device),
+		reinterpret_cast<uintptr_t>(a_swapChain),
+		reinterpret_cast<uintptr_t>(desc.OutputWindow),
+		desc.BufferDesc.Width,
+		desc.BufferDesc.Height,
+		GetCurrentThreadId());
+	return true;
 }
