@@ -19,7 +19,7 @@ namespace
 	std::atomic<ID3D11Device*> g_device{ nullptr };
 	std::atomic_bool g_deviceReady{ false };
 #if defined(FALLOUT_POST_AE)
-	std::atomic_bool g_existingRendererRecoveryAttempted{ false };
+	std::atomic_bool g_existingRendererRecoveryComplete{ false };
 #endif
 
 	void OnD3D11DeviceCreated(ID3D11Device* a_device)
@@ -45,8 +45,7 @@ namespace
 #if defined(FALLOUT_POST_AE)
 	void RecoverExistingPostAERenderer()
 	{
-		bool expected = false;
-		if (!g_existingRendererRecoveryAttempted.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+		if (g_existingRendererRecoveryComplete.load(std::memory_order_acquire)) {
 			return;
 		}
 
@@ -56,20 +55,38 @@ namespace
 		}
 
 		auto* rendererData = RE::BSGraphics::GetRendererData();
-		auto* renderWindow = RE::BSGraphics::GetCurrentRendererWindow();
-		if (!rendererData || !renderWindow) {
+		if (!rendererData) {
 			logger::warn(
-				"[CommunityShaders] PostAE existing-renderer recovery unavailable (rendererData=0x{:X}, renderWindow=0x{:X})",
-				reinterpret_cast<uintptr_t>(rendererData),
-				reinterpret_cast<uintptr_t>(renderWindow));
+				"[CommunityShaders] PostAE existing-renderer recovery unavailable (rendererData=0x0)");
 			return;
 		}
 
 		auto* device = reinterpret_cast<ID3D11Device*>(rendererData->device);
-		auto* swapChain = reinterpret_cast<IDXGISwapChain*>(renderWindow->swapChain);
-		if (!DX11Hooks::RecoverExistingRenderer(device, swapChain)) {
-			logger::warn("[CommunityShaders] PostAE existing-renderer recovery did not attach");
+		auto* currentWindow = RE::BSGraphics::GetCurrentRendererWindow();
+		if (currentWindow && currentWindow->hwnd && currentWindow->swapChain &&
+			DX11Hooks::RecoverExistingRenderer(device, reinterpret_cast<IDXGISwapChain*>(currentWindow->swapChain))) {
+			g_existingRendererRecoveryComplete.store(true, std::memory_order_release);
+			return;
 		}
+
+		// RenderDoc can leave the engine's current-window pointer unset while the
+		// renderer table already contains the live game window. Try those entries
+		// synchronously on the F4SE message thread; never poll or patch a vtable
+		// from a detached worker thread.
+		for (auto& renderWindow : rendererData->renderWindow) {
+			if (!renderWindow.hwnd || !renderWindow.swapChain || !IsWindow(reinterpret_cast<HWND>(renderWindow.hwnd))) {
+				continue;
+			}
+			if (DX11Hooks::RecoverExistingRenderer(device, reinterpret_cast<IDXGISwapChain*>(renderWindow.swapChain))) {
+				g_existingRendererRecoveryComplete.store(true, std::memory_order_release);
+				return;
+			}
+		}
+
+		logger::warn(
+			"[CommunityShaders] PostAE existing-renderer recovery unavailable (rendererData=0x{:X}, currentWindow=0x{:X}, no valid renderer-table window)",
+			reinterpret_cast<uintptr_t>(rendererData),
+			reinterpret_cast<uintptr_t>(currentWindow));
 	}
 #endif
 
@@ -126,12 +143,20 @@ namespace
 
 	void MessageHandler(F4SE::MessagingInterface::Message* message)
 	{
+		if (!message) {
+			return;
+		}
+
 		if (message->type == F4SE::MessagingInterface::kPostPostLoad) {
 			CommunityShaders::Runtime::GetSingleton()->PostPostLoad();
-#if defined(FALLOUT_POST_AE)
-			RecoverExistingPostAERenderer();
-#endif
 		}
+#if defined(FALLOUT_POST_AE)
+		if (message->type == F4SE::MessagingInterface::kPostLoad ||
+			message->type == F4SE::MessagingInterface::kPostPostLoad ||
+			message->type == F4SE::MessagingInterface::kPostLoadGame) {
+			RecoverExistingPostAERenderer();
+		}
+#endif
 	}
 }
 
