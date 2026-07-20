@@ -1,5 +1,7 @@
 CompileFlags:
   # Always consume the active MSVC-flavoured database copied to the repo root.
+  # The activation task replaces this compatibility copy with the selected
+  # variant's database while PCH/headers remain in build/clangd/<Variant>.
   CompilationDatabase: .
 
   # CMake emits MSVC PCH/output flags that are useful to cl.exe but make clangd

@@ -114,55 +114,58 @@
 		{
 			"name": "PreNG",
 			"displayName": "PreNG",
+			"description": "Runtime build preset. After configuring, run the VS Code task 'clangd: Activate PreNG analysis tree'.",
 			"binaryDir": "${sourceDir}/build/PreNG",
 			"cacheVariables": {
 				"BUILD_PRE_NG": true,
 				"BUILD_POST_NG": false,
-				"BUILD_POST_AE": false
+				"BUILD_POST_AE": false,
+				"FO4CS_CLANGD_VARIANT": "PreNG"
 			},
 			"inherits": [
 				"common",
 				"all",
 				"vcpkg",
 				"win64",
-				"msvc",
-				"clangd"
+				"msvc"
 			]
 		},
 		{
 			"name": "PostNG",
 			"displayName": "PostNG",
+			"description": "Runtime build preset. After configuring, run the VS Code task 'clangd: Activate PostNG analysis tree'.",
 			"binaryDir": "${sourceDir}/build/PostNG",
 			"cacheVariables": {
 				"BUILD_PRE_NG": false,
 				"BUILD_POST_NG": true,
-				"BUILD_POST_AE": false
+				"BUILD_POST_AE": false,
+				"FO4CS_CLANGD_VARIANT": "PostNG"
 			},
 			"inherits": [
 				"common",
 				"all",
 				"vcpkg",
 				"win64",
-				"msvc",
-				"clangd"
+				"msvc"
 			]
 		},
 		{
 			"name": "PostAE",
 			"displayName": "PostAE",
+			"description": "Runtime build preset. After configuring, run the VS Code task 'clangd: Activate PostAE analysis tree'.",
 			"binaryDir": "${sourceDir}/build/PostAE",
 			"cacheVariables": {
 				"BUILD_PRE_NG": false,
 				"BUILD_POST_NG": false,
-				"BUILD_POST_AE": true
+				"BUILD_POST_AE": true,
+				"FO4CS_CLANGD_VARIANT": "PostAE"
 			},
 			"inherits": [
 				"common",
 				"all",
 				"vcpkg",
 				"win64",
-				"msvc",
-				"clangd"
+				"msvc"
 			]
 		}
 	],
