@@ -9,6 +9,7 @@
 #include "Upscaler.h"
 #include "DX12SwapChain.h"
 #include "FidelityFX.h"
+#include "RuntimeAdapter.h"
 #include "Streamline.h"
 
 #include "ENB/ENBSeriesAPI.h"
@@ -33,10 +34,11 @@ namespace
 {
 	bool ShouldLoadStreamline()
 	{
-#ifdef FALLOUT_PRE_NG
-		logger::info("[Streamline] Pre-NG runtime detected, skipping Streamline initialization");
+		const auto& capabilities = fo4cs::RuntimeAdapter::Get().GetCapabilities();
+		if (!capabilities.supportsStreamline) {
+			logger::info("[Streamline] {} runtime does not support Streamline initialization", capabilities.name);
 		return false;
-#endif
+		}
 		auto upscaling = Upscaling::GetSingleton();
 		return upscaling->UsesDLSSUpscaling() || upscaling->UsesDLSSFrameGeneration() || upscaling->UsesReflex();
 	}
@@ -49,6 +51,9 @@ namespace
 
 	bool ShouldCreateD3D12Proxy()
 	{
+		if (!fo4cs::RuntimeAdapter::Get().GetCapabilities().supportsD3D12Proxy) {
+			return false;
+		}
 		const auto upscaling = Upscaling::GetSingleton();
 
 		return upscaling->UsesFSRUpscaling() ||
@@ -457,15 +462,11 @@ HRESULT WINAPI hk_D3D11CreateDeviceAndSwapChain(
 
 void DX11Hooks::Install()
 {
-#if defined(FALLOUT_POST_NG)
 	if (ShouldLoadStreamline()) {
 		Streamline::GetSingleton()->LoadAndInit();
 	} else {
 		logger::info("[Streamline] Runtime not required for current settings");
 	}
-#else
-	logger::info("[Streamline] Skipped for PreNG (blocking slInit)");
-#endif
 
 	if (ENB_API::RequestENBAPI()) {
 		logger::info("[DX12SwapChain] ENB detected, using alternative swap chain hook");

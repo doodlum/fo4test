@@ -86,6 +86,8 @@ add_library(Core OBJECT
     src/FidelityFX.cpp
     src/FidelityFX.h
     src/PresentationMenuPolicy.h
+    src/RuntimeAdapter.cpp
+    src/RuntimeAdapter.h
     src/Streamline.cpp
     src/Streamline.h
     src/Upscaler.cpp
@@ -342,6 +344,8 @@ if(COMMUNITY_SHADERS)
   fo4cs_create_plugin(CommunityShaders CommunityShaders "CommunityShaders" ${FO4CS_COMMON_DEPENDENCIES})
   target_sources(CommunityShaders PRIVATE
         src/CommunityShadersPlugin.cpp
+        src/Presentation/PresentationBackend.cpp
+        src/Presentation/PresentationBackend.h
         extern/imgui/backends/imgui_impl_dx11.cpp
         extern/imgui/backends/imgui_impl_win32.cpp
         extern/imgui/backends/imgui_impl_dx12.cpp

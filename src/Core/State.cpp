@@ -1,5 +1,7 @@
 #include "Core/State.h"
 
+#include "RuntimeAdapter.h"
+
 #include <memory>
 
 namespace CommunityShaders
@@ -12,16 +14,20 @@ namespace CommunityShaders
 
 	void State::Refresh()
 	{
-#if defined(FALLOUT_POST_AE)
-		runtimeFlavor = RuntimeFlavor::PostAE;
-		runtimeName = "PostAE";
-#elif defined(FALLOUT_POST_NG)
-		runtimeFlavor = RuntimeFlavor::PostNG;
-		runtimeName = "PostNG";
-#else
-		runtimeFlavor = RuntimeFlavor::PreNG;
-		runtimeName = "PreNG";
-#endif
+		const auto& capabilities = fo4cs::RuntimeAdapter::Get().GetCapabilities();
+		switch (capabilities.flavor) {
+		case fo4cs::RuntimeFlavor::kPostAE:
+			runtimeFlavor = RuntimeFlavor::PostAE;
+			break;
+		case fo4cs::RuntimeFlavor::kPostNG:
+			runtimeFlavor = RuntimeFlavor::PostNG;
+			break;
+		case fo4cs::RuntimeFlavor::kPreNG:
+		default:
+			runtimeFlavor = RuntimeFlavor::PreNG;
+			break;
+		}
+		runtimeName = capabilities.name;
 
 		vr = false;
 	}

@@ -7,6 +7,7 @@
 #include "Core/ShaderCompiler.h"
 #include "Core/ShaderCache.h"
 #include "Features/LightLimitFix.h"
+#include "RuntimeAdapter.h"
 
 #include <algorithm>
 #include <atomic>
@@ -2457,6 +2458,47 @@ namespace CommunityShaders
 		return setupMatches && setupReadable && lookupReadable && bindReadable;
 	}
 
+	bool TryBindPreNGDeferredLightingPixelShader(RE::BSShader& a_shader, std::uint32_t a_pixelDescriptor)
+	{
+		auto* pixelShader = ShaderCache::GetSingleton()->GetPixelShader(a_shader, a_pixelDescriptor);
+		auto* pixelD3D = pixelShader ? reinterpret_cast<ID3D11PixelShader*>(pixelShader->shader) : nullptr;
+		if (!pixelShader || !pixelD3D) {
+			return false;
+		}
+
+		const auto vertexEntry = ReadPreNGPointer(F4Runtime::PreNG::CURRENT_VERTEX_SHADER_ENTRY.address());
+		const auto hullEntry = ReadPreNGPointer(F4Runtime::PreNG::CURRENT_HULL_SHADER_ENTRY.address());
+		const auto domainEntry = ReadPreNGPointer(F4Runtime::PreNG::CURRENT_DOMAIN_SHADER_ENTRY.address());
+		const auto bindAddr = F4Runtime::PreNG::BIND_SHADERS.address();
+		const auto pixelGlobal = F4Runtime::PreNG::CURRENT_PIXEL_SHADER_ENTRY.address();
+		if (vertexEntry == 0 || !IsReadableMemory(bindAddr, 16) ||
+			!IsWritableMemory(pixelGlobal, sizeof(std::uintptr_t))) {
+			return false;
+		}
+
+		const auto pixelEntry = reinterpret_cast<std::uintptr_t>(pixelShader);
+		if (!WritePreNGValue(pixelGlobal, pixelEntry)) {
+			return false;
+		}
+
+		using PreNGBindShadersFn = void* (*)(std::uintptr_t, std::uintptr_t, std::uintptr_t, std::uintptr_t, std::uintptr_t);
+		auto bindShaders = reinterpret_cast<PreNGBindShadersFn>(bindAddr);
+		bindShaders(F4Runtime::PreNG::RENDERER_STATE.address(), vertexEntry, hullEntry, domainEntry, pixelEntry);
+		Deferred::GetSingleton()->RegisterLightingPixelShader(pixelD3D);
+
+		static std::atomic_uint32_t boundCount = 0;
+		const auto bindIndex = ++boundCount;
+		if (bindIndex <= 8 || IsPreNGPowerOfTwo(bindIndex)) {
+			logger::info(
+				"[BSShaderHooks] PreNG unified Deferred BSLighting PS bound count={} psDesc=0x{:X} psEntry=0x{:X} psD3D=0x{:X}",
+				bindIndex,
+				a_pixelDescriptor,
+				pixelEntry,
+				reinterpret_cast<std::uintptr_t>(pixelD3D));
+		}
+		return true;
+	}
+
 	struct PreNGBSShaderLookup
 	{
 		static std::uint8_t thunk(
@@ -2521,8 +2563,12 @@ namespace CommunityShaders
 			const bool dfCompositeVanillaDump =
 				ShouldDumpPreNGDFCompositeVanillaShader() &&
 				IsPreNGDFCompositeVanillaDumpLookup(a_shader);
+			const bool unifiedDeferredLightingActive =
+				Deferred::GetSingleton()->IsDeferredPassActive() &&
+				IsPreNGBSLightingContractDescriptorShader(a_shader, a_pixelDescriptor);
 			if (!shaderLookupTraceActive &&
 				!descriptorPathActive &&
+				!unifiedDeferredLightingActive &&
 				!dflightDescriptorObserveActive &&
 				!dflightFullShadowedCandidate &&
 				!bsLightingContractCompileActive &&
@@ -2548,6 +2594,7 @@ namespace CommunityShaders
 			const bool descriptorLookupActive = descriptorPathActive && isLightingDescriptor;
 			if (!shaderLookupDiagnosticActive &&
 				!descriptorLookupActive &&
+				!unifiedDeferredLightingActive &&
 				!dflightDescriptorObserveActive &&
 				!dflightFullShadowedCandidate &&
 				!bsLightingContractCompileActive &&
@@ -2677,6 +2724,17 @@ namespace CommunityShaders
 					a_domainDescriptor,
 					lookupPixelDescriptor,
 					result);
+			}
+			if (unifiedDeferredLightingActive && result != 0 && a_shader) {
+				const auto deferredDescriptorState = Deferred::GetSingleton()->BuildShaderLookupDescriptorState(
+					*a_shader,
+					static_cast<std::uint32_t>(lookupVertexDescriptor),
+					static_cast<std::uint32_t>(lookupPixelDescriptor),
+					true);
+				if (deferredDescriptorState.deferredSupported &&
+					TryBindPreNGDeferredLightingPixelShader(*a_shader, deferredDescriptorState.pixelDescriptor)) {
+					return 1;
+				}
 			}
 			if (bsLightingContractCompileActive) {
 				(void)ShaderCache::GetSingleton()->GetPixelShader(
@@ -3040,6 +3098,7 @@ namespace CommunityShaders
 			if (newPS) {
 				entry->shader->Release();
 				entry->shader = reinterpret_cast<decltype(entry->shader)>(newPS);
+				Deferred::GetSingleton()->RegisterLightingPixelShader(newPS);
 				logger::info("[BSShaderHooks] Replaced PS: type={} desc=0x{:08X}",
 				             shader->shaderType, pixelDesc);
 			}
@@ -3058,6 +3117,8 @@ namespace CommunityShaders
 		std::uint32_t /*descriptor*/)
 	{
 		std::vector<D3D_SHADER_MACRO> defines;
+		defines.push_back({ "DEFERRED", "1" });
+		defines.push_back({ "FO4CS_DEFERRED_LIGHTING_DESCRIPTOR", "1" });
 
 		for (auto* feature : Feature::GetFeatureList()) {
 			if (!feature->loaded) continue;
@@ -3134,6 +3195,7 @@ namespace CommunityShaders
 		             kStableFrame);
 
 #if defined(FALLOUT_PRE_NG)
+		const bool unifiedDeferredEnabled = fo4cs::RuntimeAdapter::Get().GetCapabilities().supportsDeferredPipeline;
 		const bool preNGShaderLookupDiagEnabled = ShouldEnablePreNGShaderLookupDiagnostic();
 		const bool preNGDescriptorMutateEnabled = ShouldMutatePreNGDescriptorShaders();
 		const bool preNGDescriptorCompileEnabled = ShouldCompilePreNGDescriptorShadersForDiagnostic();
@@ -3172,16 +3234,17 @@ namespace CommunityShaders
 		const bool preNGDFLightFullShadowedDescriptorConsumerEnabled = ShouldEnablePreNGDFLightFullShadowedDescriptorConsumer();
 		const bool preNGBSLightingVanillaDumpEnabled = ShouldDumpPreNGBSLightingVanillaShader();
 		const bool preNGDFLightVanillaDumpEnabled = ShouldDumpPreNGDFLightVanillaShader();
-		if (preNGShaderPathValid && (preNGDescriptorPathEnabled || preNGDFLightFullShadowedBindEnabled || preNGBSLightingVanillaDumpEnabled || preNGDFLightVanillaDumpEnabled || preNGDFCompositeVanillaDumpEnabled)) {
+		if (preNGShaderPathValid && (unifiedDeferredEnabled || preNGDescriptorPathEnabled || preNGDFLightFullShadowedBindEnabled || preNGBSLightingVanillaDumpEnabled || preNGDFLightVanillaDumpEnabled || preNGDFCompositeVanillaDumpEnabled)) {
 			const auto lookupAddr = F4Runtime::PreNG::BS_SHADER_LOOKUP.address();
 			PreNGBSShaderLookup::func = reinterpret_cast<decltype(PreNGBSShaderLookup::func)>(
 				Detours::X64::DetourFunction(
 					lookupAddr,
 					reinterpret_cast<std::uintptr_t>(PreNGBSShaderLookup::thunk)));
 			logger::info(
-				"[BSShaderHooks] Detoured PreNG shader lookup diagnostic/descriptor/bind/dump at 0x{:X}; original=0x{:X}; lookupDiag={} descriptorMutate={} descriptorCompile={} descriptorBind={} dflightDescriptorObserve={} bsLightingContractCompile={} bsLightingConsumerCompile={} bsLightingDescriptorObserve={} bsLightingResourceBind={} bsLightingVanillaBind={} bsLightingLLFBind={} dfCompositeDescriptorObserve={} dfCompositeDescriptorCompile={} dfCompositeResourceBind={} dfCompositeSafeBind={} dfCompositeFogSafeBind={} dflightFullContractDescriptorCompile={} dflightFullContractDescriptorBind={} dflightFullShadowedDescriptorConsumer={} dflightFullShadowedBind={} bsLightingVanillaDump={} dflightVanillaDump={} dfCompositeVanillaDump={} shader replacement remains held except gated descriptor-owned consumers and narrow dump/observe/compile/resource gates",
+				"[BSShaderHooks] Detoured PreNG shader lookup at 0x{:X}; original=0x{:X}; unifiedDeferred={} lookupDiag={} descriptorMutate={} descriptorCompile={} descriptorBind={} dflightDescriptorObserve={} bsLightingContractCompile={} bsLightingConsumerCompile={} bsLightingDescriptorObserve={} bsLightingResourceBind={} bsLightingVanillaBind={} bsLightingLLFBind={} dfCompositeDescriptorObserve={} dfCompositeDescriptorCompile={} dfCompositeResourceBind={} dfCompositeSafeBind={} dfCompositeFogSafeBind={} dflightFullContractDescriptorCompile={} dflightFullContractDescriptorBind={} dflightFullShadowedDescriptorConsumer={} dflightFullShadowedBind={} bsLightingVanillaDump={} dflightVanillaDump={} dfCompositeVanillaDump={}",
 				lookupAddr,
 				reinterpret_cast<std::uintptr_t>(PreNGBSShaderLookup::func),
+				unifiedDeferredEnabled,
 				preNGShaderLookupDiagEnabled,
 				preNGDescriptorMutateEnabled,
 				preNGDescriptorCompileEnabled,

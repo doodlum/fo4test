@@ -13,7 +13,6 @@
 #include "RE/Bethesda/BSShader.h"
 #endif
 
-#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <optional>
@@ -92,60 +91,114 @@ namespace
 		return index < kGBufferTargets.size() ? &kGBufferTargets[index] : nullptr;
 	}
 
-	[[nodiscard]] ID3D11RenderTargetView* GetRendererTargetRTV(std::uint32_t a_index) noexcept
+	using DrawIndexedFn = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*, UINT, UINT, INT);
+	using DrawFn = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*, UINT, UINT);
+	using DrawIndexedInstancedFn = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*, UINT, UINT, UINT, INT, UINT);
+	using DrawInstancedFn = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*, UINT, UINT, UINT, UINT);
+	using DrawAutoFn = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*);
+	using DrawIndexedInstancedIndirectFn = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*, ID3D11Buffer*, UINT);
+	using DrawInstancedIndirectFn = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*, ID3D11Buffer*, UINT);
+
+	DrawIndexedFn originalDrawIndexed = nullptr;
+	DrawFn originalDraw = nullptr;
+	DrawIndexedInstancedFn originalDrawIndexedInstanced = nullptr;
+	DrawInstancedFn originalDrawInstanced = nullptr;
+	DrawAutoFn originalDrawAuto = nullptr;
+	DrawIndexedInstancedIndirectFn originalDrawIndexedInstancedIndirect = nullptr;
+	DrawInstancedIndirectFn originalDrawInstancedIndirect = nullptr;
+	std::mutex drawHookInstallLock;
+	std::uintptr_t installedDrawHookVTable = 0;
+
+	struct LightingDrawState
 	{
-		auto* rendererData = fo4cs::GetRendererData();
-		if (!rendererData || a_index >= RE::FO4Runtime::RenderTargetIndex::kCount) {
-			return nullptr;
+		bool active = false;
+		UINT renderTargetCount = 0;
+		std::array<winrt::com_ptr<ID3D11RenderTargetView>, Deferred::kMaxBoundRenderTargetCount> renderTargets;
+		winrt::com_ptr<ID3D11DepthStencilView> depthStencil;
+		winrt::com_ptr<ID3D11BlendState> blendState;
+		std::array<FLOAT, 4> blendFactor{};
+		UINT sampleMask = D3D11_DEFAULT_SAMPLE_MASK;
+	};
+
+	thread_local LightingDrawState lightingDrawState;
+
+	class LightingDrawGuard
+	{
+	public:
+		explicit LightingDrawGuard(ID3D11DeviceContext* a_context) :
+			context(a_context),
+			active(Deferred::GetSingleton()->BeginLightingDraw(a_context))
+		{}
+
+		~LightingDrawGuard()
+		{
+			if (active) {
+				Deferred::GetSingleton()->EndLightingDraw(context);
+			}
 		}
 
-		return reinterpret_cast<ID3D11RenderTargetView*>(rendererData->renderTargets[a_index].rtView);
-	}
+	private:
+		ID3D11DeviceContext* context;
+		bool active;
+	};
 
-	[[nodiscard]] ID3D11DepthStencilView* GetRendererDepthStencilView(std::uint32_t a_index) noexcept
+	class DeferredWorldEpochGuard
 	{
-		auto* rendererData = fo4cs::GetRendererData();
-		if (!rendererData || a_index >= RE::FO4Runtime::DepthStencilTargetIndex::kCount) {
-			return nullptr;
+	public:
+		explicit DeferredWorldEpochGuard(Deferred* a_deferred) :
+			deferred(a_deferred)
+		{}
+
+		~DeferredWorldEpochGuard()
+		{
+			deferred->EndDeferred();
 		}
 
-		return reinterpret_cast<ID3D11DepthStencilView*>(rendererData->depthStencilTargets[a_index].dsView[0]);
-	}
+	private:
+		Deferred* deferred;
+	};
 
-#if defined(FALLOUT_PRE_NG)
-	constexpr const char* kPreNGDeferredMRTScopeEnv = "FO4CS_DEFERRED_PRENG_MRT_SCOPE";
-
-	[[nodiscard]] bool IsTruthySwitchValue(const char* a_value) noexcept
+	void STDMETHODCALLTYPE DrawIndexedHook(ID3D11DeviceContext* a_context, UINT a_indexCount, UINT a_startIndexLocation, INT a_baseVertexLocation)
 	{
-		return std::strcmp(a_value, "1") == 0 ||
-		       std::strcmp(a_value, "true") == 0 ||
-		       std::strcmp(a_value, "TRUE") == 0 ||
-		       std::strcmp(a_value, "on") == 0 ||
-		       std::strcmp(a_value, "ON") == 0;
+		LightingDrawGuard guard(a_context);
+		originalDrawIndexed(a_context, a_indexCount, a_startIndexLocation, a_baseVertexLocation);
 	}
 
-	[[nodiscard]] bool ShouldEnablePreNGDeferredMRTScope() noexcept
+	void STDMETHODCALLTYPE DrawHook(ID3D11DeviceContext* a_context, UINT a_vertexCount, UINT a_startVertexLocation)
 	{
-		static const bool enabled = [] {
-			char value[16]{};
-			SetLastError(ERROR_SUCCESS);
-			const auto length = GetEnvironmentVariableA(
-				kPreNGDeferredMRTScopeEnv,
-				value,
-				static_cast<DWORD>(sizeof(value)));
-			const bool resolved =
-				length > 0 &&
-				length < sizeof(value) &&
-				IsTruthySwitchValue(value);
-			logger::info(
-				"[Deferred] PreNG MRT scope resolved {}={} source=process-env default=off",
-				kPreNGDeferredMRTScopeEnv,
-				resolved ? "on" : "off");
-			return resolved;
-		}();
-		return enabled;
+		LightingDrawGuard guard(a_context);
+		originalDraw(a_context, a_vertexCount, a_startVertexLocation);
 	}
-#endif
+
+	void STDMETHODCALLTYPE DrawIndexedInstancedHook(ID3D11DeviceContext* a_context, UINT a_indexCountPerInstance, UINT a_instanceCount, UINT a_startIndexLocation, INT a_baseVertexLocation, UINT a_startInstanceLocation)
+	{
+		LightingDrawGuard guard(a_context);
+		originalDrawIndexedInstanced(a_context, a_indexCountPerInstance, a_instanceCount, a_startIndexLocation, a_baseVertexLocation, a_startInstanceLocation);
+	}
+
+	void STDMETHODCALLTYPE DrawInstancedHook(ID3D11DeviceContext* a_context, UINT a_vertexCountPerInstance, UINT a_instanceCount, UINT a_startVertexLocation, UINT a_startInstanceLocation)
+	{
+		LightingDrawGuard guard(a_context);
+		originalDrawInstanced(a_context, a_vertexCountPerInstance, a_instanceCount, a_startVertexLocation, a_startInstanceLocation);
+	}
+
+	void STDMETHODCALLTYPE DrawAutoHook(ID3D11DeviceContext* a_context)
+	{
+		LightingDrawGuard guard(a_context);
+		originalDrawAuto(a_context);
+	}
+
+	void STDMETHODCALLTYPE DrawIndexedInstancedIndirectHook(ID3D11DeviceContext* a_context, ID3D11Buffer* a_bufferForArgs, UINT a_alignedByteOffsetForArgs)
+	{
+		LightingDrawGuard guard(a_context);
+		originalDrawIndexedInstancedIndirect(a_context, a_bufferForArgs, a_alignedByteOffsetForArgs);
+	}
+
+	void STDMETHODCALLTYPE DrawInstancedIndirectHook(ID3D11DeviceContext* a_context, ID3D11Buffer* a_bufferForArgs, UINT a_alignedByteOffsetForArgs)
+	{
+		LightingDrawGuard guard(a_context);
+		originalDrawInstancedIndirect(a_context, a_bufferForArgs, a_alignedByteOffsetForArgs);
+	}
 }
 
 const Deferred::GBufferTargetBindings& Deferred::GetGBufferTargetBindings() noexcept
@@ -232,14 +285,6 @@ ID3D11RenderTargetView* Deferred::GetGBufferRTV(GBufferTarget a_target) const no
 	return reinterpret_cast<ID3D11RenderTargetView*>(rendererData->renderTargets[binding->rendererTargetIndex].rtView);
 }
 
-void Deferred::ClearForwardRenderTargetBackup() noexcept
-{
-	for (auto& renderTargetView : forwardRenderTargetViews) {
-		renderTargetView = nullptr;
-	}
-	forwardDepthStencilView = nullptr;
-}
-
 void Deferred::SetupResources()
 {
 	auto* rendererData = fo4cs::GetRendererData();
@@ -249,6 +294,7 @@ void Deferred::SetupResources()
 	}
 
 	auto* device = reinterpret_cast<ID3D11Device*>(rendererData->device);
+	InstallDrawHooks(reinterpret_cast<ID3D11DeviceContext*>(rendererData->context));
 	auto createSampler = [&](D3D11_FILTER a_filter, const char* a_name, winrt::com_ptr<ID3D11SamplerState>& a_sampler) {
 		if (a_sampler) {
 			return true;
@@ -310,120 +356,188 @@ void Deferred::SetupResources()
 	}
 }
 
-void Deferred::OverrideRenderTargets()
+void Deferred::InstallDrawHooks(ID3D11DeviceContext* a_context)
 {
-	if (renderTargetsOverridden) {
-		return;
-	}
-	if (!gBufferResourcesReady) {
-		SetupResources();
-	}
-	if (!gBufferResourcesReady) {
+	if (!a_context) {
 		return;
 	}
 
-	auto* rendererData = fo4cs::GetRendererData();
-	if (!rendererData || !rendererData->context) {
+	std::scoped_lock lock(drawHookInstallLock);
+	const auto vtable = *reinterpret_cast<std::uintptr_t*>(a_context);
+	if (!vtable || installedDrawHookVTable == vtable) {
+		return;
+	}
+	if (installedDrawHookVTable != 0) {
+		logger::warn(
+			"[Deferred] D3D11 draw hooks already own vtable=0x{:X}; refusing second vtable=0x{:X}",
+			installedDrawHookVTable,
+			vtable);
 		return;
 	}
 
-	auto* context = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
-	ClearForwardRenderTargetBackup();
+	originalDrawIndexed = reinterpret_cast<DrawIndexedFn>(Detours::X64::DetourClassVTable(vtable, &DrawIndexedHook, 12));
+	originalDraw = reinterpret_cast<DrawFn>(Detours::X64::DetourClassVTable(vtable, &DrawHook, 13));
+	originalDrawIndexedInstanced = reinterpret_cast<DrawIndexedInstancedFn>(Detours::X64::DetourClassVTable(vtable, &DrawIndexedInstancedHook, 20));
+	originalDrawInstanced = reinterpret_cast<DrawInstancedFn>(Detours::X64::DetourClassVTable(vtable, &DrawInstancedHook, 21));
+	originalDrawAuto = reinterpret_cast<DrawAutoFn>(Detours::X64::DetourClassVTable(vtable, &DrawAutoHook, 38));
+	originalDrawIndexedInstancedIndirect = reinterpret_cast<DrawIndexedInstancedIndirectFn>(Detours::X64::DetourClassVTable(vtable, &DrawIndexedInstancedIndirectHook, 39));
+	originalDrawInstancedIndirect = reinterpret_cast<DrawInstancedIndirectFn>(Detours::X64::DetourClassVTable(vtable, &DrawInstancedIndirectHook, 40));
+
+	if (!originalDrawIndexed || !originalDraw || !originalDrawIndexedInstanced || !originalDrawInstanced ||
+		!originalDrawAuto || !originalDrawIndexedInstancedIndirect || !originalDrawInstancedIndirect) {
+		logger::critical("[Deferred] Failed to install the complete D3D11 draw hook set");
+		return;
+	}
+
+	installedDrawHookVTable = vtable;
+	logger::info("[Deferred] Shared D3D11 draw-scoped MRT hooks installed vtable=0x{:X}", vtable);
+}
+
+void Deferred::RegisterLightingPixelShader(ID3D11PixelShader* a_shader)
+{
+	if (!a_shader) {
+		return;
+	}
+
+	std::scoped_lock lock(lightingShaderLock);
+	for (const auto& shader : lightingPixelShaders) {
+		if (shader.get() == a_shader) {
+			return;
+		}
+	}
+
+	winrt::com_ptr<ID3D11PixelShader> retained;
+	retained.copy_from(a_shader);
+	lightingPixelShaders.push_back(std::move(retained));
+	logger::debug(
+		"[Deferred] Registered lighting pixel shader ps=0x{:X} total={}",
+		reinterpret_cast<std::uintptr_t>(a_shader),
+		lightingPixelShaders.size());
+}
+
+bool Deferred::IsRegisteredLightingPixelShader(ID3D11PixelShader* a_shader) const
+{
+	if (!a_shader) {
+		return false;
+	}
+
+	std::scoped_lock lock(lightingShaderLock);
+	for (const auto& shader : lightingPixelShaders) {
+		if (shader.get() == a_shader) {
+			return true;
+		}
+	}
+	return false;
+}
+
+bool Deferred::BeginLightingDraw(ID3D11DeviceContext* a_context)
+{
+	if (!a_context || lightingDrawState.active || !IsDeferredPassActive() || !gBufferResourcesReady) {
+		return false;
+	}
+
+	winrt::com_ptr<ID3D11PixelShader> pixelShader;
+	a_context->PSGetShader(pixelShader.put(), nullptr, nullptr);
+	if (!IsRegisteredLightingPixelShader(pixelShader.get())) {
+		return false;
+	}
 
 	std::array<ID3D11RenderTargetView*, kMaxBoundRenderTargetCount> currentRTVs{};
 	ID3D11DepthStencilView* currentDSV = nullptr;
-	context->OMGetRenderTargets(
-		static_cast<UINT>(currentRTVs.size()),
-		currentRTVs.data(),
-		&currentDSV);
+	a_context->OMGetRenderTargets(static_cast<UINT>(currentRTVs.size()), currentRTVs.data(), &currentDSV);
 
+	if (!currentRTVs[0]) {
+		for (auto* rtv : currentRTVs) {
+			if (rtv) {
+				rtv->Release();
+			}
+		}
+		if (currentDSV) {
+			currentDSV->Release();
+		}
+		return false;
+	}
+
+	auto& state = lightingDrawState;
+	state.renderTargetCount = 0;
 	for (std::size_t i = 0; i < currentRTVs.size(); ++i) {
-		forwardRenderTargetViews[i].attach(currentRTVs[i]);
+		state.renderTargets[i].attach(currentRTVs[i]);
+		if (currentRTVs[i]) {
+			state.renderTargetCount = static_cast<UINT>(i + 1);
+		}
 	}
-	forwardDepthStencilView.attach(currentDSV);
+	state.depthStencil.attach(currentDSV);
 
-	std::array<ID3D11RenderTargetView*, kMaxBoundRenderTargetCount> deferredRTVs{};
+	ID3D11BlendState* currentBlendState = nullptr;
+	a_context->OMGetBlendState(&currentBlendState, state.blendFactor.data(), &state.sampleMask);
+	state.blendState.attach(currentBlendState);
+	state.active = true;
+
+	std::array<ID3D11RenderTargetView*, kDeferredRenderTargetCount> deferredRTVs{};
 	for (std::size_t i = 0; i < kForwardRenderTargetPreserveCount; ++i) {
-		deferredRTVs[i] = forwardRenderTargetViews[i].get();
+		deferredRTVs[i] = state.renderTargets[i].get();
 	}
 
-	if (!deferredRTVs[0]) {
-		deferredRTVs[0] = GetRendererTargetRTV(RE::FO4Runtime::RenderTargetIndex::kMain);
-	}
-	if (!deferredRTVs[1]) {
-		deferredRTVs[1] = GetRendererTargetRTV(RE::FO4Runtime::RenderTargetIndex::kMotionVectors);
-	}
-
-	const DeferredRenderTargetBinding* missingBinding = nullptr;
 	for (const auto& binding : kDeferredRenderTargets) {
 		if (binding.outputSlot >= deferredRTVs.size()) {
-			missingBinding = &binding;
-			break;
+			EndLightingDraw(a_context);
+			return false;
 		}
 
 		auto* rtv = GetGBufferRTV(binding.target);
 		if (!rtv) {
-			missingBinding = &binding;
-			break;
+			EndLightingDraw(a_context);
+			return false;
 		}
 
 		deferredRTVs[binding.outputSlot] = rtv;
 	}
 
-	static bool loggedMissing = false;
-	if (!deferredRTVs[0] || missingBinding) {
-		if (!loggedMissing) {
-			logger::warn(
-				"[Deferred] Render target override held; forwardRT0={} missingBinding={}",
-				deferredRTVs[0] != nullptr,
-				missingBinding ? missingBinding->name : "<none>");
-			loggedMissing = true;
-		}
-		ClearForwardRenderTargetBackup();
-		return;
-	}
-
-	auto* depthStencilView = forwardDepthStencilView.get();
-	if (!depthStencilView) {
-		depthStencilView = GetRendererDepthStencilView(RE::FO4Runtime::DepthStencilTargetIndex::kMain);
-	}
-
-	context->OMSetRenderTargets(
-		static_cast<UINT>(kDeferredRenderTargetCount),
+	a_context->OMSetRenderTargets(
+		static_cast<UINT>(deferredRTVs.size()),
 		deferredRTVs.data(),
-		depthStencilView);
-	renderTargetsOverridden = true;
+		state.depthStencil.get());
 
-	static bool loggedReady = false;
-	if (!loggedReady) {
+	if (auto* mrtBlendState = GetOrCreateMRTBlendState(state.blendState.get()); mrtBlendState != state.blendState.get()) {
+		a_context->OMSetBlendState(mrtBlendState, state.blendFactor.data(), state.sampleMask);
+	}
+
+	static std::atomic_bool loggedReady = false;
+	if (!loggedReady.exchange(true, std::memory_order_relaxed)) {
 		logger::info(
-			"[Deferred] Render target override ready forwardSlots={} gbufferSlots={} boundTargets={} depthStencil={}",
+			"[Deferred] First draw-scoped MRT bind forwardSlots={} gbufferSlots={} boundTargets={} depthStencil={}",
 			kForwardRenderTargetPreserveCount,
 			kDeferredRenderTargets.size(),
 			kDeferredRenderTargetCount,
-			depthStencilView != nullptr);
-		loggedReady = true;
+			state.depthStencil != nullptr);
 	}
+	return true;
 }
 
-void Deferred::RestoreRenderTargets()
+void Deferred::EndLightingDraw(ID3D11DeviceContext* a_context) noexcept
 {
-	auto* rendererData = fo4cs::GetRendererData();
-	if (renderTargetsOverridden && rendererData && rendererData->context) {
-		auto* context = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
-		std::array<ID3D11RenderTargetView*, kMaxBoundRenderTargetCount> restoreRTVs{};
-		for (std::size_t i = 0; i < restoreRTVs.size(); ++i) {
-			restoreRTVs[i] = forwardRenderTargetViews[i].get();
-		}
-
-		context->OMSetRenderTargets(
-			static_cast<UINT>(restoreRTVs.size()),
-			restoreRTVs.data(),
-			forwardDepthStencilView.get());
+	auto& state = lightingDrawState;
+	if (!a_context || !state.active) {
+		return;
 	}
 
-	renderTargetsOverridden = false;
-	ClearForwardRenderTargetBackup();
+	std::array<ID3D11RenderTargetView*, kMaxBoundRenderTargetCount> restoreRTVs{};
+	for (std::size_t i = 0; i < restoreRTVs.size(); ++i) {
+		restoreRTVs[i] = state.renderTargets[i].get();
+	}
+	a_context->OMSetRenderTargets(
+		state.renderTargetCount,
+		state.renderTargetCount > 0 ? restoreRTVs.data() : nullptr,
+		state.depthStencil.get());
+	a_context->OMSetBlendState(state.blendState.get(), state.blendFactor.data(), state.sampleMask);
+
+	state.active = false;
+	state.renderTargetCount = 0;
+	for (auto& rtv : state.renderTargets) {
+		rtv = nullptr;
+	}
+	state.depthStencil = nullptr;
+	state.blendState = nullptr;
 }
 
 void Deferred::ReflectionsPrepasses()
@@ -482,12 +596,6 @@ void Deferred::StartDeferred()
 	} catch (...) {
 		logger::error("[Deferred] StartDeferred unknown exception");
 	}
-#if defined(FALLOUT_PRE_NG) || defined(FALLOUT_POST_NG)
-	OverrideRenderTargets();
-	if (renderTargetsOverridden) {
-		OverrideBlendStates();
-	}
-#endif
 }
 
 void Deferred::EndDeferred()
@@ -500,9 +608,7 @@ void Deferred::EndDeferred()
 		logger::error("[Deferred] EndDeferred unknown exception");
 	}
 
-	ResetBlendStates();
-	RestoreRenderTargets();
-	deferredPass = false;
+	deferredPass.store(false, std::memory_order_release);
 }
 
 void Deferred::DeferredPasses()
@@ -524,99 +630,54 @@ void Deferred::DeferredPasses()
 	//   dynamicCubemaps.PostDeferred()
 }
 
-	ID3D11BlendState* Deferred::GetOrCreateMRTBlendState(ID3D11BlendState* a_original)
-	{
-		if (!a_original) return nullptr;
+ID3D11BlendState* Deferred::GetOrCreateMRTBlendState(ID3D11BlendState* a_original)
+{
+	if (!a_original) return nullptr;
 
-		auto it = blendStateCache.find(a_original);
-		if (it != blendStateCache.end())
-			return it->second ? it->second.get() : a_original;
+	std::scoped_lock lock(blendStateLock);
 
-		D3D11_BLEND_DESC desc;
-		a_original->GetDesc(&desc);
+	auto it = blendStateCache.find(a_original);
+	if (it != blendStateCache.end())
+		return it->second ? it->second.get() : a_original;
 
-		if (desc.IndependentBlendEnable) {
-			blendStateCache[a_original].attach(nullptr);  // mark as already MRT
-			return a_original;
-		}
+	D3D11_BLEND_DESC desc;
+	a_original->GetDesc(&desc);
 
-		// Extend: copy RT[0] blend settings to RTs [1..7]
-		desc.IndependentBlendEnable = TRUE;
-		for (int i = 1; i < 8; i++) {
-			desc.RenderTarget[i] = desc.RenderTarget[0];
-		}
-
-		auto* rendererData = fo4cs::GetRendererData();
-		if (!rendererData || !rendererData->device) return a_original;
-
-		auto* device = reinterpret_cast<ID3D11Device*>(rendererData->device);
-		if (!device) return a_original;
-
-		winrt::com_ptr<ID3D11BlendState> extended;
-		if (FAILED(device->CreateBlendState(&desc, extended.put()))) {
-			logger::warn("[Deferred] Failed to create MRT-extended blend state");
-			return a_original;
-		}
-
-		blendStateCache[a_original] = extended;
-		logger::info("[Deferred] Created MRT blend state for 0x{:X} → 0x{:X}",
-		             reinterpret_cast<std::uintptr_t>(a_original),
-		             reinterpret_cast<std::uintptr_t>(extended.get()));
-		return extended.get();
+	if (desc.IndependentBlendEnable) {
+		blendStateCache[a_original].attach(nullptr);  // mark as already MRT
+		return a_original;
 	}
 
-	// --- OMSetBlendState hook — extends single-RT blend states to MRT during deferred pass ---
-	namespace
-	{
-		using OMSetBlendStateFn = void(STDMETHODCALLTYPE*)(
-			ID3D11DeviceContext*, ID3D11BlendState*, const FLOAT[4], UINT);
-		OMSetBlendStateFn originalOMSetBlendState = nullptr;
-		bool blendHookInstalled = false;
-
-		void STDMETHODCALLTYPE OMSetBlendStateHook(
-			ID3D11DeviceContext* a_context,
-			ID3D11BlendState* a_blendState,
-			const FLOAT a_blendFactor[4],
-			UINT a_sampleMask)
-		{
-			auto* deferred = Deferred::GetSingleton();
-			if (deferred->IsBlendOverridden() && a_blendState) {
-				a_blendState = deferred->GetOrCreateMRTBlendState(a_blendState);
-			}
-			originalOMSetBlendState(a_context, a_blendState, a_blendFactor, a_sampleMask);
-		}
+	// Extend: copy RT[0] blend settings to RTs [1..7]
+	desc.IndependentBlendEnable = TRUE;
+	for (int i = 1; i < 8; i++) {
+		desc.RenderTarget[i] = desc.RenderTarget[0];
 	}
 
-	void Deferred::OverrideBlendStates()
-	{
-		auto* rendererData = fo4cs::GetRendererData();
-		if (!rendererData || !rendererData->context) {
-			return;
-		}
+	auto* rendererData = fo4cs::GetRendererData();
+	if (!rendererData || !rendererData->device) return a_original;
 
-		blendStatesOverridden = true;
+	auto* device = reinterpret_cast<ID3D11Device*>(rendererData->device);
+	if (!device) return a_original;
 
-		// Lazy-install OMSetBlendState vtable hook (ID3D11DeviceContext vfunc 26)
-		if (!blendHookInstalled) {
-			auto* ctx = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
-			if (ctx) {
-				*(uintptr_t*)&originalOMSetBlendState =
-					Detours::X64::DetourClassVTable(*(uintptr_t*)ctx, &OMSetBlendStateHook, 26);
-				blendHookInstalled = true;
-				logger::info("[Deferred] OMSetBlendState hook installed (vfunc 26)");
-			}
-		}
+	winrt::com_ptr<ID3D11BlendState> extended;
+	if (FAILED(device->CreateBlendState(&desc, extended.put()))) {
+		logger::warn("[Deferred] Failed to create MRT-extended blend state");
+		return a_original;
 	}
 
-	void Deferred::ResetBlendStates()
-	{
-		blendStatesOverridden = false;
-	}
+	blendStateCache[a_original] = extended;
+	logger::info("[Deferred] Created MRT blend state for 0x{:X} → 0x{:X}",
+	             reinterpret_cast<std::uintptr_t>(a_original),
+	             reinterpret_cast<std::uintptr_t>(extended.get()));
+	return extended.get();
+}
 
 void Deferred::ClearShaderCache()
 {
-	// Release composite PS/VS shaders. Compilation is on-demand (lazy),
-	// so clearing forces recompilation on the next frame.
+	std::scoped_lock lock(lightingShaderLock, blendStateLock);
+	lightingPixelShaders.clear();
+	blendStateCache.clear();
 }
 
 	// --- Hook 触发验证日志 ---
@@ -636,8 +697,8 @@ void Deferred::ClearShaderCache()
 
 	// --- Hooks into FO4 Creation Engine render pipeline ---
 	// REL::IDs resolved via cross-reference with F4SE Address Library + decompiled export.
-	// PostAE (1.11.191.0) analysis: 2026-05-07.
-	// See .claude/docs/rel-id-analysis-results.md for full analysis.
+	// Cross-version analysis: PreNG 1.10.163, PostNG 1.10.984, PostAE 1.11.221 (2026-07-21).
+	// See .codex/docs/static-deferred-scope-cross-version.md for the static-analysis report.
 
 // Detour a function at a raw absolute address (bypasses REL::ID resolution).
 // Template type T provides T::thunk and T::func (REL::Relocation stored as uintptr_t).
@@ -807,9 +868,10 @@ void Deferred::Hooks::Install()
 				// BlendedDecals is intentionally not hooked on PreNG. Crash logs showed an AV
 				// inside the original decal call chain after this call-site hook was installed,
 				// while the thunk only added logging and no required rendering work.
-				// World_Start is a verified function scope. EndDeferred() runs when func() returns.
+				// World_Start defines the world epoch. MRT binding is scoped to registered
+				// BSLighting draws, and EndDeferred() runs when the function returns.
 				// ResetState: no standalone function in PreNG (inline D3D11 state changes)
-				logger::info("[Deferred] PreNG: World_Start scope + ShadowMaps installed; BlendedDecals skipped");
+				logger::info("[Deferred] PreNG: World_Start epoch + draw-scoped MRT + ShadowMaps installed; BlendedDecals skipped");
 		} else {
 			logger::warn("[Deferred] PreNG: no hooks installed ({} IDs missing from .bin)", skipped);
 		}
@@ -843,20 +905,10 @@ void Deferred::Hooks::Main_RenderWorld_Start::thunk()
 {
 	try {
 		LogHookFire("Main_RenderWorld_Start");
-#if defined(FALLOUT_PRE_NG)
-		if (!ShouldEnablePreNGDeferredMRTScope()) {
-			func();
-			return;
-		}
-#endif
 		auto* deferred = GetSingleton();
 		deferred->StartDeferred();
+		DeferredWorldEpochGuard epochGuard(deferred);
 		func();
-#if defined(FALLOUT_PRE_NG)
-		if constexpr (RE::FO4Runtime::PreNG::Hooks::DEFERRED_RESTORE_AFTER_MAIN_RENDER_WORLD_START) {
-			deferred->EndDeferred();
-		}
-#endif
 	} catch (...) {
 		logger::error("[Deferred] Main_RenderWorld_Start exception");
 	}
@@ -867,9 +919,6 @@ void Deferred::Hooks::Main_RenderWorld_BlendedDecals::thunk()
 	try {
 		func();  // call original first (preserves regs for write_thunk_call)
 		LogHookFire("Main_RenderWorld_BlendedDecals");
-#if defined(FALLOUT_POST_NG)
-		GetSingleton()->EndDeferred();
-#endif
 	} catch (...) {
 		logger::error("[Deferred] Main_RenderWorld_BlendedDecals exception");
 	}

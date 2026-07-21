@@ -14,6 +14,7 @@
 #include <RE/FO4Runtime.h>
 
 #include "DX12SwapChain.h"
+#include "RuntimeAdapter.h"
 #include "DirectXMath.h"
 #include "FidelityFX.h"
 #include "Streamline.h"
@@ -554,11 +555,7 @@ const char* Upscaling::GetDLSSUnavailableReason() const
 
 bool Upscaling::IsPreNGRuntime() noexcept
 {
-#if defined(FALLOUT_PRE_NG)
-	return true;
-#else
-	return false;
-#endif
+	return fo4cs::RuntimeAdapter::Get().GetCapabilities().flavor == fo4cs::RuntimeFlavor::kPreNG;
 }
 
 bool Upscaling::IsStreamlineRuntimeAvailable()

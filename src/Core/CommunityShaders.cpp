@@ -8,6 +8,7 @@
 #include "Core/ShaderCompiler.h"
 #include "Core/ShaderDB.h"
 #include "Core/State.h"
+#include "RuntimeAdapter.h"
 
 #include <memory>
 
@@ -28,11 +29,9 @@ namespace CommunityShaders
 		State::GetSingleton()->Refresh();
 		Hooks::Install();
 		BSShaderHooks::Install();
-#if defined(FALLOUT_POST_AE)
-		logger::info("[Deferred] PostAE pipeline hooks held for callsite validation");
-#else
-		Deferred::Hooks::Install();
-#endif
+		if (fo4cs::RuntimeAdapter::Get().GetCapabilities().supportsDeferredPipeline) {
+			Deferred::Hooks::Install();
+		}
 
 		ShaderCompiler::GetSingleton()->SetSourceRoot("Data\\Shaders");
 

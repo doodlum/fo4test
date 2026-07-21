@@ -624,7 +624,10 @@ namespace CommunityShaders
 			std::string_view a_normalizedFxpFilename,
 			std::uint32_t a_descriptor)
 		{
-			return ReadDescriptorCompileSwitch() ||
+			return (a_stage == ShaderStage::Pixel &&
+			           a_shaderType == kPreNGBSLightingShaderType &&
+			           F4Runtime::IsDeferredLightingPixelDescriptor(a_descriptor)) ||
+			       ReadDescriptorCompileSwitch() ||
 			       ShouldCompilePreNGBSLightingContractShader(
 				       a_stage,
 				       a_shaderType,

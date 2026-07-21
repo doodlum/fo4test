@@ -1,10 +1,13 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <unordered_map>
+#include <vector>
 
 #include <d3d11.h>
 #include <winrt/base.h>
@@ -34,11 +37,10 @@ public:
 	void PrepassPasses();
 	void DeferredPasses();
 
-	void OverrideBlendStates();
-	void ResetBlendStates();
-	[[nodiscard]] bool IsBlendOverridden() const noexcept { return blendStatesOverridden; }
-	[[nodiscard]] bool IsDeferredPassActive() const noexcept { return deferredPass; }
-	[[nodiscard]] bool AreRenderTargetsOverridden() const noexcept { return renderTargetsOverridden; }
+	[[nodiscard]] bool IsDeferredPassActive() const noexcept { return deferredPass.load(std::memory_order_acquire); }
+	void RegisterLightingPixelShader(ID3D11PixelShader* a_shader);
+	bool BeginLightingDraw(ID3D11DeviceContext* a_context);
+	void EndLightingDraw(ID3D11DeviceContext* a_context) noexcept;
 
 	enum class GBufferTarget : std::uint8_t
 	{
@@ -99,11 +101,7 @@ public:
 		std::uint32_t a_vertexDescriptor,
 		std::uint32_t a_pixelDescriptor,
 		bool a_forceDeferred = false) const noexcept;
-	void OverrideRenderTargets();
-	void RestoreRenderTargets();
-
-	// Blend state extension for MRT: intercepts OMSetBlendState during deferred pass,
-	// cloning single-RT blend states to cover RTs [0..7] with identical settings.
+	// Blend state extension for the draw-scoped MRT bind.
 	[[nodiscard]] ID3D11BlendState* GetOrCreateMRTBlendState(ID3D11BlendState* a_original);
 
 	void ClearShaderCache();
@@ -153,16 +151,16 @@ public:
 
 private:
 	Deferred() = default;
-	void ClearForwardRenderTargetBackup() noexcept;
+	void InstallDrawHooks(ID3D11DeviceContext* a_context);
+	[[nodiscard]] bool IsRegisteredLightingPixelShader(ID3D11PixelShader* a_shader) const;
 
-	bool deferredPass = false;
-	bool blendStatesOverridden = false;
-	bool renderTargetsOverridden = false;
+	std::atomic_bool deferredPass = false;
 	bool gBufferResourcesReady = false;
 	std::array<D3D11_TEXTURE2D_DESC, kGBufferTargetCount> gBufferDescriptions{};
-	std::array<winrt::com_ptr<ID3D11RenderTargetView>, kMaxBoundRenderTargetCount> forwardRenderTargetViews;
-	winrt::com_ptr<ID3D11DepthStencilView> forwardDepthStencilView;
 	winrt::com_ptr<ID3D11SamplerState> linearSampler;
 	winrt::com_ptr<ID3D11SamplerState> pointSampler;
+	mutable std::mutex lightingShaderLock;
+	std::vector<winrt::com_ptr<ID3D11PixelShader>> lightingPixelShaders;
+	std::mutex blendStateLock;
 	std::unordered_map<ID3D11BlendState*, winrt::com_ptr<ID3D11BlendState>> blendStateCache;
 };

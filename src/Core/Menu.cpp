@@ -2,7 +2,6 @@
 
 #include "Core/Globals.h"
 
-#if defined(FALLOUT_PRE_NG) || defined(FALLOUT_POST_NG)
 #include "Overlay/Overlay.h"
 #include "Overlay/OverlayWndProc.h"
 
@@ -16,13 +15,11 @@
 #include <cstdint>
 #include <filesystem>
 #include <mutex>
-#endif
 
 namespace CommunityShaders::Menu
 {
 	namespace
 	{
-#if defined(FALLOUT_PRE_NG) || defined(FALLOUT_POST_NG)
 		constexpr const char* kSettingsSection = "Settings";
 		const std::filesystem::path kOverlaySelfSettingsPath{ "Data\\F4SE\\Plugins\\Overlay\\Overlay.ini" };
 
@@ -369,22 +366,17 @@ namespace CommunityShaders::Menu
 			}
 			rtv->Release();
 		}
-#endif
 	}
 
 	void Setup() {}
 	void Draw()
 	{
-#if defined(FALLOUT_PRE_NG) || defined(FALLOUT_POST_NG)
 		auto* overlay = Overlay::GetSingleton();
 		PollHotkeyState();
 		menuOpen = overlay->IsVisible();
-#endif
 	}
 	void Render(ID3D11Device* a_device, ID3D11DeviceContext* a_context, IDXGISwapChain* a_swapChain)
 	{
-		(void)a_swapChain;
-#if defined(FALLOUT_PRE_NG) || defined(FALLOUT_POST_NG)
 		std::lock_guard lock(renderMutex);
 		if (!InitializeD3D11(a_device, a_context)) {
 			return;
@@ -419,35 +411,19 @@ namespace CommunityShaders::Menu
 
 		ImGui::Render();
 		RenderD3D11ImGuiDrawData(a_swapChain);
-#else
-		(void)a_device;
-		(void)a_context;
-#endif
 	}
 	void Reset() {}
 	bool IsOpen() noexcept
 	{
-#if defined(FALLOUT_PRE_NG) || defined(FALLOUT_POST_NG)
 		return Overlay::GetSingleton()->IsVisible();
-#else
-		return false;
-#endif
 	}
 	void SetOpen(bool a_open) noexcept
 	{
-#if defined(FALLOUT_PRE_NG) || defined(FALLOUT_POST_NG)
 		menuOpen = a_open;
 		Overlay::GetSingleton()->SetVisible(a_open);
-#else
-		(void)a_open;
-#endif
 	}
 	void SetHwnd(HWND a_hwnd) noexcept
 	{
-#if defined(FALLOUT_PRE_NG) || defined(FALLOUT_POST_NG)
 		hwnd = a_hwnd;
-#else
-		(void)a_hwnd;
-#endif
 	}
 }
