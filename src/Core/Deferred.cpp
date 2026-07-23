@@ -1,8 +1,10 @@
 #include "Core/Deferred.h"
 
 #include <d3d11.h>
+#include <d3d11_1.h>
 
 #include "Core/CommunityShaders.h"
+#include "Core/DebugSwitches.h"
 #include "Core/Feature.h"
 #include "Core/ShaderCache.h"
 #include "Core/State.h"
@@ -118,7 +120,232 @@ namespace
 		winrt::com_ptr<ID3D11BlendState> blendState;
 		std::array<FLOAT, 4> blendFactor{};
 		UINT sampleMask = D3D11_DEFAULT_SAMPLE_MASK;
+		winrt::com_ptr<ID3DUserDefinedAnnotation> annotation;
 	};
+
+	std::mutex deferredTraceLock;
+
+	[[nodiscard]] bool IsDeferredTraceEnabled() noexcept
+	{
+		static const bool enabled = CommunityShaders::DebugSwitches::ReadSwitchEnabled("FO4CS_TRACE_DEFERRED");
+		return enabled;
+	}
+
+	[[nodiscard]] bool IsGBufferDumpEnabled() noexcept
+	{
+		static const bool enabled = CommunityShaders::DebugSwitches::ReadSwitchEnabled("FO4CS_DUMP_GBUFFER");
+		return enabled;
+	}
+
+	template <class... Args>
+	void TraceDeferred(std::format_string<Args...> a_format, Args&&... a_args)
+	{
+		try {
+			if (!IsDeferredTraceEnabled()) {
+				return;
+			}
+			auto traceDir = std::filesystem::path{ "Data" } / "F4SE" / "Plugins" / "CommunityShaders" / "PipelineTrace" / CommunityShaders::State::GetSingleton()->GetRuntimeName();
+			std::error_code ec;
+			std::filesystem::create_directories(traceDir, ec);
+			if (ec) {
+				return;
+			}
+			auto* runtime = CommunityShaders::Runtime::GetSingleton();
+			const auto frame = runtime ? runtime->GetFrameCount() : 0;
+			std::scoped_lock lock(deferredTraceLock);
+			std::ofstream out(traceDir / "deferred_trace.txt", std::ios::app);
+			if (out) {
+				out << std::format("[frame={}] {}\n", frame, std::format(a_format, std::forward<Args>(a_args)...));
+			}
+		} catch (...) {
+			// Diagnostic output must never terminate a render hook.
+		}
+	}
+
+	[[nodiscard]] std::string DescribeRTV(ID3D11RenderTargetView* a_rtv)
+	{
+		if (!a_rtv) {
+			return "null";
+		}
+		D3D11_RENDER_TARGET_VIEW_DESC viewDesc{};
+		a_rtv->GetDesc(&viewDesc);
+		ID3D11Resource* resource = nullptr;
+		a_rtv->GetResource(&resource);
+		const auto resourceAddress = reinterpret_cast<std::uintptr_t>(resource);
+		UINT width = 0;
+		UINT height = 0;
+		DXGI_FORMAT textureFormat = DXGI_FORMAT_UNKNOWN;
+		if (resource) {
+			ID3D11Texture2D* texture = nullptr;
+			if (SUCCEEDED(resource->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&texture))) && texture) {
+				D3D11_TEXTURE2D_DESC textureDesc{};
+				texture->GetDesc(&textureDesc);
+				width = textureDesc.Width;
+				height = textureDesc.Height;
+				textureFormat = textureDesc.Format;
+				texture->Release();
+			}
+			resource->Release();
+		}
+		try {
+			return std::format("view=0x{:X},resource=0x{:X},viewFmt={},texFmt={},size={}x{}",
+				reinterpret_cast<std::uintptr_t>(a_rtv), resourceAddress,
+				static_cast<std::uint32_t>(viewDesc.Format), static_cast<std::uint32_t>(textureFormat), width, height);
+		} catch (...) {
+			return "<rtv-format-error>";
+		}
+	}
+
+	[[nodiscard]] std::string DescribeDSV(ID3D11DepthStencilView* a_dsv)
+	{
+		if (!a_dsv) {
+			return "null";
+		}
+		D3D11_DEPTH_STENCIL_VIEW_DESC viewDesc{};
+		a_dsv->GetDesc(&viewDesc);
+		try {
+			return std::format("view=0x{:X},fmt={},dimension={}", reinterpret_cast<std::uintptr_t>(a_dsv),
+				static_cast<std::uint32_t>(viewDesc.Format), static_cast<std::uint32_t>(viewDesc.ViewDimension));
+		} catch (...) {
+			return "<dsv-format-error>";
+		}
+	}
+
+	void TraceOMState(ID3D11DeviceContext* a_context, std::string_view a_phase)
+	{
+		if (!IsDeferredTraceEnabled() || !a_context) {
+			return;
+		}
+		std::array<ID3D11RenderTargetView*, Deferred::kMaxBoundRenderTargetCount> rtvs{};
+		ID3D11DepthStencilView* dsv = nullptr;
+		a_context->OMGetRenderTargets(static_cast<UINT>(rtvs.size()), rtvs.data(), &dsv);
+		ID3D11BlendState* blend = nullptr;
+		std::array<FLOAT, 4> blendFactor{};
+		UINT sampleMask = D3D11_DEFAULT_SAMPLE_MASK;
+		a_context->OMGetBlendState(&blend, blendFactor.data(), &sampleMask);
+		TraceDeferred("om phase={} dsv={} blend=0x{:X} sampleMask=0x{:X} blendFactor=[{:.3f},{:.3f},{:.3f},{:.3f}]",
+			a_phase, DescribeDSV(dsv), reinterpret_cast<std::uintptr_t>(blend), sampleMask,
+			blendFactor[0], blendFactor[1], blendFactor[2], blendFactor[3]);
+		for (std::size_t i = 0; i < rtvs.size(); ++i) {
+			TraceDeferred("om phase={} rtv[{}] {}", a_phase, i, DescribeRTV(rtvs[i]));
+		}
+		for (auto* rtv : rtvs) {
+			if (rtv) {
+				rtv->Release();
+			}
+		}
+		if (dsv) {
+			dsv->Release();
+		}
+		if (blend) {
+			blend->Release();
+		}
+	}
+
+	void TraceRestoreCheck(ID3D11DeviceContext* a_context, const LightingDrawState& a_state)
+	{
+		if (!IsDeferredTraceEnabled() || !a_context) {
+			return;
+		}
+		std::array<ID3D11RenderTargetView*, Deferred::kMaxBoundRenderTargetCount> rtvs{};
+		ID3D11DepthStencilView* dsv = nullptr;
+		a_context->OMGetRenderTargets(static_cast<UINT>(rtvs.size()), rtvs.data(), &dsv);
+		ID3D11BlendState* blend = nullptr;
+		std::array<FLOAT, 4> blendFactor{};
+		UINT sampleMask = D3D11_DEFAULT_SAMPLE_MASK;
+		a_context->OMGetBlendState(&blend, blendFactor.data(), &sampleMask);
+		bool match = dsv == a_state.depthStencil.get() && blend == a_state.blendState.get() && sampleMask == a_state.sampleMask;
+		for (std::size_t i = 0; i < rtvs.size(); ++i) {
+			match = match && rtvs[i] == a_state.renderTargets[i].get();
+		}
+		for (std::size_t i = 0; i < blendFactor.size(); ++i) {
+			match = match && blendFactor[i] == a_state.blendFactor[i];
+		}
+		TraceDeferred("restore check match={} expectedRTCount={} actualDSV=0x{:X} actualBlend=0x{:X}", match,
+			a_state.renderTargetCount, reinterpret_cast<std::uintptr_t>(dsv), reinterpret_cast<std::uintptr_t>(blend));
+		for (auto* rtv : rtvs) {
+			if (rtv) {
+				rtv->Release();
+			}
+		}
+		if (dsv) {
+			dsv->Release();
+		}
+		if (blend) {
+			blend->Release();
+		}
+	}
+
+	void DumpGBufferSnapshot()
+	{
+		static std::atomic_bool dumped = false;
+		if (!IsGBufferDumpEnabled() || !Deferred::GetSingleton()->AreGBufferResourcesReady() || dumped.exchange(true)) {
+			return;
+		}
+		auto* rendererData = fo4cs::GetRendererData();
+		if (!rendererData || !rendererData->device || !rendererData->context) {
+			TraceDeferred("gbuffer dump skipped missing renderer device/context");
+			return;
+		}
+		auto* device = reinterpret_cast<ID3D11Device*>(rendererData->device);
+		auto* context = reinterpret_cast<ID3D11DeviceContext*>(rendererData->context);
+		auto traceDir = std::filesystem::path{ "Data" } / "F4SE" / "Plugins" / "CommunityShaders" / "PipelineTrace" / CommunityShaders::State::GetSingleton()->GetRuntimeName();
+		std::error_code ec;
+		std::filesystem::create_directories(traceDir, ec);
+		if (ec) {
+			TraceDeferred("gbuffer dump skipped create_directories error={}", ec.message());
+			return;
+		}
+		auto* runtime = CommunityShaders::Runtime::GetSingleton();
+		const auto frame = runtime ? runtime->GetFrameCount() : 0;
+		for (const auto& binding : kGBufferTargets) {
+			auto* texture = Deferred::GetSingleton()->GetGBufferTexture(binding.target);
+			if (!texture) {
+				TraceDeferred("gbuffer dump target={} skipped missing texture", binding.name);
+				continue;
+			}
+			D3D11_TEXTURE2D_DESC sourceDesc{};
+			texture->GetDesc(&sourceDesc);
+			if (sourceDesc.SampleDesc.Count != 1) {
+				TraceDeferred("gbuffer dump target={} skipped multisample count={}", binding.name, sourceDesc.SampleDesc.Count);
+				continue;
+			}
+			D3D11_TEXTURE2D_DESC stagingDesc = sourceDesc;
+			stagingDesc.Usage = D3D11_USAGE_STAGING;
+			stagingDesc.BindFlags = 0;
+			stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+			stagingDesc.MiscFlags = 0;
+			winrt::com_ptr<ID3D11Texture2D> staging;
+			const auto createResult = device->CreateTexture2D(&stagingDesc, nullptr, staging.put());
+			if (FAILED(createResult)) {
+				TraceDeferred("gbuffer dump target={} CreateTexture2D failed hr=0x{:08X}", binding.name, static_cast<std::uint32_t>(createResult));
+				continue;
+			}
+			context->CopyResource(staging.get(), texture);
+			D3D11_MAPPED_SUBRESOURCE mapped{};
+			const auto mapResult = context->Map(staging.get(), 0, D3D11_MAP_READ, 0, &mapped);
+			if (FAILED(mapResult)) {
+				TraceDeferred("gbuffer dump target={} Map failed hr=0x{:08X}", binding.name, static_cast<std::uint32_t>(mapResult));
+				continue;
+			}
+			const auto stem = std::format("gbuffer_{}_frame_{}", binding.name, frame);
+			std::ofstream out(traceDir / (stem + ".bin"), std::ios::binary);
+			if (out) {
+				for (UINT row = 0; row < sourceDesc.Height; ++row) {
+					out.write(static_cast<const char*>(mapped.pData) + static_cast<std::size_t>(row) * mapped.RowPitch, mapped.RowPitch);
+				}
+			}
+			context->Unmap(staging.get(), 0);
+			std::ofstream metadata(traceDir / (stem + ".txt"));
+			if (metadata) {
+				metadata << std::format("target={} rendererIndex={} format={} width={} height={} rowPitch={} frame={}\n",
+					binding.name, binding.rendererTargetIndex, static_cast<std::uint32_t>(sourceDesc.Format), sourceDesc.Width,
+					sourceDesc.Height, mapped.RowPitch, frame);
+			}
+			TraceDeferred("gbuffer dump target={} path={} format={} size={}x{} rowPitch={}", binding.name,
+				(traceDir / (stem + ".bin")).string(), static_cast<std::uint32_t>(sourceDesc.Format), sourceDesc.Width, sourceDesc.Height, mapped.RowPitch);
+		}
+	}
 
 	thread_local LightingDrawState lightingDrawState;
 
@@ -331,8 +558,15 @@ void Deferred::SetupResources()
 			continue;
 		}
 
-		texture->GetDesc(&gBufferDescriptions[ToGBufferIndex(binding.target)]);
-	}
+			texture->GetDesc(&gBufferDescriptions[ToGBufferIndex(binding.target)]);
+			if (IsDeferredTraceEnabled()) {
+				const auto& desc = gBufferDescriptions[ToGBufferIndex(binding.target)];
+				TraceDeferred("gbuffer target={} rendererIndex={} expectedFmt={} actualFmt={} size={}x{} texture=0x{:X} srv=0x{:X} rtv={}",
+					binding.name, binding.rendererTargetIndex, static_cast<std::uint32_t>(binding.expectedFormat),
+					static_cast<std::uint32_t>(desc.Format), desc.Width, desc.Height,
+					reinterpret_cast<std::uintptr_t>(texture), reinterpret_cast<std::uintptr_t>(srv), DescribeRTV(rtv));
+			}
+		}
 
 	const bool wasReady = gBufferResourcesReady;
 	gBufferResourcesReady = ready;
@@ -413,6 +647,8 @@ void Deferred::RegisterLightingPixelShader(ID3D11PixelShader* a_shader)
 		"[Deferred] Registered lighting pixel shader ps=0x{:X} total={}",
 		reinterpret_cast<std::uintptr_t>(a_shader),
 		lightingPixelShaders.size());
+	TraceDeferred("lighting shader registered ps=0x{:X} total={}",
+		reinterpret_cast<std::uintptr_t>(a_shader), lightingPixelShaders.size());
 }
 
 bool Deferred::IsRegisteredLightingPixelShader(ID3D11PixelShader* a_shader) const
@@ -472,6 +708,10 @@ bool Deferred::BeginLightingDraw(ID3D11DeviceContext* a_context)
 	a_context->OMGetBlendState(&currentBlendState, state.blendFactor.data(), &state.sampleMask);
 	state.blendState.attach(currentBlendState);
 	state.active = true;
+	TraceDeferred("lighting begin shader=0x{:X} originalRTCount={} originalDSV={} originalBlend=0x{:X}",
+		reinterpret_cast<std::uintptr_t>(pixelShader.get()), state.renderTargetCount,
+		DescribeDSV(state.depthStencil.get()), reinterpret_cast<std::uintptr_t>(state.blendState.get()));
+	TraceOMState(a_context, "before");
 
 	std::array<ID3D11RenderTargetView*, kDeferredRenderTargetCount> deferredRTVs{};
 	for (std::size_t i = 0; i < kForwardRenderTargetPreserveCount; ++i) {
@@ -501,6 +741,13 @@ bool Deferred::BeginLightingDraw(ID3D11DeviceContext* a_context)
 	if (auto* mrtBlendState = GetOrCreateMRTBlendState(state.blendState.get()); mrtBlendState != state.blendState.get()) {
 		a_context->OMSetBlendState(mrtBlendState, state.blendFactor.data(), state.sampleMask);
 	}
+	TraceOMState(a_context, "override");
+	if (IsDeferredTraceEnabled()) {
+		if (winrt::com_ptr<ID3DUserDefinedAnnotation> annotation; SUCCEEDED(a_context->QueryInterface(IID_PPV_ARGS(annotation.put()))) && annotation) {
+			annotation->BeginEvent(L"FO4CS Deferred Lighting MRT");
+			state.annotation = std::move(annotation);
+		}
+	}
 
 	static std::atomic_bool loggedReady = false;
 	if (!loggedReady.exchange(true, std::memory_order_relaxed)) {
@@ -520,6 +767,10 @@ void Deferred::EndLightingDraw(ID3D11DeviceContext* a_context) noexcept
 	if (!a_context || !state.active) {
 		return;
 	}
+	if (state.annotation) {
+		state.annotation->EndEvent();
+		state.annotation = nullptr;
+	}
 
 	std::array<ID3D11RenderTargetView*, kMaxBoundRenderTargetCount> restoreRTVs{};
 	for (std::size_t i = 0; i < restoreRTVs.size(); ++i) {
@@ -530,6 +781,10 @@ void Deferred::EndLightingDraw(ID3D11DeviceContext* a_context) noexcept
 		state.renderTargetCount > 0 ? restoreRTVs.data() : nullptr,
 		state.depthStencil.get());
 	a_context->OMSetBlendState(state.blendState.get(), state.blendFactor.data(), state.sampleMask);
+	TraceOMState(a_context, "restore");
+	TraceRestoreCheck(a_context, state);
+	TraceDeferred("lighting end restoredRTCount={} restoredDSV={} restoredBlend=0x{:X}",
+		state.renderTargetCount, DescribeDSV(state.depthStencil.get()), reinterpret_cast<std::uintptr_t>(state.blendState.get()));
 
 	state.active = false;
 	state.renderTargetCount = 0;
@@ -589,6 +844,14 @@ void Deferred::StartDeferred()
 	}
 
 	deferredPass = true;
+	std::size_t registeredShaderCount = 0;
+	{
+		std::scoped_lock lock(lightingShaderLock);
+		registeredShaderCount = lightingPixelShaders.size();
+	}
+	TraceDeferred("epoch begin context=0x{:X} gbufferReady={} registeredShaders={}",
+		reinterpret_cast<std::uintptr_t>(fo4cs::GetRendererData() ? fo4cs::GetRendererData()->context : nullptr),
+		gBufferResourcesReady, registeredShaderCount);
 	try {
 		PrepassPasses();
 	} catch (const std::exception& e) {
@@ -609,6 +872,12 @@ void Deferred::EndDeferred()
 	}
 
 	deferredPass.store(false, std::memory_order_release);
+	try {
+		DumpGBufferSnapshot();
+	} catch (...) {
+		logger::error("[Deferred] GBuffer diagnostic dump failed");
+	}
+	TraceDeferred("epoch end");
 }
 
 void Deferred::DeferredPasses()
