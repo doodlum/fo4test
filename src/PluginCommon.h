@@ -131,6 +131,7 @@ namespace fo4cs
 			F4SE::RUNTIME_1_11_159,
 			F4SE::RUNTIME_1_11_169,
 			F4SE::RUNTIME_1_11_191,
+			F4SE::RUNTIME_1_11_221,
 		});
 #else
 		data.CompatibleVersions({ F4SE::RUNTIME_LATEST });
