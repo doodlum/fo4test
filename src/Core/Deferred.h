@@ -113,7 +113,7 @@ public:
 	//   Main_RenderWorld         → FO4's main world render entry
 	//   Main_RenderWorld_Start   → FO4's opaque geometry batch start
 	//   Main_RenderWorld_BlendedDecals → FO4's blend/decals post-pass
-	//   Renderer_ResetState      → FO4's render state reset
+	//   Renderer_Begin           → FO4's renderer-window begin
 	struct Hooks
 	{
 		struct Main_RenderShadowMaps
@@ -140,9 +140,9 @@ public:
 			static inline REL::Relocation<decltype(thunk)> func;
 		};
 
-		struct Renderer_ResetState
+		struct Renderer_Begin
 		{
-			static void thunk(void* a_this);
+			static void thunk(void* a_this, std::uint32_t a_windowID);
 			static inline REL::Relocation<decltype(thunk)> func;
 		};
 

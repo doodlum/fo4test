@@ -1054,7 +1054,7 @@ void Deferred::Hooks::Install()
 		stl::detour_thunk<Main_RenderShadowMaps>(F4Hooks::DEFERRED_MAIN_RENDER_SHADOW_MAPS);
 		stl::detour_thunk<Main_RenderWorld_Start>(F4Hooks::DEFERRED_MAIN_RENDER_WORLD_START);
 		stl::detour_thunk<Main_RenderWorld_BlendedDecals>(F4Hooks::DEFERRED_MAIN_RENDER_WORLD_BLENDED_DECALS);
-		stl::detour_thunk<Renderer_ResetState>(F4Hooks::DEFERRED_RENDERER_RESET_STATE);
+		stl::detour_thunk<Renderer_Begin>(F4Hooks::DEFERRED_RENDERER_BEGIN);
 	} else {
 		logger::warn("[Deferred] No pipeline hooks installed ({} IDs missing from address library)", skipped);
 	}
@@ -1193,12 +1193,12 @@ void Deferred::Hooks::Main_RenderWorld_BlendedDecals::thunk()
 	}
 }
 
-void Deferred::Hooks::Renderer_ResetState::thunk(void* a_this)
+void Deferred::Hooks::Renderer_Begin::thunk(void* a_this, std::uint32_t a_windowID)
 {
 	try {
-		LogHookFire("Renderer_ResetState");
-		func(a_this);
+		LogHookFire("Renderer_Begin");
+		func(a_this, a_windowID);
 	} catch (...) {
-		logger::error("[Deferred] Renderer_ResetState exception");
+		logger::error("[Deferred] Renderer_Begin exception (windowID={})", a_windowID);
 	}
 }
