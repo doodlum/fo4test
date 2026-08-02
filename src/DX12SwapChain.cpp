@@ -404,7 +404,7 @@ void DX12SwapChain::CreateSwapChain(IDXGIFactory4 *a_dxgiFactory, DXGI_SWAP_CHAI
     if (useFidelityFXSwapChain && fidelityFX->swapChainContext != nullptr)
         fidelityFX->SetupFrameGeneration();
 
-    swapChainProxy = new DXGISwapChainProxy(swapChain);
+    swapChainProxy = std::make_unique<DXGISwapChainProxy>(swapChain);
 
     ResolveOverlayCallbacks();
     if (auto initCb = s_overlayInitCb ? s_overlayInitCb : overlayInitCallback)
@@ -441,17 +441,17 @@ void DX12SwapChain::CreateInterop()
     texDesc11.MiscFlags = 0;
 
     if (enbLoaded)
-        swapChainBufferProxyENB = new WrappedResource(texDesc11, d3d11Device.get(), d3d12Device.get());
+        swapChainBufferProxyENB = std::make_unique<WrappedResource>(texDesc11, d3d11Device.get(), d3d12Device.get());
     else
-        swapChainBufferProxy = new Texture2D(texDesc11);
+        swapChainBufferProxy = std::make_unique<Texture2D>(texDesc11);
 
-    swapChainBufferWrapped[0] = new WrappedResource(texDesc11, d3d11Device.get(), d3d12Device.get());
-    swapChainBufferWrapped[1] = new WrappedResource(texDesc11, d3d11Device.get(), d3d12Device.get());
+    swapChainBufferWrapped[0] = std::make_unique<WrappedResource>(texDesc11, d3d11Device.get(), d3d12Device.get());
+    swapChainBufferWrapped[1] = std::make_unique<WrappedResource>(texDesc11, d3d11Device.get(), d3d12Device.get());
 }
 
 DXGISwapChainProxy *DX12SwapChain::GetSwapChainProxy()
 {
-    return swapChainProxy;
+    return swapChainProxy.get();
 }
 
 void DX12SwapChain::SetD3D11Device(ID3D11Device *a_d3d11Device)
@@ -467,7 +467,7 @@ void DX12SwapChain::SetD3D11DeviceContext(ID3D11DeviceContext *a_d3d11Context)
 HRESULT DX12SwapChain::GetBuffer(void **ppSurface)
 {
     if (enbLoaded)
-        *ppSurface = swapChainBufferProxyENB->resource11;
+        *ppSurface = swapChainBufferProxyENB->resource11.get();
     else
         *ppSurface = swapChainBufferProxy->resource.get();
     return S_OK;
@@ -531,17 +531,17 @@ HRESULT DX12SwapChain::Present(UINT SyncInterval, UINT Flags)
         streamline->SleepReflexFrame("present");
 
         ID3D11Texture2D *finalFrame =
-            enbLoaded ? swapChainBufferProxyENB->resource11 : swapChainBufferProxy->resource.get();
+            enbLoaded ? swapChainBufferProxyENB->resource11.get() : swapChainBufferProxy->resource.get();
 
         trace("copy-d3d11-proxy-to-shared");
         if (enbLoaded)
-            d3d11Context->CopyResource(swapChainBufferWrapped[frameIndex]->resource11, finalFrame);
+            d3d11Context->CopyResource(swapChainBufferWrapped[frameIndex]->resource11.get(), finalFrame);
         else
-            d3d11Context->CopyResource(swapChainBufferWrapped[frameIndex]->resource11, finalFrame);
+            d3d11Context->CopyResource(swapChainBufferWrapped[frameIndex]->resource11.get(), finalFrame);
 
         const bool uiColorAndAlphaReady =
             upscaling->UsesDLSSFrameGeneration() &&
-            upscaling->BuildUIColorAndAlphaResource(swapChainBufferWrapped[frameIndex]->resource11);
+            upscaling->BuildUIColorAndAlphaResource(swapChainBufferWrapped[frameIndex]->resource11.get());
 
         trace("wait-d3d11-to-d3d12");
         DX::ThrowIfFailed(d3d11Context->Signal(d3d11Fence.get(), fenceValue));
@@ -1009,7 +1009,7 @@ WrappedResource::WrappedResource(D3D11_TEXTURE2D_DESC a_texDesc, ID3D11Device5 *
 {
     // Create D3D11 shared texture directly instead of wrapping D3D12 resource
     a_texDesc.MiscFlags |= D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_NTHANDLE;
-    DX::ThrowIfFailed(a_d3d11Device->CreateTexture2D(&a_texDesc, nullptr, &resource11));
+    DX::ThrowIfFailed(a_d3d11Device->CreateTexture2D(&a_texDesc, nullptr, resource11.put()));
 
     // Get shared handle from D3D11 texture to enable D3D12 access
     winrt::com_ptr<IDXGIResource1> dxgiResource;
@@ -1030,7 +1030,7 @@ WrappedResource::WrappedResource(D3D11_TEXTURE2D_DESC a_texDesc, ID3D11Device5 *
         srvDesc.Texture2D.MostDetailedMip = 0;
         srvDesc.Texture2D.MipLevels = 1;
 
-        DX::ThrowIfFailed(a_d3d11Device->CreateShaderResourceView(resource11, &srvDesc, &srv));
+        DX::ThrowIfFailed(a_d3d11Device->CreateShaderResourceView(resource11.get(), &srvDesc, srv.put()));
     }
 
     if (a_texDesc.BindFlags & D3D11_BIND_UNORDERED_ACCESS)
@@ -1043,7 +1043,7 @@ WrappedResource::WrappedResource(D3D11_TEXTURE2D_DESC a_texDesc, ID3D11Device5 *
             uavDesc.Texture2DArray.FirstArraySlice = 0;
             uavDesc.Texture2DArray.ArraySize = a_texDesc.ArraySize;
 
-            DX::ThrowIfFailed(a_d3d11Device->CreateUnorderedAccessView(resource11, &uavDesc, &uav));
+            DX::ThrowIfFailed(a_d3d11Device->CreateUnorderedAccessView(resource11.get(), &uavDesc, uav.put()));
         }
         else
         {
@@ -1052,7 +1052,7 @@ WrappedResource::WrappedResource(D3D11_TEXTURE2D_DESC a_texDesc, ID3D11Device5 *
             uavDesc.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D;
             uavDesc.Texture2D.MipSlice = 0;
 
-            DX::ThrowIfFailed(a_d3d11Device->CreateUnorderedAccessView(resource11, &uavDesc, &uav));
+            DX::ThrowIfFailed(a_d3d11Device->CreateUnorderedAccessView(resource11.get(), &uavDesc, uav.put()));
         }
     }
 
@@ -1062,7 +1062,7 @@ WrappedResource::WrappedResource(D3D11_TEXTURE2D_DESC a_texDesc, ID3D11Device5 *
         rtvDesc.Format = a_texDesc.Format;
         rtvDesc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
         rtvDesc.Texture2D.MipSlice = 0;
-        DX::ThrowIfFailed(a_d3d11Device->CreateRenderTargetView(resource11, &rtvDesc, &rtv));
+        DX::ThrowIfFailed(a_d3d11Device->CreateRenderTargetView(resource11.get(), &rtvDesc, rtv.put()));
     }
 }
 
@@ -1071,13 +1071,21 @@ DXGISwapChainProxy::DXGISwapChainProxy(IDXGISwapChain4 *a_swapChain)
     swapChain = a_swapChain;
 }
 
-/****IUknown****/
+/****IUnknown****/
 HRESULT STDMETHODCALLTYPE DXGISwapChainProxy::QueryInterface(REFIID riid, void **ppvObj)
 {
-    auto ret = swapChain->QueryInterface(riid, ppvObj);
-    if (*ppvObj)
-        *ppvObj = this;
-    return ret;
+    if (!ppvObj)
+        return E_POINTER;
+    // Only hand out interfaces this proxy actually implements. Anything else
+    // (IDXGISwapChain1..4, etc.) must be served by the inner swap chain, or
+    // callers would dispatch through a vtable the proxy does not provide.
+    if (riid == __uuidof(IUnknown) || riid == __uuidof(IDXGISwapChain))
+    {
+        *ppvObj = static_cast<IDXGISwapChain *>(this);
+        AddRef();
+        return S_OK;
+    }
+    return swapChain->QueryInterface(riid, ppvObj);
 }
 
 ULONG STDMETHODCALLTYPE DXGISwapChainProxy::AddRef()
