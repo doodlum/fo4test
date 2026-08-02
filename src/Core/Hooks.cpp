@@ -1,6 +1,8 @@
 #include "Core/Hooks.h"
 
+#include "Core/DebugSwitches.h"
 #include "Core/Globals.h"
+#include "Core/PreNGEnvironment.h"
 #include "Core/ShaderCache.h"
 #include "Core/ShaderCompiler.h"
 #include "Features/LightLimitFix.h"
@@ -52,11 +54,7 @@ namespace CommunityShaders::Hooks
 		using ExecuteCommandListFn = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*, ID3D11CommandList*, BOOL);
 
 		CreateDeferredContextFn createDeferredContext = nullptr;
-		constexpr const char* kPreNGShaderLookupDiagEnv = "FO4CS_LLF_PRENG_SHADER_LOOKUP_DIAG";
 		constexpr const char* kPreNGShaderObjectMetadataEnv = "FO4CS_LLF_PRENG_SHADER_OBJECT_METADATA";
-		constexpr const char* kPreNGBSLightingVanillaDumpEnv = "FO4CS_LLF_PRENG_BSLIGHTING_VANILLA_DUMP";
-		constexpr const char* kPreNGDFLightVanillaDumpEnv = "FO4CS_LLF_PRENG_DFLIGHT_VANILLA_DUMP";
-		constexpr const char* kPreNGDFCompositeVanillaDumpEnv = "FO4CS_LLF_PRENG_DFCOMPOSITE_VANILLA_DUMP";
 		constexpr const char* kPreNGDFLightDrawStateEnv = "FO4CS_LLF_PRENG_DFLIGHT_DRAW_STATE";
 		constexpr const char* kPreNGDFLightZeroAdditivePassEnv = "FO4CS_LLF_PRENG_DFLIGHT_ZERO_ADD_PASS";
 		constexpr const char* kPreNGDFLightDrawStateStrictCBBindEnv = "FO4CS_LLF_PRENG_DFLIGHT_BIND_STRICT_CB";
@@ -81,122 +79,31 @@ namespace CommunityShaders::Hooks
 		constexpr std::uint32_t kPreNGDefaultDFLightDrawStateProofSamples = 128;
 		constexpr std::uint32_t kPreNGMaxDFLightDrawStateProofSamples = 8192;
 
-		bool IsTruthyPreNGEnvironmentValue(const char* a_value)
-		{
-			return std::strcmp(a_value, "1") == 0 ||
-			       std::strcmp(a_value, "true") == 0 ||
-			       std::strcmp(a_value, "TRUE") == 0 ||
-			       std::strcmp(a_value, "on") == 0 ||
-			       std::strcmp(a_value, "ON") == 0;
-		}
-
-		bool ReadPreNGRegistryEnvironmentValue(const char* a_name, HKEY a_root, const char* a_subKey, char (&a_value)[16])
-		{
-			DWORD type = 0;
-			DWORD size = static_cast<DWORD>(sizeof(a_value));
-			const auto result = RegGetValueA(
-				a_root,
-				a_subKey,
-				a_name,
-				RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ,
-				&type,
-				a_value,
-				&size);
-			if (result != ERROR_SUCCESS || size == 0) {
-				return false;
-			}
-
-			a_value[sizeof(a_value) - 1] = '\0';
-			return true;
-		}
-
 		bool ReadPreNGEnvironmentSwitch(const char* a_name)
 		{
-			char value[16]{};
-			if (ReadPreNGRegistryEnvironmentValue(a_name, HKEY_CURRENT_USER, "Environment", value)) {
-				return IsTruthyPreNGEnvironmentValue(value);
-			}
-
-			if (ReadPreNGRegistryEnvironmentValue(
-					a_name,
-					HKEY_LOCAL_MACHINE,
-					"SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment",
-					value)) {
-				return IsTruthyPreNGEnvironmentValue(value);
-			}
-
-			SetLastError(ERROR_SUCCESS);
-			const auto length = GetEnvironmentVariableA(a_name, value, static_cast<DWORD>(sizeof(value)));
-			if (length > 0) {
-				return length < sizeof(value) && IsTruthyPreNGEnvironmentValue(value);
-			}
-			if (GetLastError() != ERROR_ENVVAR_NOT_FOUND) {
-				return false;
-			}
-
-			return false;
-		}
-		bool ParsePreNGEnvironmentUIntValue(const char* a_value, std::uint32_t& a_result)
-		{
-			if (!a_value || *a_value == '\0') {
-				return false;
-			}
-
-			std::uint32_t parsed = 0;
-			const auto* const end = a_value + std::strlen(a_value);
-			const auto [ptr, ec] = std::from_chars(a_value, end, parsed);
-			if (ec != std::errc{} || ptr != end) {
-				return false;
-			}
-
-			a_result = parsed;
-			return true;
+			return DebugSwitches::ReadSwitchEnabled(a_name);
 		}
 
 		std::optional<std::uint32_t> ReadPreNGEnvironmentUInt(const char* a_name)
 		{
-			char value[16]{};
-			std::uint32_t parsed = 0;
-			if (ReadPreNGRegistryEnvironmentValue(a_name, HKEY_CURRENT_USER, "Environment", value)) {
-				return ParsePreNGEnvironmentUIntValue(value, parsed) ? std::optional<std::uint32_t>{ parsed } : std::nullopt;
-			}
-
-			if (ReadPreNGRegistryEnvironmentValue(
-					a_name,
-					HKEY_LOCAL_MACHINE,
-					"SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment",
-					value)) {
-				return ParsePreNGEnvironmentUIntValue(value, parsed) ? std::optional<std::uint32_t>{ parsed } : std::nullopt;
-			}
-
-			SetLastError(ERROR_SUCCESS);
-			const auto length = GetEnvironmentVariableA(a_name, value, static_cast<DWORD>(sizeof(value)));
-			if (length > 0) {
-				return length < sizeof(value) && ParsePreNGEnvironmentUIntValue(value, parsed) ?
-				           std::optional<std::uint32_t>{ parsed } :
-				           std::nullopt;
-			}
-			if (GetLastError() != ERROR_ENVVAR_NOT_FOUND) {
-				return std::nullopt;
-			}
-
-			return std::nullopt;
+			const auto state = DebugSwitches::ReadUInt(a_name);
+			return state.present && state.valid ? std::optional<std::uint32_t>{ state.value } : std::nullopt;
 		}
 
 		bool ShouldMapPreNGShaderObjectMetadata()
 		{
 			static const bool enabled =
 				ReadPreNGEnvironmentSwitch(kPreNGShaderObjectMetadataEnv) ||
-				ReadPreNGEnvironmentSwitch(kPreNGShaderLookupDiagEnv);
+				ReadPreNGEnvironmentSwitch(PreNGEnvironment::kPreNGShaderLookupDiagEnv);
 			return enabled;
 		}
 
 		bool ShouldCapturePreNGDFLightVanillaDumpBytecode()
 		{
 			static const bool enabled =
-				ReadPreNGEnvironmentSwitch(kPreNGBSLightingVanillaDumpEnv) ||
-				ReadPreNGEnvironmentSwitch(kPreNGDFLightVanillaDumpEnv) ||
-				ReadPreNGEnvironmentSwitch(kPreNGDFCompositeVanillaDumpEnv);
+				ReadPreNGEnvironmentSwitch(PreNGEnvironment::kPreNGBSLightingVanillaDumpEnv) ||
+				ReadPreNGEnvironmentSwitch(PreNGEnvironment::kPreNGDFLightVanillaDumpEnv) ||
+				ReadPreNGEnvironmentSwitch(PreNGEnvironment::kPreNGDFCompositeVanillaDumpEnv);
 			return enabled;
 		}
 
@@ -3527,9 +3434,9 @@ namespace CommunityShaders::Hooks
 		if (ShouldCapturePreNGDFLightVanillaDumpBytecode()) {
 			logger::info(
 				"[LightLimitFix] PreNG targeted vanilla shader bytecode capture active; set {}/{}/{}=0 to hold it after the targeted dump run",
-				kPreNGBSLightingVanillaDumpEnv,
-				kPreNGDFLightVanillaDumpEnv,
-				kPreNGDFCompositeVanillaDumpEnv);
+				PreNGEnvironment::kPreNGBSLightingVanillaDumpEnv,
+				PreNGEnvironment::kPreNGDFLightVanillaDumpEnv,
+				PreNGEnvironment::kPreNGDFCompositeVanillaDumpEnv);
 		}
 		if (ShouldTracePreNGDFLightDrawState()) {
 			logger::info(

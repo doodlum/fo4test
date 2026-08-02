@@ -3,6 +3,7 @@
 #include "Core/CommunityShaders.h"
 #include "Core/DebugSwitches.h"
 #include "Core/Feature.h"
+#include "Core/PreNGEnvironment.h"
 #include "Core/ShaderCompiler.h"
 #include "Core/State.h"
 #if defined(FALLOUT_POST_AE)
@@ -28,15 +29,11 @@ namespace CommunityShaders
 {
 	namespace
 	{
-		constexpr const char* kDescriptorCompileEnv = "FO4CS_LLF_PRENG_DESCRIPTOR_COMPILE";
 		namespace F4Runtime = RE::FO4Runtime;
 		constexpr std::int32_t kPreNGBSLightingShaderType = static_cast<std::int32_t>(F4Runtime::PreNG::BS_LIGHTING_SHADER_TYPE);
 #if defined(FALLOUT_PRE_NG)
 		constexpr std::int32_t kPreNGDFLightingShaderType = static_cast<std::int32_t>(F4Runtime::PreNG::DF_LIGHTING_SHADER_TYPE);
 		constexpr std::int32_t kPreNGDFCompositeShaderType = static_cast<std::int32_t>(F4Runtime::PreNG::DF_COMPOSITE_SHADER_TYPE);
-		constexpr std::string_view kPreNGBSLightingFxpName = "lighting";
-		constexpr std::string_view kPreNGDFLightingFxpName = "dflight";
-		constexpr std::string_view kPreNGDFCompositeFxpName = "dfcomposite";
 		constexpr const char* kPreNGBSLightingContractCompileEnv = "FO4CS_LLF_PRENG_BSLIGHTING_CONTRACT_COMPILE";
 		constexpr const char* kPreNGBSLightingConsumerCompileEnv = "FO4CS_LLF_PRENG_BSLIGHTING_CONSUMER_COMPILE";
 		constexpr const char* kPreNGBSLightingLLFBindEnv = "FO4CS_LLF_PRENG_BSLIGHTING_LLF_BIND";
@@ -102,7 +99,7 @@ namespace CommunityShaders
 
 		bool ReadDescriptorCompileSwitch()
 		{
-			return ReadDescriptorEnvironmentSwitch(kDescriptorCompileEnv);
+			return ReadDescriptorEnvironmentSwitch(PreNGEnvironment::kPreNGDescriptorCompileEnv);
 		}
 
 #if defined(FALLOUT_PRE_NG)
@@ -227,7 +224,7 @@ namespace CommunityShaders
 					break;
 				}
 			}
-			return name == kPreNGDFLightingFxpName;
+			return name == PreNGEnvironment::kPreNGDFLightingFxpName;
 #else
 			(void)a_normalizedFxpFilename;
 			return false;
@@ -250,7 +247,7 @@ namespace CommunityShaders
 					break;
 				}
 			}
-			return name == kPreNGBSLightingFxpName;
+			return name == PreNGEnvironment::kPreNGBSLightingFxpName;
 #else
 			(void)a_normalizedFxpFilename;
 			return false;
@@ -273,7 +270,7 @@ namespace CommunityShaders
 					break;
 				}
 			}
-			return name == kPreNGDFCompositeFxpName;
+			return name == PreNGEnvironment::kPreNGDFCompositeFxpName;
 #else
 			(void)a_normalizedFxpFilename;
 			return false;
@@ -711,21 +708,21 @@ namespace CommunityShaders
 			if (ShouldCompilePreNGBSLightingContractShader(
 					a_stage,
 					a_shaderType,
-					kPreNGBSLightingFxpName,
+					PreNGEnvironment::kPreNGBSLightingFxpName,
 					a_descriptor)) {
 				result.storage.emplace_back("FO4CS_BSLIGHTING_CONTRACT_DESCRIPTOR", "1");
 			}
 			if (ShouldCompilePreNGBSLightingConsumerShader(
 					a_stage,
 					a_shaderType,
-					kPreNGBSLightingFxpName,
+					PreNGEnvironment::kPreNGBSLightingFxpName,
 					a_descriptor)) {
 				result.storage.emplace_back("FO4CS_BSLIGHTING_LLF_CONSUMER_DESCRIPTOR", "1");
 			}
 			if (ShouldBindPreNGBSLightingLLFVisibleConsumerShader(
 					a_stage,
 					a_shaderType,
-					kPreNGBSLightingFxpName,
+					PreNGEnvironment::kPreNGBSLightingFxpName,
 					a_descriptor)) {
 				result.storage.emplace_back("FO4CS_BSLIGHTING_LLF_CONSUMER_DESCRIPTOR", "1");
 				result.storage.emplace_back("FO4CS_BSLIGHTING_LLF_VISIBLE_CONSUMER", "1");
@@ -755,7 +752,7 @@ namespace CommunityShaders
 					ShouldUsePreNGDFCompositeVanilla40Shader(
 						a_stage,
 						a_shaderType,
-						kPreNGDFCompositeFxpName,
+						PreNGEnvironment::kPreNGDFCompositeFxpName,
 						a_descriptor)) {
 					result.storage.emplace_back("FO4CS_DFCOMPOSITE_VANILLA_40", "1");
 				}
@@ -763,7 +760,7 @@ namespace CommunityShaders
 					ShouldUsePreNGDFCompositeVanilla88Shader(
 						a_stage,
 						a_shaderType,
-						kPreNGDFCompositeFxpName,
+						PreNGEnvironment::kPreNGDFCompositeFxpName,
 						a_descriptor)) {
 					result.storage.emplace_back("FO4CS_DFCOMPOSITE_VANILLA_88", "1");
 				}
@@ -771,7 +768,7 @@ namespace CommunityShaders
 					ShouldUsePreNGDFCompositeVanilla10040Shader(
 						a_stage,
 						a_shaderType,
-						kPreNGDFCompositeFxpName,
+						PreNGEnvironment::kPreNGDFCompositeFxpName,
 						a_descriptor)) {
 					result.storage.emplace_back("FO4CS_DFCOMPOSITE_VANILLA_10040", "1");
 				}
@@ -779,7 +776,7 @@ namespace CommunityShaders
 					ShouldUsePreNGDFCompositeVanilla10088Shader(
 						a_stage,
 						a_shaderType,
-						kPreNGDFCompositeFxpName,
+						PreNGEnvironment::kPreNGDFCompositeFxpName,
 						a_descriptor)) {
 					result.storage.emplace_back("FO4CS_DFCOMPOSITE_VANILLA_10088", "1");
 				}
@@ -788,7 +785,7 @@ namespace CommunityShaders
 					ShouldUsePreNGDFCompositeVanillaSafeBindShader(
 						a_stage,
 						a_shaderType,
-						kPreNGDFCompositeFxpName,
+						PreNGEnvironment::kPreNGDFCompositeFxpName,
 						a_descriptor)) {
 					result.storage.emplace_back("FO4CS_DFCOMPOSITE_VISIBLE_LLF", "1");
 					result.storage.emplace_back(

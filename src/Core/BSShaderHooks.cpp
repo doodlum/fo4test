@@ -4,6 +4,7 @@
 #include "Core/Deferred.h"
 #include "Core/Feature.h"
 #include "Core/Globals.h"
+#include "Core/PreNGEnvironment.h"
 #include "Core/ShaderCompiler.h"
 #include "Core/ShaderCache.h"
 #include "Features/LightLimitFix.h"
@@ -43,14 +44,10 @@ namespace CommunityShaders
 	static constexpr std::int32_t kPreNGBSLightingShaderType = static_cast<std::int32_t>(F4Runtime::PreNG::BS_LIGHTING_SHADER_TYPE);
 	static constexpr std::int32_t kPreNGDFLightingShaderType = static_cast<std::int32_t>(F4Runtime::PreNG::DF_LIGHTING_SHADER_TYPE);
 	static constexpr std::int32_t kPreNGDFCompositeShaderType = static_cast<std::int32_t>(F4Runtime::PreNG::DF_COMPOSITE_SHADER_TYPE);
-	static constexpr std::string_view kPreNGBSLightingFxpName = "lighting";
-	static constexpr std::string_view kPreNGDFLightingFxpName = "dflight";
-	static constexpr std::string_view kPreNGDFCompositeFxpName = "dfcomposite";
 	static constexpr std::size_t kPreNGMaxShaderLookupDiagnostics = 48;
 	static constexpr std::uint32_t kPreNGMaxShaderLookupHeavyDiagnostics = 16;
 	static constexpr std::size_t kPreNGMaxDescriptorMutationDiagnostics = 64;
 	static constexpr std::size_t kPreNGMaxDescriptorBindDiagnostics = 64;
-	static constexpr const char* kPreNGShaderLookupDiagEnv = "FO4CS_LLF_PRENG_SHADER_LOOKUP_DIAG";
 	static constexpr const char* kPreNGDescriptorMutateEnv = "FO4CS_LLF_PRENG_DESCRIPTOR_MUTATE";
 	static constexpr const char* kPreNGDescriptorCompileEnv = "FO4CS_LLF_PRENG_DESCRIPTOR_COMPILE";
 	static constexpr const char* kPreNGDescriptorBindEnv = "FO4CS_LLF_PRENG_DESCRIPTOR_BIND";
@@ -68,15 +65,12 @@ namespace CommunityShaders
 	static constexpr const char* kPreNGBSLightingResourceBindEnv = "FO4CS_LLF_PRENG_BSLIGHTING_RESOURCE_BIND";
 	static constexpr const char* kPreNGBSLightingVanillaBindEnv = "FO4CS_LLF_PRENG_BSLIGHTING_VANILLA_BIND";
 	static constexpr const char* kPreNGBSLightingLLFBindEnv = "FO4CS_LLF_PRENG_BSLIGHTING_LLF_BIND";
-	static constexpr const char* kPreNGBSLightingVanillaDumpEnv = "FO4CS_LLF_PRENG_BSLIGHTING_VANILLA_DUMP";
-	static constexpr const char* kPreNGDFLightVanillaDumpEnv = "FO4CS_LLF_PRENG_DFLIGHT_VANILLA_DUMP";
 	static constexpr const char* kPreNGDFCompositeDescriptorObserveEnv = "FO4CS_LLF_PRENG_DFCOMPOSITE_DESCRIPTOR_OBSERVE";
 	static constexpr const char* kPreNGDFCompositeDescriptorCompileEnv = "FO4CS_LLF_PRENG_DFCOMPOSITE_DESCRIPTOR_COMPILE";
 	static constexpr const char* kPreNGDFCompositeResourceBindEnv = "FO4CS_LLF_PRENG_DFCOMPOSITE_RESOURCE_BIND";
 	static constexpr const char* kPreNGDFCompositeSafeBindEnv = "FO4CS_LLF_PRENG_DFCOMPOSITE_SAFE_BIND";
 	static constexpr const char* kPreNGDFCompositeVisibleLLFEnv = "FO4CS_LLF_PRENG_DFCOMPOSITE_VISIBLE_LLF";
 	static constexpr const char* kPreNGDFCompositeFogSafeBindEnv = "FO4CS_LLF_PRENG_DFCOMPOSITE_FOG_SAFE_BIND";
-	static constexpr const char* kPreNGDFCompositeVanillaDumpEnv = "FO4CS_LLF_PRENG_DFCOMPOSITE_VANILLA_DUMP";
 	static constexpr const char* kPreNGPersistentClusterPrepassEnv = "FO4CS_LLF_PRENG_PERSISTENT_CLUSTER_PREPASS";
 	static constexpr std::size_t kPreNGMaxFxpFilenameLength = 96;
 	static constexpr std::uint32_t kPreNGDFLightFullShadowedPixelDesc920 = F4Runtime::PreNG::DF_LIGHT_FULL_SHADOWED_PIXEL_DESCRIPTOR_920;
@@ -314,7 +308,7 @@ namespace CommunityShaders
 
 	bool ShouldEnablePreNGShaderLookupDiagnostic()
 	{
-		static const bool enabled = ReadPreNGEnvironmentSwitch(kPreNGShaderLookupDiagEnv);
+		static const bool enabled = ReadPreNGEnvironmentSwitch(PreNGEnvironment::kPreNGShaderLookupDiagEnv);
 		return enabled;
 	}
 
@@ -347,19 +341,19 @@ namespace CommunityShaders
 
 	bool ShouldDumpPreNGBSLightingVanillaShader()
 	{
-		static const bool enabled = ReadPreNGEnvironmentSwitch(kPreNGBSLightingVanillaDumpEnv);
+		static const bool enabled = ReadPreNGEnvironmentSwitch(PreNGEnvironment::kPreNGBSLightingVanillaDumpEnv);
 		return enabled;
 	}
 
 	bool ShouldDumpPreNGDFLightVanillaShader()
 	{
-		static const bool enabled = ReadPreNGEnvironmentSwitch(kPreNGDFLightVanillaDumpEnv);
+		static const bool enabled = ReadPreNGEnvironmentSwitch(PreNGEnvironment::kPreNGDFLightVanillaDumpEnv);
 		return enabled;
 	}
 
 	bool ShouldDumpPreNGDFCompositeVanillaShader()
 	{
-		static const bool enabled = ReadPreNGEnvironmentSwitch(kPreNGDFCompositeVanillaDumpEnv);
+		static const bool enabled = ReadPreNGEnvironmentSwitch(PreNGEnvironment::kPreNGDFCompositeVanillaDumpEnv);
 		return enabled;
 	}
 
@@ -447,17 +441,17 @@ namespace CommunityShaders
 
 	bool IsPreNGBSLightingFxpName(std::string_view a_fxpFilename)
 	{
-		return IsPreNGFxpBaseName(a_fxpFilename, kPreNGBSLightingFxpName);
+		return IsPreNGFxpBaseName(a_fxpFilename, PreNGEnvironment::kPreNGBSLightingFxpName);
 	}
 
 	bool IsPreNGDFLightFxpName(std::string_view a_fxpFilename)
 	{
-		return IsPreNGFxpBaseName(a_fxpFilename, kPreNGDFLightingFxpName);
+		return IsPreNGFxpBaseName(a_fxpFilename, PreNGEnvironment::kPreNGDFLightingFxpName);
 	}
 
 	bool IsPreNGDFCompositeFxpName(std::string_view a_fxpFilename)
 	{
-		return IsPreNGFxpBaseName(a_fxpFilename, kPreNGDFCompositeFxpName);
+		return IsPreNGFxpBaseName(a_fxpFilename, PreNGEnvironment::kPreNGDFCompositeFxpName);
 	}
 
 	bool IsPreNGLightingDescriptorShader(std::int32_t a_shaderType, std::string_view a_fxpFilename)
@@ -3274,7 +3268,7 @@ namespace CommunityShaders
 		} else {
 			logger::info(
 				"[BSShaderHooks] PreNG shader lookup diagnostic/descriptor path held; set {}=1 to enable descriptor path tracing, {}=1/{}=1/{}=1 for descriptor mutation/compile/bind, {}=1 for the narrow DFLight full-shadowed candidate bind proof, {}=1 for BSLighting contract compile-only proof, {}=1 for descriptor-specific BSLighting LLF consumer compile-only proof, {}=1 for BSLighting descriptor observe-only tracing, {}=1 for BSLighting vanilla-equivalent bind proof, {}=1 for vanilla BSLighting shader dump, {}=1 for vanilla DFLight shader dump, or {}=1/{}=1/{}=1/{}=1/{}=1/{}=1 for DFComposite observe/compile/resource-bind/safe-bind/fog-safe-bind/dump; shader replacement remains held",
-				kPreNGShaderLookupDiagEnv,
+				PreNGEnvironment::kPreNGShaderLookupDiagEnv,
 				kPreNGDescriptorMutateEnv,
 				kPreNGDescriptorCompileEnv,
 				kPreNGDescriptorBindEnv,
@@ -3283,14 +3277,14 @@ namespace CommunityShaders
 				kPreNGBSLightingConsumerCompileEnv,
 				kPreNGBSLightingDescriptorObserveEnv,
 				kPreNGBSLightingVanillaBindEnv,
-				kPreNGBSLightingVanillaDumpEnv,
-				kPreNGDFLightVanillaDumpEnv,
+				PreNGEnvironment::kPreNGBSLightingVanillaDumpEnv,
+				PreNGEnvironment::kPreNGDFLightVanillaDumpEnv,
 				kPreNGDFCompositeDescriptorObserveEnv,
 				kPreNGDFCompositeDescriptorCompileEnv,
 				kPreNGDFCompositeResourceBindEnv,
 				kPreNGDFCompositeSafeBindEnv,
 				kPreNGDFCompositeFogSafeBindEnv,
-				kPreNGDFCompositeVanillaDumpEnv);
+				PreNGEnvironment::kPreNGDFCompositeVanillaDumpEnv);
 		}
 #endif
 	}
