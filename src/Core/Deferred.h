@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <shared_mutex>
 #include <unordered_map>
 #include <vector>
 
@@ -159,8 +160,8 @@ private:
 	std::array<D3D11_TEXTURE2D_DESC, kGBufferTargetCount> gBufferDescriptions{};
 	winrt::com_ptr<ID3D11SamplerState> linearSampler;
 	winrt::com_ptr<ID3D11SamplerState> pointSampler;
-	mutable std::mutex lightingShaderLock;
-	std::vector<winrt::com_ptr<ID3D11PixelShader>> lightingPixelShaders;
+	mutable std::shared_mutex lightingShaderLock;
+	std::unordered_map<ID3D11PixelShader*, winrt::com_ptr<ID3D11PixelShader>> lightingPixelShaders;
 	std::atomic_bool hasLightingPixelShaders = false;
 	std::mutex blendStateLock;
 	std::unordered_map<ID3D11BlendState*, winrt::com_ptr<ID3D11BlendState>> blendStateCache;
