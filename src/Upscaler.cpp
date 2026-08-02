@@ -330,8 +330,8 @@ ID3D11DeviceChild* CompileShader(const wchar_t* FilePath, const char* ProgramTyp
 	// Compiler setup
 	uint32_t flags = D3DCOMPILE_ENABLE_STRICTNESS | D3DCOMPILE_OPTIMIZATION_LEVEL3;
 
-	ID3DBlob* shaderBlob;
-	ID3DBlob* shaderErrors;
+	winrt::com_ptr<ID3DBlob> shaderBlob;
+	winrt::com_ptr<ID3DBlob> shaderErrors;
 
 	std::string str;
 	std::wstring path{ FilePath };
@@ -342,7 +342,7 @@ ID3D11DeviceChild* CompileShader(const wchar_t* FilePath, const char* ProgramTyp
 		logger::error("Failed to compile shader; {} does not exist", str);
 		return nullptr;
 	}
-	if (FAILED(D3DCompileFromFile(FilePath, nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE, Program, ProgramType, flags, 0, &shaderBlob, &shaderErrors))) {
+	if (FAILED(D3DCompileFromFile(FilePath, nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE, Program, ProgramType, flags, 0, shaderBlob.put(), shaderErrors.put()))) {
 		logger::warn("Shader compilation failed:\n\n{}", shaderErrors ? static_cast<char*>(shaderErrors->GetBufferPointer()) : "Unknown error");
 		return nullptr;
 	}
