@@ -21,8 +21,6 @@ RWStructuredBuffer<uint>      lightIndexCounter : register(u0);
 RWStructuredBuffer<uint>      lightIndexList    : register(u1);
 RWStructuredBuffer<LightGrid> lightGrid         : register(u2);
 
-groupshared Light sharedLights[GROUP_SIZE];
-
 // AABB vs sphere intersection test (view-space)
 bool LightIntersectsCluster(float3 position, float radiusSq, ClusterAABB cluster)
 {
@@ -50,12 +48,6 @@ void main(
 	                  + dispatchThreadId.z * (ClusterSize.x * ClusterSize.y);
 
 	ClusterAABB cluster = clusters[clusterIndex];
-
-	// Load a subset of lights into groupshared memory (coalesced read)
-	if (groupIndex < LightCount) {
-		sharedLights[groupIndex] = lights[groupIndex];
-	}
-	GroupMemoryBarrierWithGroupSync();
 
 	// Test each light against this cluster's AABB
 	for (uint i = 0; i < LightCount; i++) {
