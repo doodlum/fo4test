@@ -1130,7 +1130,7 @@ void Deferred::Hooks::Install()
 				}
 
 				// BlendedDecals is intentionally not hooked on PreNG. Crash logs showed an AV
-				// inside the original decal call chain after this call-site hook was installed,
+				// inside the original decal call chain after this callsite hook was installed,
 				// while the thunk only added logging and no required rendering work.
 				// World_Start defines the world epoch. MRT binding is scoped to registered
 				// BSLighting draws, and EndDeferred() runs when the function returns.
