@@ -633,16 +633,14 @@ void Deferred::RegisterLightingPixelShader(ID3D11PixelShader* a_shader)
 		return;
 	}
 
-	std::scoped_lock lock(lightingShaderLock);
-	for (const auto& shader : lightingPixelShaders) {
-		if (shader.get() == a_shader) {
-			return;
-		}
+	std::unique_lock lock(lightingShaderLock);
+	if (lightingPixelShaders.contains(a_shader)) {
+		return;
 	}
 
 	winrt::com_ptr<ID3D11PixelShader> retained;
 	retained.copy_from(a_shader);
-	lightingPixelShaders.push_back(std::move(retained));
+	lightingPixelShaders.emplace(a_shader, std::move(retained));
 	hasLightingPixelShaders.store(true, std::memory_order_release);
 	logger::debug(
 		"[Deferred] Registered lighting pixel shader ps=0x{:X} total={}",
@@ -658,13 +656,8 @@ bool Deferred::IsRegisteredLightingPixelShader(ID3D11PixelShader* a_shader) cons
 		return false;
 	}
 
-	std::scoped_lock lock(lightingShaderLock);
-	for (const auto& shader : lightingPixelShaders) {
-		if (shader.get() == a_shader) {
-			return true;
-		}
-	}
-	return false;
+	std::shared_lock lock(lightingShaderLock);
+	return lightingPixelShaders.contains(a_shader);
 }
 
 bool Deferred::BeginLightingDraw(ID3D11DeviceContext* a_context)
