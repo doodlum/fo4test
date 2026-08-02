@@ -109,20 +109,7 @@ target_compile_definitions(Core PRIVATE
 if(CMAKE_GENERATOR MATCHES "Visual Studio")
   target_compile_definitions(Core PRIVATE _UNICODE "$<$<CONFIG:DEBUG>:DEBUG>")
 
-  set(_CORE_RELEASE_OPTS "/Zi;/fp:fast;/GL;/Gy-;/Gm-;/Gw;/sdl-;/GS-;/guard:cf-;/O2;/Ob2;/Oi;/Ot;/Oy;/fp:except-")
-  target_compile_options(Core PRIVATE
-        /MP /W4 /WX /permissive-
-        /Zc:alignedNew /Zc:auto /Zc:__cplusplus /Zc:externC /Zc:externConstexpr
-        /Zc:forScope /Zc:hiddenFriend /Zc:implicitNoexcept /Zc:lambda
-        /Zc:noexceptTypes /Zc:preprocessor /Zc:referenceBinding /Zc:rvalueCast
-        /Zc:sizedDealloc /Zc:strictStrings /Zc:ternary /Zc:threadSafeInit
-        /Zc:trigraphs /Zc:wchar_t /wd4200 /arch:AVX
-    )
-  target_compile_options(Core PUBLIC
-        "$<$<CONFIG:DEBUG>:/fp:strict>" "$<$<CONFIG:DEBUG>:/ZI>"
-        "$<$<CONFIG:DEBUG>:/Od>" "$<$<CONFIG:DEBUG>:/Gy>"
-        "$<$<CONFIG:RELEASE>:${_CORE_RELEASE_OPTS}>"
-    )
+  fo4cs_apply_msvc_compile_options(Core)
 endif()
 
 target_precompile_headers(Core PRIVATE include/PCH.h)
@@ -131,22 +118,14 @@ target_link_libraries(Core PUBLIC ${FO4CS_COMMON_DEPENDENCIES})
 # ImGui core sources in Core — shared by all consumers for panel rendering.
 # Feature DLLs call ImGui functions in their registered panel callbacks.
 # Overlay.dll owns the D3D12 backend + context.
-target_sources(Core PRIVATE
-    extern/imgui/imgui.cpp
-    extern/imgui/imgui_draw.cpp
-    extern/imgui/imgui_tables.cpp
-    extern/imgui/imgui_widgets.cpp
-)
 set(FO4CS_IMGUI_CORE_SOURCES
     extern/imgui/imgui.cpp
     extern/imgui/imgui_draw.cpp
     extern/imgui/imgui_tables.cpp
     extern/imgui/imgui_widgets.cpp
 )
-set_source_files_properties(${FO4CS_IMGUI_CORE_SOURCES} PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
-if(CMAKE_GENERATOR MATCHES "Visual Studio")
-  set_source_files_properties(${FO4CS_IMGUI_CORE_SOURCES} PROPERTIES COMPILE_OPTIONS "/W0")
-endif()
+target_sources(Core PRIVATE ${FO4CS_IMGUI_CORE_SOURCES})
+fo4cs_add_imgui_sources(Core ${FO4CS_IMGUI_CORE_SOURCES})
 
 if(COMMUNITY_SHADERS)
 
@@ -225,19 +204,7 @@ if(COMMUNITY_SHADERS)
   if(CMAKE_GENERATOR MATCHES "Visual Studio")
     target_compile_definitions(CoreCS PRIVATE _UNICODE "$<$<CONFIG:DEBUG>:DEBUG>")
 
-    target_compile_options(CoreCS PRIVATE
-        /MP /W4 /WX /permissive-
-        /Zc:alignedNew /Zc:auto /Zc:__cplusplus /Zc:externC /Zc:externConstexpr
-        /Zc:forScope /Zc:hiddenFriend /Zc:implicitNoexcept /Zc:lambda
-        /Zc:noexceptTypes /Zc:preprocessor /Zc:referenceBinding /Zc:rvalueCast
-        /Zc:sizedDealloc /Zc:strictStrings /Zc:ternary /Zc:threadSafeInit
-        /Zc:trigraphs /Zc:wchar_t /wd4200 /arch:AVX
-    )
-    target_compile_options(CoreCS PUBLIC
-        "$<$<CONFIG:DEBUG>:/fp:strict>" "$<$<CONFIG:DEBUG>:/ZI>"
-        "$<$<CONFIG:DEBUG>:/Od>" "$<$<CONFIG:DEBUG>:/Gy>"
-        "$<$<CONFIG:RELEASE>:${_CORE_RELEASE_OPTS}>"
-    )
+    fo4cs_apply_msvc_compile_options(CoreCS)
   endif()
 
   target_precompile_headers(CoreCS PRIVATE include/PCH.h)
@@ -315,18 +282,10 @@ if(AIO)
         ${CMAKE_CURRENT_SOURCE_DIR}/extern/imgui
         ${CMAKE_CURRENT_SOURCE_DIR}/extern/imgui/backends
     )
-  set_source_files_properties(
+  fo4cs_add_imgui_sources(NuclearGFX
         extern/imgui/backends/imgui_impl_dx12.cpp
         extern/imgui/backends/imgui_impl_win32.cpp
-        PROPERTIES SKIP_PRECOMPILE_HEADERS ON
     )
-  if(CMAKE_GENERATOR MATCHES "Visual Studio")
-    set_source_files_properties(
-            extern/imgui/backends/imgui_impl_dx12.cpp
-            extern/imgui/backends/imgui_impl_win32.cpp
-            PROPERTIES COMPILE_OPTIONS "/W0"
-        )
-  endif()
   set_target_properties(NuclearGFX PROPERTIES OUTPUT_NAME "NuclearGFX")
   target_link_libraries(NuclearGFX PRIVATE Core)
 endif()
@@ -341,20 +300,11 @@ if(COMMUNITY_SHADERS)
         extern/imgui/backends/imgui_impl_win32.cpp
         extern/imgui/backends/imgui_impl_dx12.cpp
     )
-  set_source_files_properties(
+  fo4cs_add_imgui_sources(CommunityShaders
         extern/imgui/backends/imgui_impl_dx11.cpp
         extern/imgui/backends/imgui_impl_dx12.cpp
         extern/imgui/backends/imgui_impl_win32.cpp
-        PROPERTIES SKIP_PRECOMPILE_HEADERS ON
     )
-  if(CMAKE_GENERATOR MATCHES "Visual Studio")
-    set_source_files_properties(
-        extern/imgui/backends/imgui_impl_dx11.cpp
-        extern/imgui/backends/imgui_impl_dx12.cpp
-            extern/imgui/backends/imgui_impl_win32.cpp
-            PROPERTIES COMPILE_OPTIONS "/W0"
-        )
-  endif()
   target_compile_definitions(CommunityShaders PRIVATE COMMUNITY_SHADERS)
   target_link_libraries(CommunityShaders PRIVATE Core CoreCS)
 endif()
@@ -377,16 +327,8 @@ if(OVERLAY)
         extern/imgui/backends/imgui_impl_dx12.cpp
         extern/imgui/backends/imgui_impl_win32.cpp
     )
-  set_source_files_properties(
+  fo4cs_add_imgui_sources(Overlay
         extern/imgui/backends/imgui_impl_dx12.cpp
         extern/imgui/backends/imgui_impl_win32.cpp
-        PROPERTIES SKIP_PRECOMPILE_HEADERS ON
     )
-  if(CMAKE_GENERATOR MATCHES "Visual Studio")
-    set_source_files_properties(
-            extern/imgui/backends/imgui_impl_dx12.cpp
-            extern/imgui/backends/imgui_impl_win32.cpp
-            PROPERTIES COMPILE_OPTIONS "/W0"
-        )
-  endif()
 endif()

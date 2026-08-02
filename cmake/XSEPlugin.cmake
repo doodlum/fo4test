@@ -18,6 +18,42 @@ function(fo4cs_validate_plugin_selection)
     endif()
 endfunction()
 
+# Single copy of the MSVC flag set shared by every target.
+# /sdl- /GS- /guard:cf- are deliberate: mod plugins are local-run executables
+# where the CFG guard overhead on the /O2 /arch:AVX hot paths is not worth it.
+# Keep them off unless a security requirement changes that tradeoff.
+function(fo4cs_apply_msvc_compile_options target)
+    if(NOT CMAKE_GENERATOR MATCHES "Visual Studio")
+        return()
+    endif()
+
+    set(_fo4cs_release_opts "/Zi;/fp:fast;/GL;/Gy-;/Gm-;/Gw;/sdl-;/GS-;/guard:cf-;/O2;/Ob2;/Oi;/Ot;/Oy;/fp:except-")
+
+    target_compile_options("${target}" PRIVATE
+        /MP /W4 /WX /permissive-
+        /Zc:alignedNew /Zc:auto /Zc:__cplusplus /Zc:externC /Zc:externConstexpr
+        /Zc:forScope /Zc:hiddenFriend /Zc:implicitNoexcept /Zc:lambda
+        /Zc:noexceptTypes /Zc:preprocessor /Zc:referenceBinding /Zc:rvalueCast
+        /Zc:sizedDealloc /Zc:strictStrings /Zc:ternary /Zc:threadSafeInit
+        /Zc:trigraphs /Zc:wchar_t /wd4200 /arch:AVX
+    )
+
+    target_compile_options("${target}" PUBLIC
+        "$<$<CONFIG:DEBUG>:/fp:strict>" "$<$<CONFIG:DEBUG>:/ZI>"
+        "$<$<CONFIG:DEBUG>:/Od>" "$<$<CONFIG:DEBUG>:/Gy>"
+        "$<$<CONFIG:RELEASE>:${_fo4cs_release_opts}>"
+    )
+endfunction()
+
+# imgui sources are compiled without the PCH and with warnings suppressed;
+# the vendored code does not follow the project's /W4 /WX discipline.
+function(fo4cs_add_imgui_sources target)
+    set_source_files_properties(${ARGN} PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
+    if(CMAKE_GENERATOR MATCHES "Visual Studio")
+        set_source_files_properties(${ARGN} PROPERTIES COMPILE_OPTIONS "/W0")
+    endif()
+endfunction()
+
 function(xseplugin_resolve_commonlib_root out_root out_name)
     if(BUILD_PRE_NG)
         add_compile_definitions(FALLOUT_PRE_NG)
@@ -108,39 +144,7 @@ function(fo4cs_apply_plugin_defaults target)
     if(CMAKE_GENERATOR MATCHES "Visual Studio")
         target_compile_definitions("${target}" PRIVATE _UNICODE "$<$<CONFIG:DEBUG>:DEBUG>")
 
-        set(SC_RELEASE_OPTS "/Zi;/fp:fast;/GL;/Gy-;/Gm-;/Gw;/sdl-;/GS-;/guard:cf-;/O2;/Ob2;/Oi;/Ot;/Oy;/fp:except-")
-
-        target_compile_options(
-            "${target}"
-            PRIVATE
-            /MP
-            /W4
-            /WX
-            /permissive-
-            /Zc:alignedNew
-            /Zc:auto
-            /Zc:__cplusplus
-            /Zc:externC
-            /Zc:externConstexpr
-            /Zc:forScope
-            /Zc:hiddenFriend
-            /Zc:implicitNoexcept
-            /Zc:lambda
-            /Zc:noexceptTypes
-            /Zc:preprocessor
-            /Zc:referenceBinding
-            /Zc:rvalueCast
-            /Zc:sizedDealloc
-            /Zc:strictStrings
-            /Zc:ternary
-            /Zc:threadSafeInit
-            /Zc:trigraphs
-            /Zc:wchar_t
-            /wd4200
-            /arch:AVX
-        )
-
-        target_compile_options("${target}" PUBLIC "$<$<CONFIG:DEBUG>:/fp:strict>" "$<$<CONFIG:DEBUG>:/ZI>" "$<$<CONFIG:DEBUG>:/Od>" "$<$<CONFIG:DEBUG>:/Gy>" "$<$<CONFIG:RELEASE>:${SC_RELEASE_OPTS}>")
+        fo4cs_apply_msvc_compile_options("${target}")
 
         target_link_options(
             "${target}"
