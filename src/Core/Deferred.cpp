@@ -643,6 +643,7 @@ void Deferred::RegisterLightingPixelShader(ID3D11PixelShader* a_shader)
 	winrt::com_ptr<ID3D11PixelShader> retained;
 	retained.copy_from(a_shader);
 	lightingPixelShaders.push_back(std::move(retained));
+	hasLightingPixelShaders.store(true, std::memory_order_release);
 	logger::debug(
 		"[Deferred] Registered lighting pixel shader ps=0x{:X} total={}",
 		reinterpret_cast<std::uintptr_t>(a_shader),
@@ -668,7 +669,8 @@ bool Deferred::IsRegisteredLightingPixelShader(ID3D11PixelShader* a_shader) cons
 
 bool Deferred::BeginLightingDraw(ID3D11DeviceContext* a_context)
 {
-	if (!a_context || lightingDrawState.active || !IsDeferredPassActive() || !gBufferResourcesReady) {
+	if (!a_context || lightingDrawState.active || !IsDeferredPassActive() || !gBufferResourcesReady ||
+		!hasLightingPixelShaders.load(std::memory_order_acquire)) {
 		return false;
 	}
 
@@ -946,6 +948,7 @@ void Deferred::ClearShaderCache()
 {
 	std::scoped_lock lock(lightingShaderLock, blendStateLock);
 	lightingPixelShaders.clear();
+	hasLightingPixelShaders.store(false, std::memory_order_release);
 	blendStateCache.clear();
 }
 
@@ -1033,30 +1036,22 @@ void Deferred::Hooks::Install()
 #if defined(FALLOUT_POST_NG)
 	namespace F4Hooks = RE::FO4Runtime::PostNG::Hooks;
 
-	// Each REL::ID is pre-validated via HasRELID() before the detour call.
-	// Missing IDs are logged and skipped rather than crashing the process.
-
-	int installed = 0, skipped = 0;
-	for (const auto& hook : F4Hooks::DEFERRED_PIPELINE) {
-		const auto name = hook.name;
-		const auto id = hook.id.id();
-		if (!GetRELOffset(id).has_value()) {
-			logger::warn("[Deferred] REL::ID({}) not in address library — skipping {} hook", id, name);
-			skipped++;
-			continue;
-		}
-		logger::info("[Deferred] Found REL::ID({}) for {} hook", id, name);
-		installed++;
-	}
-
-	if (installed > 0) {
-		stl::detour_thunk<Main_RenderWorld>(F4Hooks::DEFERRED_MAIN_RENDER_WORLD);
-		stl::detour_thunk<Main_RenderShadowMaps>(F4Hooks::DEFERRED_MAIN_RENDER_SHADOW_MAPS);
-		stl::detour_thunk<Main_RenderWorld_Start>(F4Hooks::DEFERRED_MAIN_RENDER_WORLD_START);
-		stl::detour_thunk<Main_RenderWorld_BlendedDecals>(F4Hooks::DEFERRED_MAIN_RENDER_WORLD_BLENDED_DECALS);
-		stl::detour_thunk<Renderer_Begin>(F4Hooks::DEFERRED_RENDERER_BEGIN);
+	// World_Start is the only PostNG/PostAE entry point required by Deferred: it
+	// bounds the world epoch while the D3D11 draw hooks provide the narrow MRT
+	// scope. Do not detour Main_RenderWorld here; Upscaler owns the same REL ID
+	// (2318315), and stacking two entry detours corrupts the trampoline chain.
+	// ShadowMaps has no PostNG/PostAE EarlyPrepass consumer, while BlendedDecals
+	// and Renderer_Begin were diagnostic-only hooks.
+	const auto worldStartID = F4Hooks::DEFERRED_MAIN_RENDER_WORLD_START.id();
+	if (!GetRELOffset(worldStartID).has_value()) {
+		logger::warn(
+			"[Deferred] REL::ID({}) not in address library — World_Start hook skipped",
+			worldStartID);
 	} else {
-		logger::warn("[Deferred] No pipeline hooks installed ({} IDs missing from address library)", skipped);
+		logger::info("[Deferred] Found REL::ID({}) for Main_RenderWorld_Start hook", worldStartID);
+		stl::detour_thunk<Main_RenderWorld_Start>(F4Hooks::DEFERRED_MAIN_RENDER_WORLD_START);
+		logger::info(
+			"[Deferred] PostNG/PostAE World_Start epoch installed; Main_RenderWorld ownership remains with Upscaler");
 	}
 
 #else

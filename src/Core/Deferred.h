@@ -161,6 +161,7 @@ private:
 	winrt::com_ptr<ID3D11SamplerState> pointSampler;
 	mutable std::mutex lightingShaderLock;
 	std::vector<winrt::com_ptr<ID3D11PixelShader>> lightingPixelShaders;
+	std::atomic_bool hasLightingPixelShaders = false;
 	std::mutex blendStateLock;
 	std::unordered_map<ID3D11BlendState*, winrt::com_ptr<ID3D11BlendState>> blendStateCache;
 };
