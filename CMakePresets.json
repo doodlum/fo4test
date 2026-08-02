@@ -119,8 +119,7 @@
 			"cacheVariables": {
 				"BUILD_PRE_NG": true,
 				"BUILD_POST_NG": false,
-				"BUILD_POST_AE": false,
-				"FO4CS_CLANGD_VARIANT": "PreNG"
+				"BUILD_POST_AE": false
 			},
 			"inherits": [
 				"common",
@@ -138,8 +137,7 @@
 			"cacheVariables": {
 				"BUILD_PRE_NG": false,
 				"BUILD_POST_NG": true,
-				"BUILD_POST_AE": false,
-				"FO4CS_CLANGD_VARIANT": "PostNG"
+				"BUILD_POST_AE": false
 			},
 			"inherits": [
 				"common",
@@ -157,8 +155,7 @@
 			"cacheVariables": {
 				"BUILD_PRE_NG": false,
 				"BUILD_POST_NG": false,
-				"BUILD_POST_AE": true,
-				"FO4CS_CLANGD_VARIANT": "PostAE"
+				"BUILD_POST_AE": true
 			},
 			"inherits": [
 				"common",

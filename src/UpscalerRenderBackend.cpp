@@ -993,7 +993,11 @@ bool Upscaling::Upscale()
 		logger::debug("[Upscaler] Frame buffer resource is unavailable; skipping upscale dispatch");
 		return false;
 	}
-	context->CopyResource(upscalingTexture->resource.get(), frameBufferResource);
+	// The full-resolution backup is only consumed by the 1:1 Native AA edge
+	// restore. Super-resolution modes feed their exact internal extent directly
+	// into the shared input texture below.
+	if (settings.qualityMode == 0)
+		context->CopyResource(upscalingTexture->resource.get(), frameBufferResource);
 
 	auto gameViewport = fo4cs::RE::GetGraphicsState();
 	auto renderTargetManager = fo4cs::RE::GetRenderTargetManager();
@@ -1015,8 +1019,8 @@ bool Upscaling::Upscale()
 			!upscalerInputShared12[frameIndex] || !upscalerOutputShared12[frameIndex];
 		const bool mismatchedSharedColor =
 			upscalerInputShared[frameIndex] &&
-			(upscalerInputShared[frameIndex]->desc.Width != upscalingTexture->desc.Width ||
-			 upscalerInputShared[frameIndex]->desc.Height != upscalingTexture->desc.Height ||
+			(upscalerInputShared[frameIndex]->desc.Width != renderWidth ||
+			 upscalerInputShared[frameIndex]->desc.Height != renderHeight ||
 			 upscalerInputShared[frameIndex]->desc.Format != upscalingTexture->desc.Format);
 
 		if (missingSharedColor || mismatchedSharedColor)
@@ -1025,7 +1029,16 @@ bool Upscaling::Upscale()
 		if (upscalerInputShared[frameIndex] && upscalerOutputShared[frameIndex] &&
 			upscalerInputShared12[frameIndex] && upscalerOutputShared12[frameIndex] &&
 			depthBufferShared12[frameIndex] && motionVectorBufferShared12[frameIndex]) {
-			context->CopyResource(upscalerInputShared[frameIndex]->resource.get(), frameBufferResource);
+			D3D11_BOX srcBox{ 0, 0, 0, renderWidth, renderHeight, 1 };
+			context->CopySubresourceRegion(
+				upscalerInputShared[frameIndex]->resource.get(),
+				0,
+				0,
+				0,
+				0,
+				frameBufferResource,
+				0,
+				&srcBox);
 			CopyBuffersToSharedResources();
 
 			auto commandList = dx12SwapChain->BeginInteropCommandList();
@@ -1175,11 +1188,12 @@ bool Upscaling::CreateUpscalingResources()
 	const auto renderWidth = ScaleRenderExtent(presentationColorDesc.Width, renderWidthRatio);
 	const auto renderHeight = ScaleRenderExtent(presentationColorDesc.Height, renderHeightRatio);
 
+	// Both DLSS and FSR consume the low-resolution active extent. Keeping the
+	// DLSS input at presentation size copied stale pixels outside that extent and
+	// doubled the color-copy bandwidth for 2560x1440 -> 3840x2160.
 	D3D11_TEXTURE2D_DESC inputColorDesc = presentationColorDesc;
-	if (needsFSRSharedResources) {
-		inputColorDesc.Width = renderWidth;
-		inputColorDesc.Height = renderHeight;
-	}
+	inputColorDesc.Width = renderWidth;
+	inputColorDesc.Height = renderHeight;
 	D3D11_TEXTURE2D_DESC outputColorDesc = presentationColorDesc;
 
 	const auto openSharedTexture = [&](Texture2D* texture, winrt::com_ptr<ID3D12Resource>& outResource) {

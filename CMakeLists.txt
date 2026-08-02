@@ -6,15 +6,6 @@ project(
     LANGUAGES C CXX
 )
 
-set(FO4CS_CLANGD_VARIANT "" CACHE STRING
-    "Selected runtime variant whose clangd analysis tree should be activated")
-if(FO4CS_CLANGD_VARIANT)
-    message(NOTICE
-        "clangd analysis is independent from this Visual Studio build. "
-        "Run the VS Code task 'clangd: Activate ${FO4CS_CLANGD_VARIANT} analysis tree' "
-        "after configuring this preset.")
-endif()
-
 list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
 include(XSEPlugin)
 

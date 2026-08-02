@@ -10,6 +10,8 @@
 #include <d3d12.h>
 #include <d3dcompiler.h>
 
+#include <memory>
+
 #include "Buffer.h"
 
 // --- Overlay callbacks (registered by Overlay.dll at load time) ---
@@ -25,10 +27,10 @@ class WrappedResource
   public:
     WrappedResource(D3D11_TEXTURE2D_DESC a_texDesc, ID3D11Device5 *a_d3d11Device, ID3D12Device *a_d3d12Device);
 
-    ID3D11Texture2D *resource11;
-    ID3D11ShaderResourceView *srv;
-    ID3D11UnorderedAccessView *uav;
-    ID3D11RenderTargetView *rtv;
+    winrt::com_ptr<ID3D11Texture2D> resource11;
+    winrt::com_ptr<ID3D11ShaderResourceView> srv;
+    winrt::com_ptr<ID3D11UnorderedAccessView> uav;
+    winrt::com_ptr<ID3D11RenderTargetView> rtv;
     winrt::com_ptr<ID3D12Resource> resource;
 };
 
@@ -119,10 +121,10 @@ class DX12SwapChain
         return overlayPollCallback != nullptr;
     }
 
-    Texture2D *swapChainBufferProxy;
-    WrappedResource *swapChainBufferProxyENB;
+    std::unique_ptr<Texture2D> swapChainBufferProxy;
+    std::unique_ptr<WrappedResource> swapChainBufferProxyENB;
 
-    WrappedResource *swapChainBufferWrapped[2];
+    std::unique_ptr<WrappedResource> swapChainBufferWrapped[2];
 
     winrt::com_ptr<ID3D11Device5> d3d11Device;
     winrt::com_ptr<ID3D11DeviceContext4> d3d11Context;
@@ -139,7 +141,7 @@ class DX12SwapChain
 
     LARGE_INTEGER qpf;
 
-    DXGISwapChainProxy *swapChainProxy = nullptr;
+    std::unique_ptr<DXGISwapChainProxy> swapChainProxy;
 
     // HDR color space conversion
     winrt::com_ptr<ID3D12RootSignature> colorSpaceRootSig;

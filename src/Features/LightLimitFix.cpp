@@ -2151,13 +2151,12 @@ void LightLimitFix::PostPostLoad()
         }
     }
     return;
-#else
-#if defined(FALLOUT_POST_AE)
+#elif defined(FALLOUT_POST_AE)
     // PostAE does not yet have a verified BSRenderPass light-data layout.
     // Keep the vfunc untouched until that runtime contract is established.
     logger::info("[LightLimitFix] PostAE SetupGeometry hook held; BSRenderPass light-data layout is unverified");
     return;
-#endif
+#else
     Hooks::Install();
 #endif
 }
