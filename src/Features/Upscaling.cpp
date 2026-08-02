@@ -102,20 +102,15 @@ void FeatureUpscaling::SaveSettings()
 
 	constexpr const char* section = "Settings";
 
+	const auto path = GetSettingsPath();
 	CSimpleIniA ini;
-	ini.SetUnicode();
-
-	std::error_code ec;
-	if (std::filesystem::exists(GetSettingsPath(), ec)) {
-		ini.LoadFile(GetSettingsPath().string().c_str());
-	}
+	OpenSettingsIni(ini, path);
 
 	ini.SetLongValue(section, "iUpscaleMethodPreference", settings.upscaleMethodPreference);
 	ini.SetLongValue(section, "iQualityMode", settings.qualityMode);
 	ini.SetLongValue(section, "iDLSSPreset", settings.dlssPreset);
 
-	std::filesystem::create_directories(GetSettingsPath().parent_path(), ec);
-	ini.SaveFile(GetSettingsPath().string().c_str());
+	SaveSettingsIni(ini, path);
 
 	// Sync back to shared singleton
 	if (upscaling) {

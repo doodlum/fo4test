@@ -45,15 +45,10 @@ void FeatureReflex::LoadSettings()
 	upscaling = Upscaling::GetSingleton();
 
 	CSimpleIniA ini;
-	ini.SetUnicode();
+	OpenSettingsIni(ini, GetSettingsPath());
 
-	std::error_code ec;
-	if (std::filesystem::exists(GetSettingsPath(), ec)) {
-		ini.LoadFile(GetSettingsPath().string().c_str());
-
-		settings.reflexMode = static_cast<int>(ini.GetLongValue("Settings", "iReflexMode", settings.reflexMode));
-		settings.reflexSleepMode = ini.GetBoolValue("Settings", "bReflexSleepMode", settings.reflexSleepMode);
-	}
+	settings.reflexMode = static_cast<int>(ini.GetLongValue("Settings", "iReflexMode", settings.reflexMode));
+	settings.reflexSleepMode = ini.GetBoolValue("Settings", "bReflexSleepMode", settings.reflexSleepMode);
 
 	upscaling->settings.reflexMode = settings.reflexMode;
 	upscaling->settings.reflexSleepMode = settings.reflexSleepMode;
@@ -71,19 +66,14 @@ void FeatureReflex::SaveSettings()
 		settings.reflexMode = upscaling->settings.reflexMode;
 	}
 
+	const auto path = GetSettingsPath();
 	CSimpleIniA ini;
-	ini.SetUnicode();
-
-	std::error_code ec;
-	if (std::filesystem::exists(GetSettingsPath(), ec)) {
-		ini.LoadFile(GetSettingsPath().string().c_str());
-	}
+	OpenSettingsIni(ini, path);
 
 	ini.SetLongValue("Settings", "iReflexMode", settings.reflexMode);
 	ini.SetBoolValue("Settings", "bReflexSleepMode", settings.reflexSleepMode);
 
-	std::filesystem::create_directories(GetSettingsPath().parent_path(), ec);
-	ini.SaveFile(GetSettingsPath().string().c_str());
+	SaveSettingsIni(ini, path);
 
 	if (upscaling) {
 		upscaling->settings.reflexMode = settings.reflexMode;

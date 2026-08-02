@@ -62,17 +62,10 @@ void ShaderDump::LoadSettings()
 void ShaderDump::SaveSettings()
 {
 	CSimpleIniA ini;
-	ini.SetUnicode();
+	OpenSettingsIni(ini, kUserSettingsPath);
 	ini.SetBoolValue(kSection, kDumpAllShadersKey, dumpAllShaders);
 
-	std::error_code ec;
-	std::filesystem::create_directories(kUserSettingsPath.parent_path(), ec);
-	if (ec) {
-		logger::warn("[CommunityShaders] Failed to create settings directory {}: {}", kUserSettingsPath.parent_path().string(), ec.message());
-		return;
-	}
-
-	if (ini.SaveFile(kUserSettingsPath.string().c_str()) < 0) {
+	if (!SaveSettingsIni(ini, kUserSettingsPath)) {
 		logger::warn("[CommunityShaders] Failed to save settings to {}", kUserSettingsPath.string());
 	}
 }

@@ -60,17 +60,12 @@ void FeatureFrameGeneration::LoadSettings()
 	upscaling = Upscaling::GetSingleton();
 
 	CSimpleIniA ini;
-	ini.SetUnicode();
+	OpenSettingsIni(ini, GetSettingsPath());
 
-	std::error_code ec;
-	if (std::filesystem::exists(GetSettingsPath(), ec)) {
-		ini.LoadFile(GetSettingsPath().string().c_str());
-
-		settings.frameGenerationMode = ini.GetBoolValue("Settings", "bFrameGenerationMode", settings.frameGenerationMode);
-		settings.frameLimitMode = ini.GetBoolValue("Settings", "bFrameLimitMode", settings.frameLimitMode);
-		settings.realFrameRateLimit = static_cast<float>(ini.GetDoubleValue("Settings", "fRealFrameRateLimit", settings.realFrameRateLimit));
-		settings.frameGenerationBackend = static_cast<int>(ini.GetLongValue("Settings", "iFrameGenerationBackend", Upscaling::kFrameGenerationBackendDLSS));
-	}
+	settings.frameGenerationMode = ini.GetBoolValue("Settings", "bFrameGenerationMode", settings.frameGenerationMode);
+	settings.frameLimitMode = ini.GetBoolValue("Settings", "bFrameLimitMode", settings.frameLimitMode);
+	settings.realFrameRateLimit = static_cast<float>(ini.GetDoubleValue("Settings", "fRealFrameRateLimit", settings.realFrameRateLimit));
+	settings.frameGenerationBackend = static_cast<int>(ini.GetLongValue("Settings", "iFrameGenerationBackend", Upscaling::kFrameGenerationBackendDLSS));
 
 	// Sync to shared Upscaling singleton
 	upscaling->settings.frameGenerationMode = settings.frameGenerationMode;
@@ -101,21 +96,16 @@ void FeatureFrameGeneration::SaveSettings()
 		settings.frameGenerationBackend = upscaling->settings.frameGenerationBackend;
 	}
 
+	const auto path = GetSettingsPath();
 	CSimpleIniA ini;
-	ini.SetUnicode();
-
-	std::error_code ec;
-	if (std::filesystem::exists(GetSettingsPath(), ec)) {
-		ini.LoadFile(GetSettingsPath().string().c_str());
-	}
+	OpenSettingsIni(ini, path);
 
 	ini.SetBoolValue("Settings", "bFrameGenerationMode", settings.frameGenerationMode);
 	ini.SetBoolValue("Settings", "bFrameLimitMode", settings.frameLimitMode);
 	ini.SetDoubleValue("Settings", "fRealFrameRateLimit", settings.realFrameRateLimit);
 	ini.SetLongValue("Settings", "iFrameGenerationBackend", settings.frameGenerationBackend);
 
-	std::filesystem::create_directories(GetSettingsPath().parent_path(), ec);
-	ini.SaveFile(GetSettingsPath().string().c_str());
+	SaveSettingsIni(ini, path);
 
 	if (upscaling) {
 		upscaling->settings.frameGenerationMode = settings.frameGenerationMode;
