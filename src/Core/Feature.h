@@ -5,6 +5,8 @@
 #include "Core/FeatureVersions.h"
 #include "Core/IMenuItem.h"
 
+#include "SimpleIni.h"
+
 #include <filesystem>
 #include <functional>
 #include <string>
@@ -78,6 +80,14 @@ struct Feature : IMenuItem
 	virtual bool ToggleAtBootSetting();
 	virtual bool ReapplyOverrideSettings();
 
+protected:
+	// Settings INI plumbing shared by the Feature LoadSettings/SaveSettings
+	// implementations. OpenSettingsIni preserves any existing keys on disk;
+	// SaveSettingsIni creates the parent directory and writes the file.
+	void OpenSettingsIni(CSimpleIniA& a_ini, const std::filesystem::path& a_path) const;
+	bool SaveSettingsIni(const CSimpleIniA& a_ini, const std::filesystem::path& a_path) const;
+
+public:
 	template <typename Func>
 	static inline void ForEachLoadedFeature(std::string_view /*a_methodName*/, Func&& a_callback)
 	{

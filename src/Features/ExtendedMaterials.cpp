@@ -108,13 +108,7 @@ void FeatureExtendedMaterials::DrawSettings()
 void FeatureExtendedMaterials::LoadSettings()
 {
 	CSimpleIniA ini;
-	ini.SetUnicode();
-
-	const auto path = GetSettingsPath();
-	std::error_code ec;
-	if (std::filesystem::exists(path, ec)) {
-		ini.LoadFile(path.string().c_str());
-	}
+	OpenSettingsIni(ini, GetSettingsPath());
 
 	settings.EnableComplexMaterial = ToFlag(ini.GetBoolValue(kSection, kEnableComplexMaterial, settings.EnableComplexMaterial != 0));
 	settings.EnableParallax = ToFlag(ini.GetBoolValue(kSection, kEnableParallax, settings.EnableParallax != 0));
@@ -131,14 +125,9 @@ void FeatureExtendedMaterials::LoadSettings()
 
 void FeatureExtendedMaterials::SaveSettings()
 {
-	CSimpleIniA ini;
-	ini.SetUnicode();
-
 	const auto path = GetSettingsPath();
-	std::error_code ec;
-	if (std::filesystem::exists(path, ec)) {
-		ini.LoadFile(path.string().c_str());
-	}
+	CSimpleIniA ini;
+	OpenSettingsIni(ini, path);
 
 	ini.SetBoolValue(kSection, kEnableComplexMaterial, settings.EnableComplexMaterial != 0);
 	ini.SetBoolValue(kSection, kEnableParallax, settings.EnableParallax != 0);
@@ -148,8 +137,7 @@ void FeatureExtendedMaterials::SaveSettings()
 	ini.SetDoubleValue(kSection, kDisplacementOffset, settings.DisplacementOffset);
 	ini.SetDoubleValue(kSection, kHeightScale, settings.HeightScale);
 
-	std::filesystem::create_directories(path.parent_path(), ec);
-	ini.SaveFile(path.string().c_str());
+	SaveSettingsIni(ini, path);
 }
 
 void FeatureExtendedMaterials::RestoreDefaultSettings()
