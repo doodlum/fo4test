@@ -4204,14 +4204,16 @@ bool LightLimitFix::TracePreNGActiveLightingBindings(const char *a_source, std::
         return false;
     }
 
-    ID3D11PixelShader *currentPixelShader = nullptr;
-    context->PSGetShader(&currentPixelShader, nullptr, nullptr);
-    ID3D11Buffer *boundStrictCB = nullptr;
-    context->PSGetConstantBuffers(3, 1, &boundStrictCB);
-    ID3D11ShaderResourceView *boundSRVs[3]{};
-    context->PSGetShaderResources(35, ARRAYSIZE(boundSRVs), boundSRVs);
+    winrt::com_ptr<ID3D11PixelShader> currentPixelShader;
+    context->PSGetShader(currentPixelShader.put(), nullptr, nullptr);
+    winrt::com_ptr<ID3D11Buffer> boundStrictCB;
+    context->PSGetConstantBuffers(3, 1, boundStrictCB.put());
+    winrt::com_ptr<ID3D11ShaderResourceView> boundSRVs[3];
+    for (std::size_t i = 0; i < std::size(boundSRVs); ++i) {
+        context->PSGetShaderResources(35 + static_cast<UINT>(i), 1, boundSRVs[i].put());
+    }
 
-    const auto currentPixelShaderAddress = reinterpret_cast<std::uintptr_t>(currentPixelShader);
+    const auto currentPixelShaderAddress = reinterpret_cast<std::uintptr_t>(currentPixelShader.get());
     if (auto *shaderCache = CommunityShaders::ShaderCache::GetSingleton())
     {
         currentPixelShaderMetadata =
@@ -4225,10 +4227,10 @@ bool LightLimitFix::TracePreNGActiveLightingBindings(const char *a_source, std::
         }
     }
     const bool pixelShaderMatches = a_lookupPixelShader != 0 && currentPixelShaderAddress == a_lookupPixelShader;
-    const bool b3Matches = boundStrictCB == strictLightDataCB.get();
-    const bool t35Matches = boundSRVs[0] == lightsSRV.get();
-    const bool t36Matches = boundSRVs[1] == lightIndexListSRV.get();
-    const bool t37Matches = boundSRVs[2] == lightGridSRV.get();
+    const bool b3Matches = boundStrictCB.get() == strictLightDataCB.get();
+    const bool t35Matches = boundSRVs[0].get() == lightsSRV.get();
+    const bool t36Matches = boundSRVs[1].get() == lightIndexListSRV.get();
+    const bool t37Matches = boundSRVs[2].get() == lightGridSRV.get();
     const bool resourceComplete = b3Matches && t35Matches && t36Matches && t37Matches;
     const bool complete = pixelShaderMatches && resourceComplete;
     const auto currentCompletionEvidence = GetPreNGShaderSlotEvidence(currentPixelShaderMetadata);
@@ -4239,23 +4241,7 @@ bool LightLimitFix::TracePreNGActiveLightingBindings(const char *a_source, std::
         currentCompletionEvidence.samplesT36 > 0 && currentCompletionEvidence.samplesT37 > 0;
 
     logAudit("queried", context, currentPixelShaderAddress, pixelShaderMatches, b3Matches, t35Matches, t36Matches,
-             t37Matches, boundStrictCB, boundSRVs[0], boundSRVs[1], boundSRVs[2]);
-
-    if (currentPixelShader)
-    {
-        currentPixelShader->Release();
-    }
-    if (boundStrictCB)
-    {
-        boundStrictCB->Release();
-    }
-    for (auto *srv : boundSRVs)
-    {
-        if (srv)
-        {
-            srv->Release();
-        }
-    }
+             t37Matches, boundStrictCB.get(), boundSRVs[0].get(), boundSRVs[1].get(), boundSRVs[2].get());
 
     if (descriptorDFLightBindAudit && llfConsumerComplete)
     {
