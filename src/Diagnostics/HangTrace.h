@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Core/DebugSwitches.h"
+
 #include <cstdio>
 #include <filesystem>
 #include <optional>
@@ -31,9 +33,7 @@ namespace fo4cs::Diagnostics
 
 	inline bool IsHangTraceEnabled()
 	{
-		wchar_t value[8]{};
-		const auto length = GetEnvironmentVariableW(L"FO4CS_HANG_TRACE", value, static_cast<DWORD>(std::size(value)));
-		return length > 0 && wcscmp(value, L"1") == 0;
+		return CommunityShaders::DebugSwitches::ReadSwitchEnabled("FO4CS_HANG_TRACE");
 	}
 
 	inline std::optional<std::filesystem::path> GetHangTracePath()

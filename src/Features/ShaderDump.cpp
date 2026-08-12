@@ -1,5 +1,6 @@
 #include "Features/ShaderDump.h"
 
+#include "Core/DebugSwitches.h"
 #include "Core/ShaderCache.h"
 
 #include "SimpleIni.h"
@@ -54,7 +55,7 @@ void ShaderDump::LoadSettings()
 	LoadIniIfExists(ini, kUserSettingsPath, "user CommunityShaders");
 
 	dumpAllShaders = ini.GetBoolValue(kSection, kDumpAllShadersKey, dumpAllShaders);
-	if (GetEnvironmentVariableW(L"FO4CS_DUMP_SHADERS", nullptr, 0) > 0) {
+	if (CommunityShaders::DebugSwitches::ReadSwitchEnabled("FO4CS_DUMP_SHADERS")) {
 		dumpAllShaders = true;
 	}
 }
@@ -82,9 +83,9 @@ void ShaderDump::Load()
 	CommunityShaders::ShaderCache::GetSingleton()->SetDumpAllShaders(dumpAllShaders);
 	logger::info("[CommunityShaders] ShaderDB dump mode {}", dumpAllShaders ? "enabled" : "disabled");
 
-	if (GetEnvironmentVariableW(L"FO4CS_TRACE_PIPELINE", nullptr, 0) > 0) {
+	if (CommunityShaders::DebugSwitches::ReadSwitchEnabled("FO4CS_TRACE_PIPELINE")) {
 		CommunityShaders::ShaderCache::GetSingleton()->SetTracePipeline(true);
-		logger::info("[CommunityShaders] Pipeline tracer enabled (FO4CS_TRACE_PIPELINE=1)");
+		logger::info("[CommunityShaders] Pipeline tracer enabled (Debug.ini FO4CS_TRACE_PIPELINE=1)");
 		logger::info("[CommunityShaders] Traces written to Data/F4SE/Plugins/CommunityShaders/PipelineTrace/");
 	}
 }

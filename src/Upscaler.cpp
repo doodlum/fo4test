@@ -1,5 +1,7 @@
 #include "Upscaler.h"
 
+#include "Core/DebugSwitches.h"
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -161,21 +163,6 @@ namespace
 		return std::format("{:.3f}", value);
 	}
 
-	std::optional<std::string> GetEnvironmentValue(const char* name)
-	{
-		char buffer[64]{};
-		const auto length = GetEnvironmentVariableA(name, buffer, static_cast<DWORD>(std::size(buffer)));
-		if (length == 0 || length >= std::size(buffer)) {
-			return std::nullopt;
-		}
-		return std::string(buffer, length);
-	}
-
-	bool IsTruthy(std::string_view value)
-	{
-		return value == "1" || value == "true" || value == "TRUE" || value == "on" || value == "ON";
-	}
-
 	bool IsFrameGenPluginVisible()
 	{
 		std::error_code ec;
@@ -252,15 +239,6 @@ namespace
 		return false;
 	}
 
-	std::optional<int> ParseIntSetting(std::string_view value)
-	{
-		try {
-			return std::stoi(std::string(value));
-		} catch (...) {
-			return std::nullopt;
-		}
-	}
-
 #ifdef FO4CS_ENABLE_DEBUG_SETTINGS
 	constexpr bool kDebugSettingsSupported = true;
 #else
@@ -290,22 +268,14 @@ namespace
 
 	void ApplyDebugEnvironmentOverrides(Upscaling::Settings& settings)
 	{
-		if constexpr (!kDebugSettingsSupported) {
-			return;
-		}
-
-		if (const auto value = GetEnvironmentValue("FO4CS_DEBUG_LOG")) {
-			settings.debugLogging = IsTruthy(*value);
-		}
-		if (const auto value = GetEnvironmentValue("FO4CS_STREAMLINE_LOG_LEVEL")) {
-			if (const auto parsed = ParseIntSetting(*value)) {
-				settings.streamlineLogLevel = ClampIntSetting(*parsed, 0, 2, "FO4CS_STREAMLINE_LOG_LEVEL");
+		if constexpr (kDebugSettingsSupported) {
+			if (CommunityShaders::DebugSwitches::ReadSwitchEnabled("FO4CS_DEBUG_LOG")) {
+				settings.debugLogging = true;
 			}
-		}
-		if (const auto value = GetEnvironmentValue("FO4CS_DEBUG_FRAMES")) {
-			if (const auto parsed = ParseIntSetting(*value)) {
-				settings.debugFrameLogCount = ClampIntSetting(*parsed, 0, 600, "FO4CS_DEBUG_FRAMES");
-			}
+			settings.streamlineLogLevel = CommunityShaders::DebugSwitches::ReadUIntClamped(
+				"FO4CS_STREAMLINE_LOG_LEVEL", settings.streamlineLogLevel, 0, 2);
+			settings.debugFrameLogCount = CommunityShaders::DebugSwitches::ReadUIntClamped(
+				"FO4CS_DEBUG_FRAMES", settings.debugFrameLogCount, 0, 600);
 		}
 	}
 
