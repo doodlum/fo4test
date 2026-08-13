@@ -718,10 +718,7 @@ void Upscaling::CreateFrameGenerationResources()
 			texDesc.Width = renderWidth;
 			texDesc.Height = renderHeight;
 		}
-		// Keep the render-target format (RGBA16F on PreNG): the HUDLess capture
-		// requires an exact format match with the source render target so the
-		// CopyResource in BuildHUDLessResource can run. The DLSS-G "backbuffer
-		// size" contract is about resolution, not format.
+		texDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
 		srvDesc.Format = texDesc.Format;
 		rtvDesc.Format = texDesc.Format;
 		uavDesc.Format = texDesc.Format;
