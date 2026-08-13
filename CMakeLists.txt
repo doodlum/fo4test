@@ -148,8 +148,10 @@ if(COMMUNITY_SHADERS)
     src/Core/FeatureIssues.h
     src/Core/Globals.cpp
     src/Core/Globals.h
+    src/Core/AdditivePasses.cpp
     src/Core/Hooks.cpp
     src/Core/Hooks.h
+    src/Core/HooksInternal.h
     src/Core/IMenuItem.h
     src/Core/Menu.cpp
     src/Core/Menu.h
