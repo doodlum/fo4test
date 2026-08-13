@@ -136,6 +136,7 @@ if(COMMUNITY_SHADERS)
     src/Core/CommunityShaders.h
     src/Core/Deferred.cpp
     src/Core/Deferred.h
+    src/Core/D3D11DeviceHooks.cpp
     src/Core/DiagnosticsFormatter.cpp
     src/Core/DiagnosticsFormatter.h
     src/Core/Feature.cpp
