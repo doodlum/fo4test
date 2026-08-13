@@ -1088,6 +1088,10 @@ void LogPreNGDiagnosticEnvironmentSnapshot()
         EnvironmentSwitchSourceName(dflightContractCompileState.source),
         EnvironmentSwitchSourceName(dflightCandidateCompileState.source));
 
+    const auto gpuTimingState = ReadEnvironmentSwitch(kPreNGGpuTimingEnv);
+    logger::info("[LightLimitFix] PreNG cluster GPU timing resolved {}={} source={}", kPreNGGpuTimingEnv,
+                 gpuTimingState.enabled ? "on" : "off", EnvironmentSwitchSourceName(gpuTimingState.source));
+
     logger::info(
         "[LightLimitFix] PreNG BSLighting proof env snapshot {}={} {}={} {}={} {}={} {}={} {}={} {}={} {}={} sources "
         "bsLightingContractCompile={} bsLightingConsumerCompile={} bsLightingDescriptorObserve={} "
@@ -1311,8 +1315,10 @@ bool ShouldBindPreNGBSLightingSetupGeometryResources()
 
 bool ShouldTimePreNGClusterPrepassGpu()
 {
-    static const bool enabled = IsTruthyEnvironmentSwitch(kPreNGGpuTimingEnv);
-    return enabled;
+    // Not cached: the switch may be added to Debug.ini after the process has
+    // already started (first access loads the ini), and a static const bool
+    // captured here would permanently lock the first-read value.
+    return IsTruthyEnvironmentSwitch(kPreNGGpuTimingEnv);
 }
 
 bool ShouldSubmitPreNGClusterPrepassEarly()
