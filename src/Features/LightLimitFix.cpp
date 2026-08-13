@@ -3823,6 +3823,13 @@ LightLimitFix::PreNGDFLightResourceBindingState LightLimitFix::BindPreNGDFLightD
         logBindFailure("missing-strict-cb");
         return state;
     }
+    // No collected lights: nothing to bind, and skipping avoids the per-draw
+    // Map/WRITE_DISCARD upload below (dense scenes stalled to ~30fps).
+    if (currentLightCount == 0)
+    {
+        logBindFailure("no-lights");
+        return state;
+    }
     if (!UpdatePreNGStrictLightDataCB(a_context))
     {
         logBindFailure("strict-cb-upload-failed");
@@ -3880,6 +3887,13 @@ LightLimitFix::PreNGDFLightResourceBindingState LightLimitFix::BindPreNGDFLightD
     if (!strictLightDataCB)
     {
         logBindFailure("missing-strict-cb");
+        return state;
+    }
+    // No collected lights: nothing to bind; skip the PSGetConstantBuffers probe
+    // and SRV binds below (dense scenes stalled to ~30fps).
+    if (currentLightCount == 0)
+    {
+        logBindFailure("no-lights");
         return state;
     }
     if (!state.strictCBBound)
