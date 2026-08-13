@@ -29,15 +29,8 @@ namespace CommunityShaders::Hooks
 {
 	namespace
 	{
-		using CreateVertexShaderFn = HRESULT(STDMETHODCALLTYPE*)(ID3D11Device*, const void*, SIZE_T, ID3D11ClassLinkage*, ID3D11VertexShader**);
-		using CreateComputeShaderFn = HRESULT(STDMETHODCALLTYPE*)(ID3D11Device*, const void*, SIZE_T, ID3D11ClassLinkage*, ID3D11ComputeShader**);
-
-		CreateVertexShaderFn createVertexShader = nullptr;
-		CreateComputeShaderFn createComputeShader = nullptr;
-		bool installedDeviceHooks = false;
 
 #if defined(FALLOUT_PRE_NG)
-		using CreateDeferredContextFn = HRESULT(STDMETHODCALLTYPE*)(ID3D11Device*, UINT, ID3D11DeviceContext**);
 		using PSSetShaderResourcesFn = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*, UINT, UINT, ID3D11ShaderResourceView* const*);
 		using PSSetShaderFn = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*, ID3D11PixelShader*, ID3D11ClassInstance* const*, UINT);
 		using DrawFn = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*, UINT, UINT);
@@ -52,53 +45,14 @@ namespace CommunityShaders::Hooks
 		using CopyResourceFn = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*, ID3D11Resource*, ID3D11Resource*);
 		using ExecuteCommandListFn = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*, ID3D11CommandList*, BOOL);
 
-		CreateDeferredContextFn createDeferredContext = nullptr;
-		constexpr const char* kPreNGShaderObjectMetadataEnv = "FO4CS_LLF_PRENG_SHADER_OBJECT_METADATA";
-		constexpr const char* kPreNGDFLightDrawStateEnv = "FO4CS_LLF_PRENG_DFLIGHT_DRAW_STATE";
-		constexpr const char* kPreNGDFLightDrawStateStrictCBBindEnv = "FO4CS_LLF_PRENG_DFLIGHT_BIND_STRICT_CB";
-		constexpr const char* kPreNGDFLightDrawStateClusterSRVBindEnv = "FO4CS_LLF_PRENG_DFLIGHT_BIND_CLUSTER_SRVS";
-		constexpr const char* kPreNGDFLightDrawStateProofBudgetEnv = "FO4CS_LLF_PRENG_DFLIGHT_DRAW_STATE_PROOF_BUDGET";
-		constexpr const char* kTraceLLFPSEnv = "FO4CS_TRACE_LLF_PS";
 		constexpr std::uint32_t kPreNGDFLightVanillaFullShadowed920AsmHash = 0xFB077F61u;
 		constexpr std::uint32_t kPreNGDFLightVanillaFullShadowed922AsmHash = 0xA2D7B576u;
 		constexpr std::uint32_t kPreNGDefaultDFLightDrawStateProofSamples = 128;
 		constexpr std::uint32_t kPreNGMaxDFLightDrawStateProofSamples = 8192;
 
-		bool ShouldMapPreNGShaderObjectMetadata()
-		{
-			static const bool enabled =
-				ReadPreNGEnvironmentSwitch(kPreNGShaderObjectMetadataEnv) ||
-				ReadPreNGEnvironmentSwitch(PreNGEnvironment::kPreNGShaderLookupDiagEnv);
-			return enabled;
-		}
-
-		bool ShouldCapturePreNGDFLightVanillaDumpBytecode()
-		{
-			static const bool enabled =
-				ReadPreNGEnvironmentSwitch(PreNGEnvironment::kPreNGBSLightingVanillaDumpEnv) ||
-				ReadPreNGEnvironmentSwitch(PreNGEnvironment::kPreNGDFLightVanillaDumpEnv) ||
-				ReadPreNGEnvironmentSwitch(PreNGEnvironment::kPreNGDFCompositeVanillaDumpEnv);
-			return enabled;
-		}
-
-		bool ShouldTracePreNGDFLightDrawState()
-		{
-			static const bool enabled = ReadPreNGEnvironmentSwitch(kPreNGDFLightDrawStateEnv);
-			return enabled;
-		}
 
 
-		bool ShouldBindPreNGDFLightDrawStateStrictCB()
-		{
-			static const bool enabled = ReadPreNGEnvironmentSwitch(kPreNGDFLightDrawStateStrictCBBindEnv);
-			return enabled;
-		}
 
-		bool ShouldBindPreNGDFLightDrawStateClusterSRVs()
-		{
-			static const bool enabled = ReadPreNGEnvironmentSwitch(kPreNGDFLightDrawStateClusterSRVBindEnv);
-			return enabled;
-		}
 
 		std::atomic_uint32_t& PreNGDFLightDrawStateProofSamples()
 		{
@@ -118,32 +72,7 @@ namespace CommunityShaders::Hooks
 			return logged;
 		}
 
-		std::uint32_t GetPreNGDFLightDrawStateProofBudget()
-		{
-			static const std::uint32_t budget = [] {
-				const auto configured = ReadPreNGEnvironmentUInt(kPreNGDFLightDrawStateProofBudgetEnv);
-				if (!configured) {
-					return kPreNGDefaultDFLightDrawStateProofSamples;
-				}
-				if (*configured > kPreNGMaxDFLightDrawStateProofSamples) {
-					logger::warn(
-						"[LightLimitFix] PreNG DFLight draw-state proof budget clamped env={} requested={} max={}",
-						kPreNGDFLightDrawStateProofBudgetEnv,
-						*configured,
-						kPreNGMaxDFLightDrawStateProofSamples);
-					return kPreNGMaxDFLightDrawStateProofSamples;
-				}
-				return *configured;
-			}();
-			return budget;
-		}
 
-		bool ShouldRunPreNGDFLightDrawStateProof()
-		{
-			return ShouldTracePreNGDFLightDrawState() ||
-			       ShouldBindPreNGDFLightDrawStateStrictCB() ||
-			       ShouldBindPreNGDFLightDrawStateClusterSRVs();
-		}
 
 		bool IsPreNGDFLightDrawStateProofOpen()
 		{
@@ -203,14 +132,6 @@ namespace CommunityShaders::Hooks
 
 
 
-		bool ShouldTrackPreNGDFLightDrawTargets()
-		{
-			return IsPreNGDFLightDrawStateProofOpen() ||
-			       ShouldRunPreNGDFLightZeroAdditivePass() ||
-			       ShouldRunPreNGDFLightResourceNoOpPass() ||
-			       ShouldRunPreNGDFLightFullContractNoOpPass() ||
-			       ShouldRunPreNGDFLightLLFAdditivePass();
-		}
 
 		struct DrawContextHooks
 		{
@@ -232,8 +153,6 @@ namespace CommunityShaders::Hooks
 
 		DrawContextHooks fallbackDrawContextHooks;
 		std::unordered_map<std::uintptr_t, DrawContextHooks> drawContextHooksByVTable;
-		ID3D11Device* observedD3D11Device = nullptr;
-		ID3D11DeviceContext* observedImmediateContext = nullptr;
 		ID3D11DeviceContext* observedRendererContext = nullptr;
 		bool installedContextHooks = false;
 		bool rendererContextUnavailableLogged = false;
@@ -287,36 +206,6 @@ namespace CommunityShaders::Hooks
 			return std::bit_cast<std::uintptr_t>(a_function);
 		}
 
-		void TraceLightLimitFixContextDiagnostics(const char* a_source, const char* a_phase, ID3D11DeviceContext* a_context, const void* a_rendererData, const void* a_rendererDevice)
-		{
-			if (!a_context) {
-				return;
-			}
-
-			const auto contextAddress = ToAddress(a_context);
-			const auto vtable = GetContextVTablePointer(a_context);
-			const auto functions = FormatDrawVTableFunctions(vtable);
-			const bool sameAsImmediate = observedImmediateContext && a_context == observedImmediateContext;
-			const auto key = std::format("{}:{}:{:X}:{:X}:{}", a_source, a_phase, contextAddress, vtable, functions);
-			{
-				std::scoped_lock lock(llfCandidateLock);
-				if (!loggedLLFContextDiagnostics.insert(key).second) {
-					return;
-				}
-			}
-
-			logger::info(
-				"[LightLimitFix] PreNG context diagnostics source={} phase={} context=0x{:X} vtable=0x{:X} immediateContext=0x{:X} sameAsImmediate={} rendererData=0x{:X} rendererDevice=0x{:X} funcs={}",
-				a_source,
-				a_phase,
-				contextAddress,
-				vtable,
-				ToAddress(observedImmediateContext),
-				sameAsImmediate,
-				ToAddress(a_rendererData),
-				ToAddress(a_rendererDevice),
-				functions);
-		}
 
 		bool ShouldTraceLLFPixelCandidateDiagnostics()
 		{
@@ -324,16 +213,7 @@ namespace CommunityShaders::Hooks
 			return enabled;
 		}
 
-		bool ShouldEnableLightLimitFixPixelCandidateDiagnostics()
-		{
-			return ShouldTraceLLFPixelCandidateDiagnostics() || ShouldTrackPreNGDFLightDrawTargets();
-		}
 
-		bool ShouldTraceLLFPixelCandidates(const ShaderCache& a_cache)
-		{
-			(void)a_cache;
-			return ShouldTraceLLFPixelCandidateDiagnostics();
-		}
 
 		bool HasTextureSlot(const ShaderCache::ShaderMetadata& a_metadata, std::uint32_t a_slot)
 		{
@@ -389,11 +269,6 @@ namespace CommunityShaders::Hooks
 			       (a_metadata.hasImmediateConstantBuffer || a_metadata.immediateConstantBufferRows != 0);
 		}
 
-		bool IsLightLimitFixPixelTrackedCandidate(const ShaderCache::ShaderMetadata& a_metadata)
-		{
-			return IsLightLimitFixPixelCandidate(a_metadata) ||
-			       IsLightLimitFixPixelImmediateConstantNearTarget(a_metadata);
-		}
 
 		bool IsLightLimitFixPixelSurveyMatch(const ShaderCache::ShaderMetadata& a_metadata)
 		{
@@ -470,15 +345,6 @@ namespace CommunityShaders::Hooks
 			       !a_metadata.hasDiscard;
 		}
 
-		bool IsPreNGDFLightDrawStateTarget(const ShaderCache::ShaderMetadata& a_metadata)
-		{
-			const bool vanillaFullShadowedHash =
-				a_metadata.asmHash == kPreNGDFLightVanillaFullShadowed920AsmHash ||
-				a_metadata.asmHash == kPreNGDFLightVanillaFullShadowed922AsmHash;
-
-			return (vanillaFullShadowedHash && IsPreNGDFLightVanillaFullShadowedShape(a_metadata)) ||
-			       IsPreNGDFLightLLFConsumerCandidateShape(a_metadata);
-		}
 
 		std::string FormatLightLimitFixPixelShape(const ShaderCache::ShaderMetadata& a_metadata)
 		{
@@ -622,60 +488,8 @@ namespace CommunityShaders::Hooks
 			return result;
 		}
 
-		void TrackLightLimitFixPixelShader(ID3D11PixelShader* a_pixelShader, const ShaderCache::ShaderMetadata& a_metadata)
-		{
-			if (!a_pixelShader) {
-				return;
-			}
 
-			std::scoped_lock lock(llfCandidateLock);
-			llfCandidatePixelShaders[a_pixelShader] = a_metadata;
-		}
 
-		void TrackObservedPixelShader(ID3D11PixelShader* a_pixelShader, const ShaderCache::ShaderMetadata& a_metadata)
-		{
-			if (!a_pixelShader) {
-				return;
-			}
-
-			std::scoped_lock lock(llfCandidateLock);
-			observedPixelShaderMetadata[a_pixelShader] = a_metadata;
-		}
-
-		void TraceLightLimitFixPixelCandidate(ID3D11Device* a_device, ID3D11PixelShader* a_pixelShader, const ShaderCache::ShaderMetadata& a_metadata)
-		{
-			const auto key = std::format("{}:{:08X}", a_metadata.uid, a_metadata.hash);
-			{
-				std::scoped_lock lock(llfCandidateLock);
-				if (!loggedLLFPixelCandidates.insert(key).second) {
-					return;
-				}
-			}
-
-			logger::info(
-				"[LightLimitFix] Candidate PS asmHash=0x{:08X} hash=0x{:08X} uid={} category={} target={} device=0x{:X} shader=0x{:X} size={} buffers={} textures={} textureDims={} inputCount={} outputCount={} inputMask=0x{:X} outputMask=0x{:X} instructions={} samples={} textureSamples={} discard={} immediateCB={} immediateRows={}",
-				a_metadata.asmHash,
-				a_metadata.hash,
-				a_metadata.uid,
-				ClassifyLightLimitFixPixelCandidate(a_metadata),
-				IsLightLimitFixPixelCandidate(a_metadata),
-				ToAddress(a_device),
-				ToAddress(a_pixelShader),
-				a_metadata.size,
-				FormatBufferSlots(a_metadata),
-				FormatTextureSlots(a_metadata),
-				FormatTextureDimensions(a_metadata),
-				a_metadata.inputCount,
-				a_metadata.outputCount,
-				a_metadata.inputMask,
-				a_metadata.outputMask,
-				a_metadata.instructionCount,
-				a_metadata.sampleInstructionCount,
-				FormatTextureSampleCounts(a_metadata),
-				a_metadata.hasDiscard,
-				a_metadata.hasImmediateConstantBuffer,
-				a_metadata.immediateConstantBufferRows);
-		}
 
 		std::optional<ShaderCache::ShaderMetadata> GetTrackedLightLimitFixPixelShader(ID3D11PixelShader* a_pixelShader)
 		{
@@ -711,44 +525,6 @@ namespace CommunityShaders::Hooks
 			return std::nullopt;
 		}
 
-		void TrackPreNGDFLightDrawStatePixelShader(ID3D11Device* a_device, ID3D11PixelShader* a_pixelShader, const ShaderCache::ShaderMetadata& a_metadata)
-		{
-			if (!a_pixelShader || !ShouldTrackPreNGDFLightDrawTargets() || !IsPreNGDFLightDrawStateTarget(a_metadata)) {
-				return;
-			}
-
-			const auto key = std::format("{}:{:08X}:{:X}", a_metadata.uid, a_metadata.asmHash, ToAddress(a_pixelShader));
-			bool shouldLog = false;
-			std::size_t trackedCount = 0;
-			{
-				std::scoped_lock lock(llfCandidateLock);
-				dflightDrawStatePixelShaders[a_pixelShader] = a_metadata;
-				if (loggedDFLightDrawStatePixelShaders.size() < kMaxDFLightDrawStateLogs) {
-					shouldLog = loggedDFLightDrawStatePixelShaders.insert(key).second;
-				}
-				trackedCount = dflightDrawStatePixelShaders.size();
-			}
-
-			if (!shouldLog) {
-				return;
-			}
-
-			logger::info(
-				"[LightLimitFix] PreNG DFLight draw-state target PS observed asmHash=0x{:08X} hash=0x{:08X} uid={} device=0x{:X} shader=0x{:X} tracked={} buffers={} textures={} textureDims={} instructions={} samples={} textureSamples={} immediateRows={}",
-				a_metadata.asmHash,
-				a_metadata.hash,
-				a_metadata.uid,
-				ToAddress(a_device),
-				ToAddress(a_pixelShader),
-				trackedCount,
-				FormatBufferSlots(a_metadata),
-				FormatTextureSlots(a_metadata),
-				FormatTextureDimensions(a_metadata),
-				a_metadata.instructionCount,
-				a_metadata.sampleInstructionCount,
-				FormatTextureSampleCounts(a_metadata),
-				a_metadata.immediateConstantBufferRows);
-		}
 
 		void TrackPreNGDFLightDrawStateBoundPixelShader(ID3D11DeviceContext* a_context, ID3D11PixelShader* a_pixelShader)
 		{
@@ -1873,97 +1649,6 @@ namespace CommunityShaders::Hooks
 			return std::bit_cast<Fn>(trampoline);
 		}
 
-		void InstallLightLimitFixDrawContextDiagnostics(ID3D11DeviceContext* a_context, const char* a_source, const void* a_rendererData, const void* a_rendererDevice)
-		{
-			if (!ShouldEnableLightLimitFixPixelCandidateDiagnostics()) {
-				return;
-			}
-
-			if (!a_context) {
-				return;
-			}
-
-			const auto vtable = GetContextVTablePointer(a_context);
-			if (!vtable) {
-				logger::warn(
-					"[LightLimitFix] PreNG draw-time diagnostics skipped source={} context=0x{:X}; missing vtable",
-					a_source,
-					ToAddress(a_context));
-				return;
-			}
-
-			bool knownVTable = false;
-			{
-				std::scoped_lock lock(llfCandidateLock);
-				knownVTable = drawContextHooksByVTable.find(vtable) != drawContextHooksByVTable.end();
-			}
-
-			if (knownVTable) {
-				TraceLightLimitFixContextDiagnostics(a_source, "known-vtable", a_context, a_rendererData, a_rendererDevice);
-				return;
-			}
-
-			TraceLightLimitFixContextDiagnostics(a_source, "prehook", a_context, a_rendererData, a_rendererDevice);
-
-			DrawContextHooks hooks;
-			hooks.psSetShaderResources = std::bit_cast<PSSetShaderResourcesFn>(Detours::X64::DetourClassVTable(vtable, &PSSetShaderResourcesHook, 8));
-			hooks.psSetShader = std::bit_cast<PSSetShaderFn>(Detours::X64::DetourClassVTable(vtable, &PSSetShaderHook, 9));
-			hooks.drawIndexed = std::bit_cast<DrawIndexedFn>(Detours::X64::DetourClassVTable(vtable, &DrawIndexedHook, 12));
-			hooks.draw = std::bit_cast<DrawFn>(Detours::X64::DetourClassVTable(vtable, &DrawHook, 13));
-			hooks.drawIndexedInstanced = std::bit_cast<DrawIndexedInstancedFn>(Detours::X64::DetourClassVTable(vtable, &DrawIndexedInstancedHook, 20));
-			hooks.drawInstanced = std::bit_cast<DrawInstancedFn>(Detours::X64::DetourClassVTable(vtable, &DrawInstancedHook, 21));
-			hooks.iaSetPrimitiveTopology = std::bit_cast<IASetPrimitiveTopologyFn>(Detours::X64::DetourClassVTable(vtable, &IASetPrimitiveTopologyHook, 24));
-			hooks.omSetRenderTargets = std::bit_cast<OMSetRenderTargetsFn>(Detours::X64::DetourClassVTable(vtable, &OMSetRenderTargetsHook, 33));
-			hooks.drawAuto = std::bit_cast<DrawAutoFn>(Detours::X64::DetourClassVTable(vtable, &DrawAutoHook, 38));
-			hooks.drawIndexedInstancedIndirect = std::bit_cast<DrawIndexedInstancedIndirectFn>(Detours::X64::DetourClassVTable(vtable, &DrawIndexedInstancedIndirectHook, 39));
-			hooks.drawInstancedIndirect = std::bit_cast<DrawInstancedIndirectFn>(Detours::X64::DetourClassVTable(vtable, &DrawInstancedIndirectHook, 40));
-			hooks.rsSetViewports = std::bit_cast<RSSetViewportsFn>(Detours::X64::DetourClassVTable(vtable, &RSSetViewportsHook, 44));
-			hooks.copyResource = std::bit_cast<CopyResourceFn>(Detours::X64::DetourClassVTable(vtable, &CopyResourceHook, 47));
-			hooks.executeCommandList = std::bit_cast<ExecuteCommandListFn>(Detours::X64::DetourClassVTable(vtable, &ExecuteCommandListHook, 58));
-
-			std::size_t directDrawDetourCount = 0;
-			hooks.drawIndexed = InstallLightLimitFixDirectDrawDiagnostic(hooks.drawIndexed, &DrawIndexedHook, "DrawIndexed", directDrawDetourCount);
-			hooks.draw = InstallLightLimitFixDirectDrawDiagnostic(hooks.draw, &DrawHook, "Draw", directDrawDetourCount);
-			hooks.drawIndexedInstanced = InstallLightLimitFixDirectDrawDiagnostic(hooks.drawIndexedInstanced, &DrawIndexedInstancedHook, "DrawIndexedInstanced", directDrawDetourCount);
-			hooks.drawInstanced = InstallLightLimitFixDirectDrawDiagnostic(hooks.drawInstanced, &DrawInstancedHook, "DrawInstanced", directDrawDetourCount);
-			hooks.drawAuto = InstallLightLimitFixDirectDrawDiagnostic(hooks.drawAuto, &DrawAutoHook, "DrawAuto", directDrawDetourCount);
-			hooks.drawIndexedInstancedIndirect = InstallLightLimitFixDirectDrawDiagnostic(hooks.drawIndexedInstancedIndirect, &DrawIndexedInstancedIndirectHook, "DrawIndexedInstancedIndirect", directDrawDetourCount);
-			hooks.drawInstancedIndirect = InstallLightLimitFixDirectDrawDiagnostic(hooks.drawInstancedIndirect, &DrawInstancedIndirectHook, "DrawInstancedIndirect", directDrawDetourCount);
-
-			std::size_t hookVTableCount = 0;
-			{
-				std::scoped_lock lock(llfCandidateLock);
-				if (!installedContextHooks) {
-					fallbackDrawContextHooks = hooks;
-				}
-				drawContextHooksByVTable[vtable] = hooks;
-				installedContextHooks = true;
-				hookVTableCount = drawContextHooksByVTable.size();
-			}
-
-			TraceLightLimitFixContextDiagnostics(a_source, "posthook", a_context, a_rendererData, a_rendererDevice);
-			logger::info(
-				"[LightLimitFix] PreNG draw-time candidate diagnostics installed source={} context=0x{:X} vtable=0x{:X} hookVTables={} directDrawDetours={} callThroughs=PSSetShaderResources=0x{:X},PSSetShader=0x{:X},DrawIndexed=0x{:X},Draw=0x{:X},DrawIndexedInstanced=0x{:X},DrawInstanced=0x{:X},IASetPrimitiveTopology=0x{:X},OMSetRenderTargets=0x{:X},DrawAuto=0x{:X},DrawIndexedInstancedIndirect=0x{:X},DrawInstancedIndirect=0x{:X},RSSetViewports=0x{:X},CopyResource=0x{:X},ExecuteCommandList=0x{:X}",
-				a_source,
-				ToAddress(a_context),
-				vtable,
-				hookVTableCount,
-				directDrawDetourCount,
-				ToFunctionAddress(hooks.psSetShaderResources),
-				ToFunctionAddress(hooks.psSetShader),
-				ToFunctionAddress(hooks.drawIndexed),
-				ToFunctionAddress(hooks.draw),
-				ToFunctionAddress(hooks.drawIndexedInstanced),
-				ToFunctionAddress(hooks.drawInstanced),
-				ToFunctionAddress(hooks.iaSetPrimitiveTopology),
-				ToFunctionAddress(hooks.omSetRenderTargets),
-				ToFunctionAddress(hooks.drawAuto),
-				ToFunctionAddress(hooks.drawIndexedInstancedIndirect),
-				ToFunctionAddress(hooks.drawInstancedIndirect),
-				ToFunctionAddress(hooks.rsSetViewports),
-				ToFunctionAddress(hooks.copyResource),
-				ToFunctionAddress(hooks.executeCommandList));
-		}
 
 		void ProbeLightLimitFixRendererContext()
 		{
@@ -2011,78 +1696,310 @@ namespace CommunityShaders::Hooks
 		}
 #endif
 
-		HRESULT STDMETHODCALLTYPE CreateVertexShaderHook(ID3D11Device* a_device, const void* a_bytecode, SIZE_T a_bytecodeLength, ID3D11ClassLinkage* a_classLinkage, ID3D11VertexShader** a_vertexShader)
-		{
-			ShaderCache::GetSingleton()->ObserveShader(ShaderStage::Vertex, a_bytecode, a_bytecodeLength);
-			return createVertexShader(a_device, a_bytecode, a_bytecodeLength, a_classLinkage, a_vertexShader);
-		}
-
-		HRESULT STDMETHODCALLTYPE CreatePixelShaderHook(ID3D11Device* a_device, const void* a_bytecode, SIZE_T a_bytecodeLength, ID3D11ClassLinkage* a_classLinkage, ID3D11PixelShader** a_pixelShader)
-		{
-			auto* shaderCache = ShaderCache::GetSingleton();
-			shaderCache->ObserveShader(ShaderStage::Pixel, a_bytecode, a_bytecodeLength);
-#if defined(FALLOUT_PRE_NG)
-			const bool tracePixelCandidates = ShouldTraceLLFPixelCandidates(*shaderCache);
-			const bool mapShaderObjects = ShouldMapPreNGShaderObjectMetadata();
-			const bool captureDFLightVanillaDumpBytecode = ShouldCapturePreNGDFLightVanillaDumpBytecode();
-			const bool trackDFLightDrawTargets = ShouldTrackPreNGDFLightDrawTargets();
-			std::optional<ShaderCache::ShaderMetadata> diagnosticMetadata;
-			if (tracePixelCandidates || mapShaderObjects || captureDFLightVanillaDumpBytecode || trackDFLightDrawTargets) {
-				diagnosticMetadata = shaderCache->GetMetadataForBytecode(ShaderStage::Pixel, a_bytecode, a_bytecodeLength);
-			}
-#endif
-			const auto result = createPixelShader(a_device, a_bytecode, a_bytecodeLength, a_classLinkage, a_pixelShader);
-#if defined(FALLOUT_PRE_NG)
-			if (SUCCEEDED(result) && a_pixelShader && *a_pixelShader && diagnosticMetadata) {
-				if (captureDFLightVanillaDumpBytecode) {
-					shaderCache->ObserveD3DShaderObjectBytecode(ShaderStage::Pixel, ToAddress(*a_pixelShader), *diagnosticMetadata, a_bytecode, a_bytecodeLength);
-				} else if (mapShaderObjects) {
-					shaderCache->ObserveD3DShaderObject(ShaderStage::Pixel, ToAddress(*a_pixelShader), *diagnosticMetadata);
-				}
-				const bool dflightDrawStateTarget =
-					trackDFLightDrawTargets && IsPreNGDFLightDrawStateTarget(*diagnosticMetadata);
-				if (dflightDrawStateTarget && !captureDFLightVanillaDumpBytecode && !mapShaderObjects) {
-					shaderCache->ObserveD3DShaderObject(ShaderStage::Pixel, ToAddress(*a_pixelShader), *diagnosticMetadata);
-				}
-				if (tracePixelCandidates) {
-					TrackObservedPixelShader(*a_pixelShader, *diagnosticMetadata);
-					if (IsLightLimitFixPixelTrackedCandidate(*diagnosticMetadata)) {
-						TrackLightLimitFixPixelShader(*a_pixelShader, *diagnosticMetadata);
-						TraceLightLimitFixPixelCandidate(a_device, *a_pixelShader, *diagnosticMetadata);
-					}
-				}
-				if (trackDFLightDrawTargets) {
-					TrackPreNGDFLightDrawStatePixelShader(a_device, *a_pixelShader, *diagnosticMetadata);
-				}
-			}
-#endif
-			return result;
-		}
-
-		HRESULT STDMETHODCALLTYPE CreateComputeShaderHook(ID3D11Device* a_device, const void* a_bytecode, SIZE_T a_bytecodeLength, ID3D11ClassLinkage* a_classLinkage, ID3D11ComputeShader** a_computeShader)
-		{
-			ShaderCache::GetSingleton()->ObserveShader(ShaderStage::Compute, a_bytecode, a_bytecodeLength);
-			return createComputeShader(a_device, a_bytecode, a_bytecodeLength, a_classLinkage, a_computeShader);
-		}
-
-#if defined(FALLOUT_PRE_NG)
-		HRESULT STDMETHODCALLTYPE CreateDeferredContextHook(ID3D11Device* a_device, UINT a_contextFlags, ID3D11DeviceContext** a_deferredContext)
-		{
-			const auto result = createDeferredContext(a_device, a_contextFlags, a_deferredContext);
-			if (SUCCEEDED(result) && a_deferredContext && *a_deferredContext && ShouldEnableLightLimitFixPixelCandidateDiagnostics()) {
-				logger::info(
-					"[LightLimitFix] PreNG deferred context created flags={} context=0x{:X}",
-					a_contextFlags,
-					ToAddress(*a_deferredContext));
-				TraceLightLimitFixContextDiagnostics("deferred", "observed", *a_deferredContext, nullptr, a_device);
-				InstallLightLimitFixDrawContextDiagnostics(*a_deferredContext, "deferred", nullptr, a_device);
-			}
-			return result;
-		}
-#endif
 	}
 
 #if defined(FALLOUT_PRE_NG)
+	// D3D11DeviceHooks domain (Promotion Step 1): definitions promoted out of the
+	// anonymous namespace (declared in Core/HooksInternal.h).
+
+	bool ShouldTracePreNGDFLightDrawState()
+	{
+		static const bool enabled = ReadPreNGEnvironmentSwitch(kPreNGDFLightDrawStateEnv);
+		return enabled;
+	}
+
+	bool ShouldBindPreNGDFLightDrawStateStrictCB()
+	{
+		static const bool enabled = ReadPreNGEnvironmentSwitch(kPreNGDFLightDrawStateStrictCBBindEnv);
+		return enabled;
+	}
+
+	bool ShouldBindPreNGDFLightDrawStateClusterSRVs()
+	{
+		static const bool enabled = ReadPreNGEnvironmentSwitch(kPreNGDFLightDrawStateClusterSRVBindEnv);
+		return enabled;
+	}
+
+	std::uint32_t GetPreNGDFLightDrawStateProofBudget()
+	{
+		static const std::uint32_t budget = [] {
+			const auto configured = ReadPreNGEnvironmentUInt(kPreNGDFLightDrawStateProofBudgetEnv);
+			if (!configured) {
+				return kPreNGDefaultDFLightDrawStateProofSamples;
+			}
+			if (*configured > kPreNGMaxDFLightDrawStateProofSamples) {
+				logger::warn(
+					"[LightLimitFix] PreNG DFLight draw-state proof budget clamped env={} requested={} max={}",
+					kPreNGDFLightDrawStateProofBudgetEnv,
+					*configured,
+					kPreNGMaxDFLightDrawStateProofSamples);
+				return kPreNGMaxDFLightDrawStateProofSamples;
+			}
+			return *configured;
+		}();
+		return budget;
+	}
+
+	bool ShouldRunPreNGDFLightDrawStateProof()
+	{
+		return ShouldTracePreNGDFLightDrawState() ||
+		       ShouldBindPreNGDFLightDrawStateStrictCB() ||
+		       ShouldBindPreNGDFLightDrawStateClusterSRVs();
+	}
+
+	bool ShouldTrackPreNGDFLightDrawTargets()
+	{
+		return IsPreNGDFLightDrawStateProofOpen() ||
+		       ShouldRunPreNGDFLightZeroAdditivePass() ||
+		       ShouldRunPreNGDFLightResourceNoOpPass() ||
+		       ShouldRunPreNGDFLightFullContractNoOpPass() ||
+		       ShouldRunPreNGDFLightLLFAdditivePass();
+	}
+
+	void TraceLightLimitFixContextDiagnostics(const char* a_source, const char* a_phase, ID3D11DeviceContext* a_context, const void* a_rendererData, const void* a_rendererDevice)
+	{
+		if (!a_context) {
+			return;
+		}
+
+		const auto contextAddress = ToAddress(a_context);
+		const auto vtable = GetContextVTablePointer(a_context);
+		const auto functions = FormatDrawVTableFunctions(vtable);
+		const bool sameAsImmediate = observedImmediateContext && a_context == observedImmediateContext;
+		const auto key = std::format("{}:{}:{:X}:{:X}:{}", a_source, a_phase, contextAddress, vtable, functions);
+		{
+			std::scoped_lock lock(llfCandidateLock);
+			if (!loggedLLFContextDiagnostics.insert(key).second) {
+				return;
+			}
+		}
+
+		logger::info(
+			"[LightLimitFix] PreNG context diagnostics source={} phase={} context=0x{:X} vtable=0x{:X} immediateContext=0x{:X} sameAsImmediate={} rendererData=0x{:X} rendererDevice=0x{:X} funcs={}",
+			a_source,
+			a_phase,
+			contextAddress,
+			vtable,
+			ToAddress(observedImmediateContext),
+			sameAsImmediate,
+			ToAddress(a_rendererData),
+			ToAddress(a_rendererDevice),
+			functions);
+	}
+
+	bool ShouldEnableLightLimitFixPixelCandidateDiagnostics()
+	{
+		return ShouldTraceLLFPixelCandidateDiagnostics() || ShouldTrackPreNGDFLightDrawTargets();
+	}
+
+	bool ShouldTraceLLFPixelCandidates(const ShaderCache& a_cache)
+	{
+		(void)a_cache;
+		return ShouldTraceLLFPixelCandidateDiagnostics();
+	}
+
+	bool IsLightLimitFixPixelTrackedCandidate(const ShaderCache::ShaderMetadata& a_metadata)
+	{
+		return IsLightLimitFixPixelCandidate(a_metadata) ||
+		       IsLightLimitFixPixelImmediateConstantNearTarget(a_metadata);
+	}
+
+	bool IsPreNGDFLightDrawStateTarget(const ShaderCache::ShaderMetadata& a_metadata)
+	{
+		const bool vanillaFullShadowedHash =
+			a_metadata.asmHash == kPreNGDFLightVanillaFullShadowed920AsmHash ||
+			a_metadata.asmHash == kPreNGDFLightVanillaFullShadowed922AsmHash;
+
+		return (vanillaFullShadowedHash && IsPreNGDFLightVanillaFullShadowedShape(a_metadata)) ||
+		       IsPreNGDFLightLLFConsumerCandidateShape(a_metadata);
+	}
+
+	void TrackLightLimitFixPixelShader(ID3D11PixelShader* a_pixelShader, const ShaderCache::ShaderMetadata& a_metadata)
+	{
+		if (!a_pixelShader) {
+			return;
+		}
+
+		std::scoped_lock lock(llfCandidateLock);
+		llfCandidatePixelShaders[a_pixelShader] = a_metadata;
+	}
+
+	void TrackObservedPixelShader(ID3D11PixelShader* a_pixelShader, const ShaderCache::ShaderMetadata& a_metadata)
+	{
+		if (!a_pixelShader) {
+			return;
+		}
+
+		std::scoped_lock lock(llfCandidateLock);
+		observedPixelShaderMetadata[a_pixelShader] = a_metadata;
+	}
+
+	void TraceLightLimitFixPixelCandidate(ID3D11Device* a_device, ID3D11PixelShader* a_pixelShader, const ShaderCache::ShaderMetadata& a_metadata)
+	{
+		const auto key = std::format("{}:{:08X}", a_metadata.uid, a_metadata.hash);
+		{
+			std::scoped_lock lock(llfCandidateLock);
+			if (!loggedLLFPixelCandidates.insert(key).second) {
+				return;
+			}
+		}
+
+		logger::info(
+			"[LightLimitFix] Candidate PS asmHash=0x{:08X} hash=0x{:08X} uid={} category={} target={} device=0x{:X} shader=0x{:X} size={} buffers={} textures={} textureDims={} inputCount={} outputCount={} inputMask=0x{:X} outputMask=0x{:X} instructions={} samples={} textureSamples={} discard={} immediateCB={} immediateRows={}",
+			a_metadata.asmHash,
+			a_metadata.hash,
+			a_metadata.uid,
+			ClassifyLightLimitFixPixelCandidate(a_metadata),
+			IsLightLimitFixPixelCandidate(a_metadata),
+			ToAddress(a_device),
+			ToAddress(a_pixelShader),
+			a_metadata.size,
+			FormatBufferSlots(a_metadata),
+			FormatTextureSlots(a_metadata),
+			FormatTextureDimensions(a_metadata),
+			a_metadata.inputCount,
+			a_metadata.outputCount,
+			a_metadata.inputMask,
+			a_metadata.outputMask,
+			a_metadata.instructionCount,
+			a_metadata.sampleInstructionCount,
+			FormatTextureSampleCounts(a_metadata),
+			a_metadata.hasDiscard,
+			a_metadata.hasImmediateConstantBuffer,
+			a_metadata.immediateConstantBufferRows);
+	}
+
+	void TrackPreNGDFLightDrawStatePixelShader(ID3D11Device* a_device, ID3D11PixelShader* a_pixelShader, const ShaderCache::ShaderMetadata& a_metadata)
+	{
+		if (!a_pixelShader || !ShouldTrackPreNGDFLightDrawTargets() || !IsPreNGDFLightDrawStateTarget(a_metadata)) {
+			return;
+		}
+
+		const auto key = std::format("{}:{:08X}:{:X}", a_metadata.uid, a_metadata.asmHash, ToAddress(a_pixelShader));
+		bool shouldLog = false;
+		std::size_t trackedCount = 0;
+		{
+			std::scoped_lock lock(llfCandidateLock);
+			dflightDrawStatePixelShaders[a_pixelShader] = a_metadata;
+			if (loggedDFLightDrawStatePixelShaders.size() < kMaxDFLightDrawStateLogs) {
+				shouldLog = loggedDFLightDrawStatePixelShaders.insert(key).second;
+			}
+			trackedCount = dflightDrawStatePixelShaders.size();
+		}
+
+		if (!shouldLog) {
+			return;
+		}
+
+		logger::info(
+			"[LightLimitFix] PreNG DFLight draw-state target PS observed asmHash=0x{:08X} hash=0x{:08X} uid={} device=0x{:X} shader=0x{:X} tracked={} buffers={} textures={} textureDims={} instructions={} samples={} textureSamples={} immediateRows={}",
+			a_metadata.asmHash,
+			a_metadata.hash,
+			a_metadata.uid,
+			ToAddress(a_device),
+			ToAddress(a_pixelShader),
+			trackedCount,
+			FormatBufferSlots(a_metadata),
+			FormatTextureSlots(a_metadata),
+			FormatTextureDimensions(a_metadata),
+			a_metadata.instructionCount,
+			a_metadata.sampleInstructionCount,
+			FormatTextureSampleCounts(a_metadata),
+			a_metadata.immediateConstantBufferRows);
+	}
+
+	void InstallLightLimitFixDrawContextDiagnostics(ID3D11DeviceContext* a_context, const char* a_source, const void* a_rendererData, const void* a_rendererDevice)
+	{
+		if (!ShouldEnableLightLimitFixPixelCandidateDiagnostics()) {
+			return;
+		}
+
+		if (!a_context) {
+			return;
+		}
+
+		const auto vtable = GetContextVTablePointer(a_context);
+		if (!vtable) {
+			logger::warn(
+				"[LightLimitFix] PreNG draw-time diagnostics skipped source={} context=0x{:X}; missing vtable",
+				a_source,
+				ToAddress(a_context));
+			return;
+		}
+
+		bool knownVTable = false;
+		{
+			std::scoped_lock lock(llfCandidateLock);
+			knownVTable = drawContextHooksByVTable.find(vtable) != drawContextHooksByVTable.end();
+		}
+
+		if (knownVTable) {
+			TraceLightLimitFixContextDiagnostics(a_source, "known-vtable", a_context, a_rendererData, a_rendererDevice);
+			return;
+		}
+
+		TraceLightLimitFixContextDiagnostics(a_source, "prehook", a_context, a_rendererData, a_rendererDevice);
+
+		DrawContextHooks hooks;
+		hooks.psSetShaderResources = std::bit_cast<PSSetShaderResourcesFn>(Detours::X64::DetourClassVTable(vtable, &PSSetShaderResourcesHook, 8));
+		hooks.psSetShader = std::bit_cast<PSSetShaderFn>(Detours::X64::DetourClassVTable(vtable, &PSSetShaderHook, 9));
+		hooks.drawIndexed = std::bit_cast<DrawIndexedFn>(Detours::X64::DetourClassVTable(vtable, &DrawIndexedHook, 12));
+		hooks.draw = std::bit_cast<DrawFn>(Detours::X64::DetourClassVTable(vtable, &DrawHook, 13));
+		hooks.drawIndexedInstanced = std::bit_cast<DrawIndexedInstancedFn>(Detours::X64::DetourClassVTable(vtable, &DrawIndexedInstancedHook, 20));
+		hooks.drawInstanced = std::bit_cast<DrawInstancedFn>(Detours::X64::DetourClassVTable(vtable, &DrawInstancedHook, 21));
+		hooks.iaSetPrimitiveTopology = std::bit_cast<IASetPrimitiveTopologyFn>(Detours::X64::DetourClassVTable(vtable, &IASetPrimitiveTopologyHook, 24));
+		hooks.omSetRenderTargets = std::bit_cast<OMSetRenderTargetsFn>(Detours::X64::DetourClassVTable(vtable, &OMSetRenderTargetsHook, 33));
+		hooks.drawAuto = std::bit_cast<DrawAutoFn>(Detours::X64::DetourClassVTable(vtable, &DrawAutoHook, 38));
+		hooks.drawIndexedInstancedIndirect = std::bit_cast<DrawIndexedInstancedIndirectFn>(Detours::X64::DetourClassVTable(vtable, &DrawIndexedInstancedIndirectHook, 39));
+		hooks.drawInstancedIndirect = std::bit_cast<DrawInstancedIndirectFn>(Detours::X64::DetourClassVTable(vtable, &DrawInstancedIndirectHook, 40));
+		hooks.rsSetViewports = std::bit_cast<RSSetViewportsFn>(Detours::X64::DetourClassVTable(vtable, &RSSetViewportsHook, 44));
+		hooks.copyResource = std::bit_cast<CopyResourceFn>(Detours::X64::DetourClassVTable(vtable, &CopyResourceHook, 47));
+		hooks.executeCommandList = std::bit_cast<ExecuteCommandListFn>(Detours::X64::DetourClassVTable(vtable, &ExecuteCommandListHook, 58));
+
+		std::size_t directDrawDetourCount = 0;
+		hooks.drawIndexed = InstallLightLimitFixDirectDrawDiagnostic(hooks.drawIndexed, &DrawIndexedHook, "DrawIndexed", directDrawDetourCount);
+		hooks.draw = InstallLightLimitFixDirectDrawDiagnostic(hooks.draw, &DrawHook, "Draw", directDrawDetourCount);
+		hooks.drawIndexedInstanced = InstallLightLimitFixDirectDrawDiagnostic(hooks.drawIndexedInstanced, &DrawIndexedInstancedHook, "DrawIndexedInstanced", directDrawDetourCount);
+		hooks.drawInstanced = InstallLightLimitFixDirectDrawDiagnostic(hooks.drawInstanced, &DrawInstancedHook, "DrawInstanced", directDrawDetourCount);
+		hooks.drawAuto = InstallLightLimitFixDirectDrawDiagnostic(hooks.drawAuto, &DrawAutoHook, "DrawAuto", directDrawDetourCount);
+		hooks.drawIndexedInstancedIndirect = InstallLightLimitFixDirectDrawDiagnostic(hooks.drawIndexedInstancedIndirect, &DrawIndexedInstancedIndirectHook, "DrawIndexedInstancedIndirect", directDrawDetourCount);
+		hooks.drawInstancedIndirect = InstallLightLimitFixDirectDrawDiagnostic(hooks.drawInstancedIndirect, &DrawInstancedIndirectHook, "DrawInstancedIndirect", directDrawDetourCount);
+
+		std::size_t hookVTableCount = 0;
+		{
+			std::scoped_lock lock(llfCandidateLock);
+			if (!installedContextHooks) {
+				fallbackDrawContextHooks = hooks;
+			}
+			drawContextHooksByVTable[vtable] = hooks;
+			installedContextHooks = true;
+			hookVTableCount = drawContextHooksByVTable.size();
+		}
+
+		TraceLightLimitFixContextDiagnostics(a_source, "posthook", a_context, a_rendererData, a_rendererDevice);
+		logger::info(
+			"[LightLimitFix] PreNG draw-time candidate diagnostics installed source={} context=0x{:X} vtable=0x{:X} hookVTables={} directDrawDetours={} callThroughs=PSSetShaderResources=0x{:X},PSSetShader=0x{:X},DrawIndexed=0x{:X},Draw=0x{:X},DrawIndexedInstanced=0x{:X},DrawInstanced=0x{:X},IASetPrimitiveTopology=0x{:X},OMSetRenderTargets=0x{:X},DrawAuto=0x{:X},DrawIndexedInstancedIndirect=0x{:X},DrawInstancedIndirect=0x{:X},RSSetViewports=0x{:X},CopyResource=0x{:X},ExecuteCommandList=0x{:X}",
+			a_source,
+			ToAddress(a_context),
+			vtable,
+			hookVTableCount,
+			directDrawDetourCount,
+			ToFunctionAddress(hooks.psSetShaderResources),
+			ToFunctionAddress(hooks.psSetShader),
+			ToFunctionAddress(hooks.drawIndexed),
+			ToFunctionAddress(hooks.draw),
+			ToFunctionAddress(hooks.drawIndexedInstanced),
+			ToFunctionAddress(hooks.drawInstanced),
+			ToFunctionAddress(hooks.iaSetPrimitiveTopology),
+			ToFunctionAddress(hooks.omSetRenderTargets),
+			ToFunctionAddress(hooks.drawAuto),
+			ToFunctionAddress(hooks.drawIndexedInstancedIndirect),
+			ToFunctionAddress(hooks.drawInstancedIndirect),
+			ToFunctionAddress(hooks.rsSetViewports),
+			ToFunctionAddress(hooks.copyResource),
+			ToFunctionAddress(hooks.executeCommandList));
+	}
+
 	std::optional<ShaderCache::ShaderMetadata> GetBoundPreNGDFLightDrawStatePixelShader(ID3D11DeviceContext* a_context)
 	{
 		if (!a_context || !ShouldTrackPreNGDFLightDrawTargets()) {
@@ -2113,116 +2030,6 @@ namespace CommunityShaders::Hooks
 	void Install()
 	{
 		logger::info("[CommunityShaders] D3D11 observation hooks armed");
-	}
-
-	void OnD3D11DeviceCreated(ID3D11Device* a_device)
-	{
-		if (!a_device || installedDeviceHooks) {
-			return;
-		}
-
-		*(uintptr_t*)&createVertexShader = Detours::X64::DetourClassVTable(*(uintptr_t*)a_device, &CreateVertexShaderHook, 12);
-		*(uintptr_t*)&createPixelShader = Detours::X64::DetourClassVTable(*(uintptr_t*)a_device, &CreatePixelShaderHook, 15);
-		*(uintptr_t*)&createComputeShader = Detours::X64::DetourClassVTable(*(uintptr_t*)a_device, &CreateComputeShaderHook, 18);
-#if defined(FALLOUT_PRE_NG)
-		if (ShouldEnableLightLimitFixPixelCandidateDiagnostics()) {
-			*(uintptr_t*)&createDeferredContext = Detours::X64::DetourClassVTable(*(uintptr_t*)a_device, &CreateDeferredContextHook, 27);
-		}
-#endif
-		installedDeviceHooks = true;
-
-		logger::info("[CommunityShaders] D3D11 shader observation hooks installed");
-
-#if defined(FALLOUT_PRE_NG)
-		if (ShouldCapturePreNGDFLightVanillaDumpBytecode()) {
-			logger::info(
-				"[LightLimitFix] PreNG targeted vanilla shader bytecode capture active; set {}/{}/{}=0 to hold it after the targeted dump run",
-				PreNGEnvironment::kPreNGBSLightingVanillaDumpEnv,
-				PreNGEnvironment::kPreNGDFLightVanillaDumpEnv,
-				PreNGEnvironment::kPreNGDFCompositeVanillaDumpEnv);
-		}
-		if (ShouldTracePreNGDFLightDrawState()) {
-			logger::info(
-				"[LightLimitFix] PreNG DFLight draw-state capture active; set {}=0 after the short targeted run",
-				kPreNGDFLightDrawStateEnv);
-		}
-		if (ShouldRunPreNGDFLightZeroAdditivePass()) {
-			logger::info(
-				"[LightLimitFix] PreNG DFLight zero-additive pass active; set {}=0 after the short targeted run",
-				kPreNGDFLightZeroAdditivePassEnv);
-		}
-		if (ShouldBindPreNGDFLightDrawStateStrictCB()) {
-			logger::info(
-				"[LightLimitFix] PreNG DFLight draw-state strict-CB b3 bind active; set {}=0 after the short targeted run",
-				kPreNGDFLightDrawStateStrictCBBindEnv);
-		}
-		if (ShouldBindPreNGDFLightDrawStateClusterSRVs()) {
-			logger::info(
-				"[LightLimitFix] PreNG DFLight draw-state cluster SRV t35-t37 bind active; set {}=0 after the short targeted run",
-				kPreNGDFLightDrawStateClusterSRVBindEnv);
-		}
-		if (ShouldRunPreNGDFLightDrawStateProof()) {
-			logger::info(
-				"[LightLimitFix] PreNG DFLight draw-state proof budget resolved env={} samples={}",
-				kPreNGDFLightDrawStateProofBudgetEnv,
-				GetPreNGDFLightDrawStateProofBudget());
-		}
-		if (ShouldRunPreNGDFLightResourceNoOpPass()) {
-			logger::info(
-				"[LightLimitFix] PreNG DFLight resource no-op pass active; set {}=0 after the short targeted run",
-				kPreNGDFLightResourceNoOpPassEnv);
-		}
-		if (ShouldRunPreNGDFLightFullContractNoOpPass()) {
-			logger::info(
-				"[LightLimitFix] PreNG DFLight full contract no-op pass active; set {}=0 after the short targeted run",
-				kPreNGDFLightFullContractNoOpPassEnv);
-		}
-		if (ShouldRunPreNGDFLightLLFAdditivePass()) {
-			const auto drawLimit = GetPreNGDFLightLLFAdditivePassDrawBudget();
-			const auto frameBudget = GetPreNGDFLightLLFAdditivePassFrameBudget();
-			const auto scale1024 = GetPreNGDFLightLLFAdditiveScale1024();
-			const auto maxLights = GetPreNGDFLightLLFAdditiveMaxLights();
-			const bool persistent = ShouldPersistPreNGDFLightLLFAdditivePass();
-			logger::info(
-				"[LightLimitFix] PreNG DFLight LLF additive legacy proof active drawBudget={} frameBudget={} scale1024={} maxLights={} persistent={} legacyOverrideEnv={} budgetEnv={} frameBudgetEnv={} scaleEnv={} maxLightsEnv={} persistentEnv={}; set {}=0 after the targeted run",
-				drawLimit,
-				frameBudget,
-				scale1024,
-				maxLights,
-				persistent ? "on" : "off",
-				kPreNGDFLightLegacyAdditiveProofEnv,
-				kPreNGDFLightLLFAdditiveBudgetEnv,
-				kPreNGDFLightLLFAdditiveFrameBudgetEnv,
-				kPreNGDFLightLLFAdditiveScale1024Env,
-				kPreNGDFLightLLFAdditiveMaxLightsEnv,
-				kPreNGDFLightLLFAdditivePersistentEnv,
-				kPreNGDFLightLLFAdditivePassEnv);
-		}
-		if (ShouldEnableLightLimitFixPixelCandidateDiagnostics()) {
-			observedD3D11Device = a_device;
-			winrt::com_ptr<ID3D11DeviceContext> context;
-			a_device->GetImmediateContext(context.put());
-			if (context) {
-				observedImmediateContext = context.get();
-				TraceLightLimitFixContextDiagnostics("immediate", "observed", context.get(), nullptr, a_device);
-				InstallLightLimitFixDrawContextDiagnostics(context.get(), "immediate", nullptr, a_device);
-			} else {
-				logger::warn("[LightLimitFix] PreNG immediate context unavailable during draw diagnostics install");
-			}
-		} else {
-			logger::info(
-				"[LightLimitFix] PreNG support-only PS candidate diagnostics held; set {}=1 for broad shader-path evidence, {}=1 for narrow DFLight draw-state evidence, {}=1 for zero-output DFLight additive pass proof, {}=1 for DFLight draw-state strict-CB b3 proof, {}=1 for DFLight draw-state cluster SRV t35-t37 proof, {}=1 for DFLight LLF-resource no-op pass proof, {}=1 for DFLight vanilla+LLF full-contract no-op pass proof, or {}=1 plus {}=1 for the legacy DFLight LLF-only additive proof. The legacy additive proof is not the Skyrim-CS LLF implementation direction.",
-				kTraceLLFPSEnv,
-				kPreNGDFLightDrawStateEnv,
-				kPreNGDFLightZeroAdditivePassEnv,
-				kPreNGDFLightDrawStateStrictCBBindEnv,
-				kPreNGDFLightDrawStateClusterSRVBindEnv,
-				kPreNGDFLightResourceNoOpPassEnv,
-				kPreNGDFLightFullContractNoOpPassEnv,
-				kPreNGDFLightLegacyAdditiveProofEnv,
-				kPreNGDFLightLLFAdditivePassEnv);
-		}
-#endif
 	}
 
 	void OnFrame()

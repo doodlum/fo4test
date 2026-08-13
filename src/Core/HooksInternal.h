@@ -58,6 +58,34 @@ namespace CommunityShaders::Hooks
 	// DSP: defined in Hooks.cpp (moved out of the anonymous namespace).
 	[[nodiscard]] std::optional<ShaderCache::ShaderMetadata> GetBoundPreNGDFLightDrawStatePixelShader(ID3D11DeviceContext* a_context);
 
+	// D3D11DeviceHooks domain (Promotion Step 1): shared state + env switches + functions
+	// defined in Hooks.cpp (moved out of the anonymous namespace).
+	inline ID3D11Device* observedD3D11Device = nullptr;
+	inline ID3D11DeviceContext* observedImmediateContext = nullptr;
+
+	inline constexpr const char* kPreNGDFLightDrawStateEnv = "FO4CS_LLF_PRENG_DFLIGHT_DRAW_STATE";
+	inline constexpr const char* kPreNGDFLightDrawStateStrictCBBindEnv = "FO4CS_LLF_PRENG_DFLIGHT_BIND_STRICT_CB";
+	inline constexpr const char* kPreNGDFLightDrawStateClusterSRVBindEnv = "FO4CS_LLF_PRENG_DFLIGHT_BIND_CLUSTER_SRVS";
+	inline constexpr const char* kPreNGDFLightDrawStateProofBudgetEnv = "FO4CS_LLF_PRENG_DFLIGHT_DRAW_STATE_PROOF_BUDGET";
+	inline constexpr const char* kTraceLLFPSEnv = "FO4CS_TRACE_LLF_PS";
+
+	[[nodiscard]] bool ShouldEnableLightLimitFixPixelCandidateDiagnostics();
+	bool ShouldTraceLLFPixelCandidates(const ShaderCache& a_cache);
+	bool ShouldTrackPreNGDFLightDrawTargets();
+	bool IsLightLimitFixPixelTrackedCandidate(const ShaderCache::ShaderMetadata& a_metadata);
+	bool IsPreNGDFLightDrawStateTarget(const ShaderCache::ShaderMetadata& a_metadata);
+	void TrackLightLimitFixPixelShader(ID3D11PixelShader* a_pixelShader, const ShaderCache::ShaderMetadata& a_metadata);
+	void TrackObservedPixelShader(ID3D11PixelShader* a_pixelShader, const ShaderCache::ShaderMetadata& a_metadata);
+	void TraceLightLimitFixPixelCandidate(ID3D11Device* a_device, ID3D11PixelShader* a_pixelShader, const ShaderCache::ShaderMetadata& a_metadata);
+	void TrackPreNGDFLightDrawStatePixelShader(ID3D11Device* a_device, ID3D11PixelShader* a_pixelShader, const ShaderCache::ShaderMetadata& a_metadata);
+	void TraceLightLimitFixContextDiagnostics(const char* a_source, const char* a_phase, ID3D11DeviceContext* a_context, const void* a_rendererData, const void* a_rendererDevice);
+	void InstallLightLimitFixDrawContextDiagnostics(ID3D11DeviceContext* a_context, const char* a_source, const void* a_rendererData, const void* a_rendererDevice);
+	bool ShouldTracePreNGDFLightDrawState();
+	bool ShouldBindPreNGDFLightDrawStateStrictCB();
+	bool ShouldBindPreNGDFLightDrawStateClusterSRVs();
+	bool ShouldRunPreNGDFLightDrawStateProof();
+	std::uint32_t GetPreNGDFLightDrawStateProofBudget();
+
 	// AdditivePasses domain: defined in AdditivePasses.cpp.
 	bool ShouldRunPreNGDFLightZeroAdditivePass();
 	bool ShouldRunPreNGDFLightResourceNoOpPass();
