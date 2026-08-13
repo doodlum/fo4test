@@ -4,7 +4,9 @@
 #include "Core/ShaderCache.h"
 
 #include <cstdint>
+#include <mutex>
 #include <optional>
+#include <string_view>
 
 #include <d3d11.h>
 
@@ -85,6 +87,42 @@ namespace CommunityShaders::Hooks
 	bool ShouldBindPreNGDFLightDrawStateClusterSRVs();
 	bool ShouldRunPreNGDFLightDrawStateProof();
 	std::uint32_t GetPreNGDFLightDrawStateProofBudget();
+
+	// LLFPixelTracker domain (Promotion Step 1): shared lock + helpers + definitions
+	// defined in Hooks.cpp (moved out of the anonymous namespace).
+	inline std::mutex llfCandidateLock;
+
+	inline bool HasTextureSlot(const ShaderCache::ShaderMetadata& a_metadata, std::uint32_t a_slot)
+	{
+		for (const auto slot : a_metadata.textureSlots) {
+			if (slot == a_slot) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	inline bool HasTextureDimension(const ShaderCache::ShaderMetadata& a_metadata, std::uint32_t a_dimension, std::uint32_t a_slot)
+	{
+		for (const auto [dimension, slot] : a_metadata.textureDimensions) {
+			if (dimension == a_dimension && slot == a_slot) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	bool HasCachedBoundLightLimitFixPixelShader(ID3D11DeviceContext* a_context);
+	void TrackLightLimitFixBoundPixelShader(ID3D11DeviceContext*, ID3D11PixelShader*);
+	void TraceLightLimitFixDrawHookHealth(const char* a_drawKind);
+	void TraceLightLimitFixContextHookHealth(ID3D11DeviceContext*, const char* a_hookKind);
+	void TraceLightLimitFixPixelShaderBinding(ID3D11DeviceContext*, ID3D11PixelShader*);
+	void TraceLightLimitFixBoundPixelShaderInventory(ID3D11DeviceContext*, ID3D11PixelShader*);
+	void TraceLightLimitFixBoundPixelShaderSurvey(ID3D11DeviceContext*, ID3D11PixelShader*);
+	void TraceLightLimitFixStateContext(ID3D11DeviceContext*, const char* a_stateKind, std::string_view a_stateDetails);
+	void TraceLightLimitFixDrawContext(ID3D11DeviceContext*, const char* a_drawKind, std::string_view a_drawCounts);
 
 	// AdditivePasses domain: defined in AdditivePasses.cpp.
 	bool ShouldRunPreNGDFLightZeroAdditivePass();
