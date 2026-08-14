@@ -353,7 +353,11 @@ void main(
 		uint li = 0;
 		while (true) {
 			if (li >= clusterCount) break;
-			LightLimitFix::Light llfLight = LightLimitFix::lights[LightLimitFix::lightList[clusterOffset + li]];
+			LightLimitFix::Light llfLight = (LightLimitFix::Light)0;
+			if (!LightLimitFix::GetClusteredLight(li, clusterOffset, llfLight)) {
+				li = li + 1;
+				continue;
+			}
 			float3 lightColor = llfLight.color * saturate(llfLight.fade);
 
 			r12.xyz = llfLight.positionWS[0].xyz + -v2.xyz;

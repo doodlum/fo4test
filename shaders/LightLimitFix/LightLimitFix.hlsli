@@ -3,29 +3,13 @@
 
 namespace LightLimitFix
 {
-	// Support include for the FO4 clustered lighting path. Keep the Common
-	// include inside this namespace like Skyrim CS so shader-side consumers use
-	// LightLimitFix::Light and LightLimitFix::LightFlags.
-	//
-	// LLF_CLUSTERS_ONLY selects the FO4 forward contract: no Skyrim-style b3
-	// strict-light buffer (ShadowBitMask / RoomIndex are inert in FO4). The
-	// consumer reads every point light from the clustered SRVs t35/t36/t37.
-	// The b3 strict-light path is retained behind #ifndef for the legacy
-	// PreNG proof scaffolding until it is removed.
+	// FO4 forward clustered-lighting contract. FO4 BSLighting has NO b3
+	// strict-light buffer (vanilla only declares CB1[8] + CB2[38]); the b3
+	// strict-light path was Skyrim CS structure carried over and is removed.
+	// Every forward point light is read from the clustered SRVs t35/t36/t37.
+	// Shadow-casting point lights are owned by the deferred DFLight pass and
+	// are skipped here so they are never double-lit.
 #include "LightLimitFix/Common.hlsli"
-
-#ifndef LLF_CLUSTERS_ONLY
-	static const uint MaxStrictLights = 15;
-
-	cbuffer StrictLightData : register(b3)
-	{
-		uint NumStrictLights;
-		int RoomIndex;
-		uint ShadowBitMask;
-		uint pad0;
-		Light StrictLights[MaxStrictLights];
-	};
-#endif
 
 	StructuredBuffer<Light> lights : register(t35);
 	StructuredBuffer<uint> lightList : register(t36);
@@ -83,79 +67,18 @@ namespace LightLimitFix
 		return TryGetCluster(uv, viewZ, clusterSize.xyz, cameraNear, cameraFar, lightOffset, lightCount);
 	}
 
-#ifdef LLF_CLUSTERS_ONLY
-	// FO4 forward clustered contract: no shadow-bit-mask / room filtering (both
-	// are inert in FO4). Shadowed point lights (LightFlags::Shadow) are owned by
-	// the deferred DFLight pass and skipped here.
 	bool IsLightIgnored(Light light)
 	{
+		// Shadow-casting point lights are deferred (DFLight) in FO4; skip them
+		// so forward clustered lighting never double-lights them.
 		return (light.lightFlags & LightFlags::Shadow) != 0;
 	}
 
-	uint GetStrictLightCount()
-	{
-		return 0;
-	}
-
-	bool GetStrictOrClusteredLight(in uint lightIndex, in uint clusterLightOffset, inout Light light)
+	bool GetClusteredLight(in uint lightIndex, in uint clusterLightOffset, inout Light light)
 	{
 		light = lights[lightList[clusterLightOffset + lightIndex]];
 		return !IsLightIgnored(light);
 	}
-#else
-	bool IsLightIgnored(Light light)
-	{
-		if (light.lightFlags & LightFlags::Shadow) {
-			if (light.shadowLightIndex >= 32)
-				return true;
-
-			return (ShadowBitMask & (1u << light.shadowLightIndex)) == 0;
-		}
-
-		bool lightIgnored = false;
-		if ((light.lightFlags & LightFlags::PortalStrict) && RoomIndex >= 0) {
-			lightIgnored = true;
-			int roomIndex = RoomIndex;
-
-			[unroll]
-			for (int flagsIndex = 0; flagsIndex < 4; ++flagsIndex) {
-				if (roomIndex < 32) {
-					if (((light.roomFlags[flagsIndex] >> roomIndex) & 1u) == 1u)
-						lightIgnored = false;
-
-					break;
-				}
-
-				roomIndex -= 32;
-			}
-		}
-
-		return lightIgnored;
-	}
-
-	uint GetStrictLightCount()
-	{
-		return min(NumStrictLights, MaxStrictLights);
-	}
-
-	bool GetStrictOrClusteredLight(in uint lightIndex, in uint clusterLightOffset, inout Light light)
-	{
-		light = (Light)0;
-
-		bool accepted = false;
-		const uint strictLightCount = GetStrictLightCount();
-		if (lightIndex < strictLightCount) {
-			light = StrictLights[lightIndex];
-			accepted = true;
-		} else {
-			const uint clusteredLightIndex = lightList[clusterLightOffset + (lightIndex - strictLightCount)];
-			light = lights[clusteredLightIndex];
-			accepted = !IsLightIgnored(light);
-		}
-
-		return accepted;
-	}
-#endif
 }
 
 #endif // LLF_LIGHT_LIMIT_FIX_HLSLI
