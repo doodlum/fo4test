@@ -119,7 +119,7 @@ def main():
             if not asm_hash.startswith('0x'):
                 f.write(f"asmHash=0x{asm_hash}\n")
             f.write("; Uncomment and adjust path to enable replacement:\n")
-            f.write(";shader=Data\\Shaders\\LightLimitFix\\LightingPS.hlsl\n")
+            f.write(";shader=Data\\Shaders\\LightLimitFix\\BSLightingLLFConsumerPS.hlsl\n")
             f.write("active=false\n")
             f.write("priority=0\n")
 

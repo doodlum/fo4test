@@ -17,7 +17,9 @@ cbuffer PerFrame : register(b0)
 StructuredBuffer<ClusterAABB> clusters  : register(t0);
 StructuredBuffer<Light>        lights    : register(t1);
 
-RWStructuredBuffer<uint>      lightIndexCounter : register(u0);
+// NOTE: the host still binds a 1-element lightIndexCounter UAV at slot 0 and
+// clears it each frame, but this shader no longer reads or writes it. Slot indices
+// are kept stable (list=u1, grid=u2) so the host bindings remain correct.
 RWStructuredBuffer<uint>      lightIndexList    : register(u1);
 RWStructuredBuffer<LightGrid> lightGrid         : register(u2);
 
@@ -36,12 +38,9 @@ void main(
 	uint3 groupThreadId : SV_GroupThreadID,
 	uint groupIndex : SV_GroupIndex)
 {
-	// Out-of-bounds threads skip
+	// Out-of-bounds threads skip (the host over-dispatches with a ceil grid).
 	if (any(dispatchThreadId >= uint3(ClusterSize.x, ClusterSize.y, ClusterSize.z)))
 		return;
-
-	uint visibleLightCount = 0;
-	uint visibleLightIndices[MAX_CLUSTER_LIGHTS];
 
 	uint clusterIndex = dispatchThreadId.x
 	                  + dispatchThreadId.y * ClusterSize.x
@@ -49,7 +48,13 @@ void main(
 
 	ClusterAABB cluster = clusters[clusterIndex];
 
-	// Test each light against this cluster's AABB
+	// Static per-cluster partition. The light index list buffer is allocated as
+	// clusterCount * MAX_CLUSTER_LIGHTS entries (see SetupResources), so cluster N
+	// owns slots [N * MAX_CLUSTER_LIGHTS, (N+1) * MAX_CLUSTER_LIGHTS). This removes
+	// the atomic counter and the 128-element per-thread array (warning X4714).
+	uint base = clusterIndex * MAX_CLUSTER_LIGHTS;
+	uint visibleLightCount = 0;
+
 	for (uint i = 0; i < LightCount; i++) {
 		Light light = lights[i];
 
@@ -57,24 +62,16 @@ void main(
 		float radiusSq = light.radius * light.radius;
 
 		if (LightIntersectsCluster(positionVS, radiusSq, cluster)) {
-			visibleLightIndices[visibleLightCount] = i;
+			if (visibleLightCount < MAX_CLUSTER_LIGHTS) {
+				lightIndexList[base + visibleLightCount] = i;
+			}
 			visibleLightCount++;
-			if (visibleLightCount >= MAX_CLUSTER_LIGHTS)
-				break;
 		}
 	}
 
-	// Atomically append visible light indices to the global list
-	uint offset = 0;
-	InterlockedAdd(lightIndexCounter[0], visibleLightCount, offset);
-
-	for (uint j = 0; j < visibleLightCount; j++) {
-		lightIndexList[offset + j] = visibleLightIndices[j];
-	}
-
 	LightGrid grid;
-	grid.offset = offset;
-	grid.lightCount = visibleLightCount;
+	grid.offset = base;
+	grid.lightCount = min(visibleLightCount, MAX_CLUSTER_LIGHTS);
 	grid.pad0 = uint2(0u, 0u);
 	lightGrid[clusterIndex] = grid;
 }

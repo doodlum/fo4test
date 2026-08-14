@@ -4577,6 +4577,63 @@ namespace RE::VTABLE
 {
 }
 
+#if !defined(FALLOUT_PRE_NG)
+namespace
+{
+	constexpr const char *kPostNGBSLightingDescriptorObserveEnv = "FO4CS_LLF_POSTNG_BSLIGHTING_DESCRIPTOR_OBSERVE";
+	constexpr const char *kPostNGBSLightingLLFBindEnv = "FO4CS_LLF_POSTNG_BSLIGHTING_LLF_BIND";
+	std::atomic_bool s_postNGBSLightingLLFConsumerDescriptorObserved = false;
+	std::atomic_uint32_t s_postNGBSLightingLLFConsumerDescriptorObservations = 0;
+}
+
+bool LightLimitFix::HasPostNGBSLightingDescriptorConsumerData() const
+{
+	// The clustered prepass uploads lights + binds t35-t37 every frame; the
+	// consumer is only meaningful once both the GPU resources and a non-empty
+	// light list are present.
+	return HasResources() && currentLightCount > 0;
+}
+
+LightLimitFix::PostNGClusterResourceBindingState LightLimitFix::BindPostNGBSLightingClusterResourcesToPixelShader()
+{
+	PostNGClusterResourceBindingState state{};
+	auto *rendererData = fo4cs::GetRendererData();
+	auto *context = rendererData ? reinterpret_cast<ID3D11DeviceContext *>(rendererData->context) : nullptr;
+	if (!context)
+	{
+		return state;
+	}
+
+	ID3D11ShaderResourceView *views[3]{lightsSRV.get(), lightIndexListSRV.get(), lightGridSRV.get()};
+	context->PSSetShaderResources(35, ARRAYSIZE(views), views);
+	state.clusterSRVsBound = true;
+	state.lightCount = currentLightCount;
+	return state;
+}
+
+void LightLimitFix::NotifyPostNGBSLightingLLFConsumerDescriptorObserved(
+	std::uint32_t a_vertexDescriptor,
+	std::uint32_t a_pixelDescriptor,
+	bool a_found,
+	std::uintptr_t a_vanillaPixelShader)
+{
+	s_postNGBSLightingLLFConsumerDescriptorObserved.store(true, std::memory_order_relaxed);
+	const auto observationIndex =
+		s_postNGBSLightingLLFConsumerDescriptorObservations.fetch_add(1, std::memory_order_relaxed) + 1;
+	if (observationIndex <= 8 || (observationIndex & (observationIndex - 1)) == 0)
+	{
+		logger::info(
+			"[LightLimitFix] PostNG/AE BSLighting LLF consumer descriptor observed observations={} vsDesc=0x{:X} psDesc=0x{:X} found={} vanillaPS=0x{:X}",
+			observationIndex, a_vertexDescriptor, a_pixelDescriptor, a_found, a_vanillaPixelShader);
+	}
+}
+
+bool LightLimitFix::HasPostNGBSLightingLLFConsumerDescriptorObserved() const
+{
+	return s_postNGBSLightingLLFConsumerDescriptorObserved.load(std::memory_order_relaxed);
+}
+#endif
+
 void LightLimitFix::Hooks::Install(bool a_includeEffectShader)
 {
     static std::atomic_bool lightingInstalled = false;

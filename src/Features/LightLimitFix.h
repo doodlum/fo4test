@@ -9,7 +9,7 @@
 
 #include "Core/Feature.h"
 
-// Light Limit Fix removes the vanilla 4-light limit through the Skyrim CS
+// Light Limit Fix removes the vanilla 6-light forward point-light cap through the Skyrim CS
 // engine-lighting route: strict-light data in b3 plus clustered SRVs t35-t37.
 //
 // FO4 Adaptation Notes (vs Skyrim CS):
@@ -38,7 +38,7 @@ struct LightLimitFix : Feature
 	[[nodiscard]] std::pair<std::string, std::vector<std::string>> GetFeatureSummary() override
 	{
 		return {
-			"Removes the vanilla 4-light limit using clustered-forward rendering.",
+			"Removes the vanilla 6-light forward cap using clustered-forward rendering.",
 			{
 				"GPU cluster building + culling via compute shaders",
 				"Strict-light CB mirror plus clustered SRV light lists",
@@ -319,6 +319,25 @@ public:
 		bool a_found,
 		std::uintptr_t a_lookupPixelShader,
 		ID3D11DeviceContext* a_contextOverride = nullptr);
+#endif
+#if !defined(FALLOUT_PRE_NG)
+	// PostNG / PostAE forward clustered consumer (no b3 strict-light buffer).
+	// The cluster SRVs (t35/t36/t37) are bound from RunClusterPrepass every frame;
+	// BindPostNGBSLightingClusterResourcesToPixelShader re-asserts them inside the
+	// per-draw consumer bind so a high-register clobber cannot empty the lights.
+	struct PostNGClusterResourceBindingState
+	{
+		bool clusterSRVsBound = false;
+		std::uint32_t lightCount = 0;
+	};
+	[[nodiscard]] bool HasPostNGBSLightingDescriptorConsumerData() const;
+	PostNGClusterResourceBindingState BindPostNGBSLightingClusterResourcesToPixelShader();
+	void NotifyPostNGBSLightingLLFConsumerDescriptorObserved(
+		std::uint32_t a_vertexDescriptor,
+		std::uint32_t a_pixelDescriptor,
+		bool a_found,
+		std::uintptr_t a_vanillaPixelShader);
+	[[nodiscard]] bool HasPostNGBSLightingLLFConsumerDescriptorObserved() const;
 #endif
 	void CollectLightsFromScene();
 	void CollectLightsFromBSLight();

@@ -50,6 +50,10 @@ namespace CommunityShaders
 		constexpr const char* kPreNGDFCompositeVisibleLLFScale1024Env = "FO4CS_LLF_PRENG_DFCOMPOSITE_VISIBLE_LLF_SCALE_1024";
 		constexpr const char* kPreNGDFCompositeVisibleLLFMaxLightsEnv = "FO4CS_LLF_PRENG_DFCOMPOSITE_VISIBLE_LLF_MAX_LIGHTS";
 #endif
+#if !defined(FALLOUT_PRE_NG)
+		constexpr const char* kPostNGBSLightingDescriptorObserveEnv = "FO4CS_LLF_POSTNG_BSLIGHTING_DESCRIPTOR_OBSERVE";
+		constexpr const char* kPostNGBSLightingLLFBindEnv = "FO4CS_LLF_POSTNG_BSLIGHTING_LLF_BIND";
+#endif
 		constexpr std::string_view kPreNGBSLightingContractProbeSource = "LightLimitFix/BSLightingContractProbePS.hlsl";
 		constexpr std::string_view kPreNGBSLightingConsumerProbeSource = "LightLimitFix/BSLightingLLFConsumerProbePS.hlsl";
 		constexpr std::string_view kPreNGBSLightingLLFConsumerVisibleSource = "LightLimitFix/BSLightingLLFConsumerPS.hlsl";
@@ -615,6 +619,22 @@ namespace CommunityShaders
 			       IsPreNGDFCompositeContractDescriptorShader(a_stage, a_shaderType, a_normalizedFxpFilename, a_descriptor);
 		}
 
+		bool ShouldCompilePostNGBSLightingConsumerShader(
+			ShaderStage a_stage,
+			std::int32_t a_shaderType)
+		{
+#if defined(FALLOUT_PRE_NG)
+			(void)a_stage;
+			(void)a_shaderType;
+			return false;
+#else
+			return a_stage == ShaderStage::Pixel &&
+			       a_shaderType == kPreNGBSLightingShaderType &&
+			       (DebugSwitches::ReadSwitchEnabled(kPostNGBSLightingLLFBindEnv) ||
+			        DebugSwitches::ReadSwitchEnabled(kPostNGBSLightingDescriptorObserveEnv));
+#endif
+		}
+
 		bool CanCompileDescriptorShader(
 			ShaderStage a_stage,
 			std::int32_t a_shaderType,
@@ -649,7 +669,8 @@ namespace CommunityShaders
 					   a_stage,
 					   a_shaderType,
 					   a_normalizedFxpFilename,
-					   a_descriptor);
+					   a_descriptor) ||
+			       ShouldCompilePostNGBSLightingConsumerShader(a_stage, a_shaderType);
 		}
 
 		std::string BuildFeatureDefineList(const std::vector<D3D_SHADER_MACRO>& a_defines)
@@ -796,6 +817,12 @@ namespace CommunityShaders
 						std::to_string(GetPreNGDFCompositeVisibleLLFMaxLights()));
 				}
 			}
+#else
+			if (a_stage == ShaderStage::Pixel && a_shaderType == kPreNGBSLightingShaderType) {
+				// FO4 forward consumer: clusters-only (no b3 strict-light buffer).
+				result.storage.emplace_back("LLF_CLUSTERS_ONLY", "1");
+				result.storage.emplace_back("FO4CS_BSLIGHTING_LLF_CONSUMER_DESCRIPTOR", "1");
+			}
 #endif
 
 			result.macros.reserve(result.storage.size() + 1);
@@ -873,6 +900,16 @@ namespace CommunityShaders
 
 	std::optional<std::string> ShaderCache::ResolveDescriptorShaderSource(const DescriptorShaderKey& a_key)
 	{
+#if !defined(FALLOUT_PRE_NG)
+		if (ShouldCompilePostNGBSLightingConsumerShader(a_key.stage, a_key.shaderType)) {
+			const auto diskPath = std::filesystem::path("Data\\Shaders") / std::filesystem::path(kPreNGBSLightingLLFConsumerVisibleSource);
+			std::error_code ec;
+			if (std::filesystem::exists(diskPath, ec) && std::filesystem::is_regular_file(diskPath, ec)) {
+				return std::string{ kPreNGBSLightingLLFConsumerVisibleSource };
+			}
+			return std::nullopt;
+		}
+#endif
 		// Visible LLF consumer takes precedence over the compile-only probe when
 		// FO4CS_LLF_PRENG_BSLIGHTING_LLF_BIND is enabled. The probe path stays as
 		// the fallback for compile/observe profiles.
