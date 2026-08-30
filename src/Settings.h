@@ -70,6 +70,20 @@ struct Settings
 	// the two images converge.
 	std::string previsFixSites{ "none" };
 
+	// Install the actual fix: hook the previs batch accumulation and restore
+	// the lighting-path flag the traversal batch always has.
+	// 0 = off, 1 = accumulate-site hook, 2 = consumer-site hook.
+	std::uint32_t previsLightingFix{ 0 };
+
+	// Force the previs culling batch's +0x169 control byte set for a while
+	// before the first capture.  See PrevisFix::ForcePrevisBatchFlag.
+	bool forcePrevisBatchFlag{ false };
+
+	// Wall-clock window, in milliseconds, over which the frame counter is
+	// sampled to derive fps.  Needs to be long enough to be stable; vsync must
+	// be off or every configuration reads the same.
+	std::uint32_t fpsWindow{ 6000 };
+
 	[[nodiscard]] static Settings& GetSingleton() noexcept;
 
 	// Reads the INI if present.  Never throws; unparseable values keep their

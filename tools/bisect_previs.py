@@ -48,8 +48,10 @@ def run_once(spec: str, timeout_min: int) -> dict | None:
 
     comparison = OUT / "comparison.json"
     if not comparison.is_file():
-        print(f"  !! no comparison.json for {spec!r}")
-        print("  " + "\n  ".join(proc.stdout.strip().splitlines()[-6:]))
+        print(f"  !! no comparison.json for {spec!r} (exit {proc.returncode})")
+        for stream, label in ((proc.stdout, "out"), (proc.stderr, "err")):
+            for line in (stream or "").strip().splitlines()[-8:]:
+                print(f"  {label}| {line}")
         return None
 
     stats = json.loads(comparison.read_text(encoding="utf-8"))

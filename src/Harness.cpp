@@ -3,7 +3,10 @@
 #include "Harness.h"
 
 #include "Capture.h"
+#include "Dump.h"
 #include "Input.h"
+#include "PrevisFix.h"
+#include "PrevisLightingFix.h"
 #include "Settings.h"
 
 #include <format>
@@ -187,6 +190,35 @@ namespace
 		});
 	}
 
+	// The engine's frame counter.  Sampling it over a wall-clock window gives
+	// a render-cost figure without hooking Present, which matters here: the
+	// whole point of previs is performance, so a "fix" that silently turns it
+	// off has to be detectable.  `tfc 1` has already frozen the simulation, so
+	// what this measures is rendering.
+	[[nodiscard]] double MeasureFps(std::chrono::milliseconds a_window)
+	{
+		static REL::Relocation<std::uint32_t*> frameCounter{ REL::ID(4784456) };
+
+		auto read = [&]() {
+			auto v = std::make_shared<std::uint32_t>(0);
+			RunOnGameThread([v]() { *v = *frameCounter; });
+			return *v;
+		};
+
+		const auto startFrames = read();
+		const auto startTime = std::chrono::steady_clock::now();
+		std::this_thread::sleep_for(a_window);
+		const auto endFrames = read();
+		const auto endTime = std::chrono::steady_clock::now();
+
+		const auto seconds =
+			std::chrono::duration<double>(endTime - startTime).count();
+		if (seconds <= 0.0 || endFrames < startFrames) {
+			return 0.0;
+		}
+		return static_cast<double>(endFrames - startFrames) / seconds;
+	}
+
 	struct WorldState
 	{
 		std::uint32_t cellFormID{ 0 };
@@ -264,6 +296,11 @@ namespace
 		std::string   after{};
 		std::uint32_t width{ 0 };
 		std::uint32_t height{ 0 };
+		bool          lightingFixInstalled{ false };
+		std::uint64_t lightingFixHits{ 0 };
+		double        fpsPrevisOn{ 0.0 };
+		double        fpsPrevisOff{ 0.0 };
+		std::string   previsFixSites{};
 	};
 
 	void WriteReport(const std::filesystem::path& a_dir, const Report& a_report)
@@ -288,7 +325,13 @@ namespace
 			 << "  \"before\": " << Quote(a_report.before) << ",\n"
 			 << "  \"after\": " << Quote(a_report.after) << ",\n"
 			 << "  \"width\": " << a_report.width << ",\n"
-			 << "  \"height\": " << a_report.height << "\n"
+			 << "  \"height\": " << a_report.height << ",\n"
+			 << "  \"fpsPrevisOn\": " << a_report.fpsPrevisOn << ",\n"
+			 << "  \"fpsPrevisOff\": " << a_report.fpsPrevisOff << ",\n"
+			 << "  \"previsFixSites\": " << Quote(a_report.previsFixSites) << ",\n"
+			 << "  \"lightingFixInstalled\": "
+			 << (a_report.lightingFixInstalled ? "true" : "false") << ",\n"
+			 << "  \"lightingFixHits\": " << a_report.lightingFixHits << "\n"
 			 << "}\n";
 
 		REX::INFO("wrote {}", path.string());
@@ -534,6 +577,31 @@ namespace
 
 		std::this_thread::sleep_for(std::chrono::milliseconds{ settings.settleDelay });
 
+		report.previsFixSites = settings.previsFixSites;
+		report.lightingFixInstalled = PrevisLightingFix::Installed();
+		report.lightingFixHits = PrevisLightingFix::HitCount();
+		REX::INFO("previs lighting fix: installed={} hits={}", report.lightingFixInstalled,
+			report.lightingFixHits);
+
+		report.fpsPrevisOn = MeasureFps(std::chrono::milliseconds{ settings.fpsWindow });
+		REX::INFO("fps with previs ON (fix sites '{}'): {:.1f}", settings.previsFixSites,
+			report.fpsPrevisOn);
+
+		// The engine rewrites the batch each frame, so hold the flag set for a
+		// couple of seconds rather than poking it once.
+		if (settings.forcePrevisBatchFlag) {
+			REX::INFO("forcing the previs batch flag for 2s before capture");
+			const auto until = std::chrono::steady_clock::now() + 2s;
+			while (std::chrono::steady_clock::now() < until) {
+				RunOnGameThread([]() { PrevisFix::ForcePrevisBatchFlag(); });
+				std::this_thread::sleep_for(8ms);
+			}
+		}
+
+		RunOnGameThread([dir]() {
+			Dump::Accumulators(dir / "accumulators.txt", "previs ON");
+		});
+
 		report.before = CaptureTo(dir, "01_previs_on.bmp", report);
 		if (report.before.empty()) {
 			finish("");
@@ -542,6 +610,17 @@ namespace
 
 		RunCommand(settings.toggleCommand);
 		std::this_thread::sleep_for(std::chrono::milliseconds{ settings.settleDelay });
+
+		report.fpsPrevisOff = MeasureFps(std::chrono::milliseconds{ settings.fpsWindow });
+		REX::INFO("fps with previs OFF: {:.1f}  (previs benefit {:+.1f}%)",
+			report.fpsPrevisOff,
+			report.fpsPrevisOff > 0.0
+				? (report.fpsPrevisOn - report.fpsPrevisOff) * 100.0 / report.fpsPrevisOff
+				: 0.0);
+
+		RunOnGameThread([dir]() {
+			Dump::Accumulators(dir / "accumulators.txt", "previs OFF");
+		});
 
 		report.after = CaptureTo(dir, "02_previs_off.bmp", report);
 		if (report.after.empty()) {

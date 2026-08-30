@@ -223,6 +223,9 @@ void Settings::Load()
 	ReadString(ini, "outputdir", outputDir);
 	ReadBool(ini, "quitwhendone", quitWhenDone);
 	ReadString(ini, "previsfixsites", previsFixSites);
+	ReadUInt(ini, "fpswindow", fpsWindow);
+	ReadBool(ini, "forceprevisbatchflag", forcePrevisBatchFlag);
+	ReadUInt(ini, "previslightingfix", previsLightingFix);
 
 	REX::INFO("loaded {}", path.string());
 }

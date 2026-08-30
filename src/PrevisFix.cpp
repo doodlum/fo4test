@@ -155,6 +155,19 @@ namespace
 
 namespace PrevisFix
 {
+	void ForcePrevisBatchFlag()
+	{
+		// The previs-side culling batch, from the r9 argument of the world
+		// draw's call into FUN_1421f1010.
+		static REL::Relocation<std::uint8_t*> previsBatch{ REL::ID(4784667) };
+		constexpr std::ptrdiff_t kFlagOffset = 0x169;
+
+		auto* flag = previsBatch.get() + kFlagOffset;
+		if (*flag != 1) {
+			*flag = 1;
+		}
+	}
+
 	std::size_t SiteCount() noexcept { return kSiteCount; }
 
 	std::size_t Apply(std::string_view a_spec)

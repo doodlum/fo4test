@@ -79,6 +79,21 @@ if (-not (Test-Path -LiteralPath $versionBin)) {
     throw "$versionBin is missing -- install Address Library for F4SE Plugins (Nexus 47327). Without it F4SE disables the plugin."
 }
 
+# Vsync pins every configuration to the refresh rate, which would make the
+# fps figures identical and useless -- and fps is how we tell a real fix from
+# one that quietly disabled previs.  Turn it off for the run and put the
+# operator's setting back afterwards, whatever happens.
+$prefs = Join-Path $HOME 'Documents\My Games\Fallout4\Fallout4Prefs.ini'
+$prefsBackup = $null
+if (Test-Path -LiteralPath $prefs) {
+    $prefsBackup = "$prefs.harness-backup"
+    Copy-Item -LiteralPath $prefs -Destination $prefsBackup -Force
+    (Get-Content -LiteralPath $prefs) `
+        -replace '^iPresentInterval\s*=.*$', 'iPresentInterval=0' |
+        Set-Content -LiteralPath $prefs -Encoding utf8
+    Write-Step 'Disabled vsync for this run (original saved)'
+}
+
 Write-Step 'Launching Fallout 4 through F4SE'
 Start-Process -FilePath $loader -WorkingDirectory $GamePath | Out-Null
 
@@ -101,6 +116,11 @@ while (Get-Process -Name 'Fallout4' -ErrorAction SilentlyContinue) {
         break
     }
     Start-Sleep -Seconds 2
+}
+
+if ($prefsBackup -and (Test-Path -LiteralPath $prefsBackup)) {
+    Move-Item -LiteralPath $prefsBackup -Destination $prefs -Force
+    Write-Step 'Restored the original vsync setting'
 }
 
 Write-Step 'Comparing captures'

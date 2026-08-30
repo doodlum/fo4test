@@ -2,6 +2,7 @@
 
 #include "Harness.h"
 #include "PrevisFix.h"
+#include "PrevisLightingFix.h"
 #include "Settings.h"
 
 namespace
@@ -27,7 +28,8 @@ F4SE_PLUGIN_LOAD(const F4SE::LoadInterface* a_f4se)
 	// Opens Documents/My Games/Fallout4/F4SE/fo4test.log and caches the F4SE
 	// interfaces.  Add `.trampoline = true, .trampolineSize = 1u << 8` once
 	// you branch-hook something; the harness only needs logging and tasks.
-	F4SE::Init(a_f4se, { .log = true });
+	// The fix installs a call detour, so the trampoline has to exist.
+	F4SE::Init(a_f4se, { .log = true, .trampoline = true, .trampolineSize = 1u << 8 });
 
 	REX::INFO("{} v{} loaded", F4SE::GetPluginName(), F4SE::GetPluginVersion());
 
@@ -36,6 +38,18 @@ F4SE_PLUGIN_LOAD(const F4SE::LoadInterface* a_f4se)
 	// Patch before anything renders.  Applying it at load keeps the first
 	// capture and every frame before it consistent.
 	PrevisFix::Apply(Settings::GetSingleton().previsFixSites);
+
+	switch (Settings::GetSingleton().previsLightingFix) {
+	case 1:
+		PrevisLightingFix::Install(PrevisLightingFix::Mode::kAccumulate);
+		break;
+	case 2:
+		PrevisLightingFix::Install(PrevisLightingFix::Mode::kConsumer);
+		break;
+	default:
+		REX::INFO("previs lighting fix disabled by fo4test.ini");
+		break;
+	}
 
 	const auto messaging = F4SE::GetMessagingInterface();
 	if (!messaging || !messaging->RegisterListener(OnMessage)) {

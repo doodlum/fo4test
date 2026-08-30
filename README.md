@@ -176,3 +176,74 @@ version-list mismatch).
 [GPL-3.0-or-later](COPYING) WITH [Modding Exception AND GPL-3.0 Linking Exception (with Corresponding Source)](EXCEPTIONS.md).
 The Modded Code is Fallout 4 (and its variants); Modding Libraries include
 [F4SE](https://f4se.silverlock.org/) and CommonLibF4.
+
+## Investigation: previs and transparent-object lighting
+
+Reproduced, measured, and partly diagnosed. **No working fix yet** — four
+hypotheses have been tested and falsified. This section records what is
+established so the next attempt does not repeat them.
+
+### What is established
+
+`tpc` is `TogglePreCulling` ("Turn use of pre-culled obects on/off"), whose
+handler toggles a flag read by a predicate at `0x1421ae520`, in the
+`BSPreCulledObjects` region:
+
+```
+IsPreCullingActive() = flag(0x143E5E650) && flag(0x142F976B8) && !flag(0x143E5E651)
+```
+
+That predicate has 38 call sites (confirmed against Ghidra's own xrefs).
+Neutralising **all** of them — while previs itself stays on — removes the blue
+cast from the glass entirely. So the defect is mediated by this predicate.
+
+The world draw (`REL::ID(2318289)`) uses it to choose between two paths that
+feed two different culling batches:
+
+```c
+if (IsPreCullingActive()) {
+    FUN_1421ae5d0(previsBatch, traversalBatch);      // previs-only
+    FUN_1417e0030(previsBatch, <precomputed root>, ...);
+}
+if (!IsPreCullingActive()) {
+    ... FUN_1417e0030(traversalBatch, <scene node>, ...);
+}
+```
+
+### What has been ruled out
+
+| hypothesis | result |
+|---|---|
+| `BSFadeNode::OnVisible` skips the per-geometry frustum test (site 20) | patching it alone is **indistinguishable from the control** (53,072 vs 52,649 strong px) |
+| some subset of the 38 sites is responsible | every subset tried destroys the frame (~918,000 strong px, 100% changed) — including `23-26`, a single complete function. Previs is an all-or-nothing pipeline decision. |
+| `19-37` is a fix | it reaches the reference (667 px) but only by skipping the block that consumes the precomputed list, i.e. it disables previs in the renderer. Not a fix. |
+| the batch control byte `+0x169` selects the lighting path | **falsified.** The byte does differ exactly with the bug (traversal `01` always; previs `00` only when previs is ON) and does select between `FUN_14217d760()` and `FUN_14217d450(obj, batch[0x160], 1)`. But forcing it set at the accumulate site (`REL::ID(2318289)+0x192`, 1202 hits) and at the sole consumer call (`REL::ID(2275918)+0x2e2`, 4222 hits) both leave the frame unchanged. |
+
+### Strongest remaining lead
+
+Within the batch structure (0x170 bytes, per `imul r14, rcx, 0x170`), the only
+meaningful difference between the two batches was `+0x169`, and that is now
+ruled out. So the divergence is unlikely to be batch *configuration* — it is
+more likely the *objects* being accumulated.
+
+The previs path accumulates from a precomputed root (`DAT_1438df4e0`) rather
+than the live scene graph. The next thing to test is whether objects reached
+through that root carry different per-object state (light lists, room/portal
+association, `NiAVObject` flags at `+0x108`) than the same objects reached by
+traversal. `FUN_1421ae5d0` is what populates the previs side and is the place
+to instrument.
+
+### Reproducing
+
+```bash
+python tools/bisect_previs.py none            # control
+python tools/compare_to_reference.py          # score every archived run
+```
+
+`strongPixels` (per-channel delta >= 20) is the signal; overall means barely
+move because temporal noise dominates the pixel count. Baseline is ~52,600
+strong pixels; the reference target is a few hundred.
+
+Everything ships **off** by default: `PrevisFixSites = none`,
+`ForcePrevisBatchFlag = 0`, `PrevisLightingFix = 0`. Nothing patches the game
+unless explicitly enabled.
