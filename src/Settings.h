@@ -19,7 +19,11 @@ struct Settings
 	// Alternative way into a live game: load the most recent save before
 	// running any commands.  Off by default -- it depends on the machine
 	// having a loadable save, and opening the console is enough.
-	bool loadSaveFirst{ false };
+	bool loadSaveFirst{ true };
+
+	// Substring of the save file name to load.  Empty means "the newest
+	// non-corrupt save".  Pin this for a reproducible starting point.
+	std::string saveFile{};
 
 	// Cell editor ID passed to `coc`.
 	std::string cell{ "FourLeafFishpacking02" };

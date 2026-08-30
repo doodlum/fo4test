@@ -271,43 +271,59 @@ namespace
 		// animated background twice and reports a 99% "difference".  Showing
 		// the console first makes `coc` behave exactly as it does when typed by
 		// hand: it starts a new game in the target cell.
-		if (settings.openConsole) {
-			REX::INFO("opening the console");
-			SetConsoleVisible(true);
-			if (!WaitFor("the console to open", IsConsoleOpen, 15s)) {
-				finish("the console menu never opened; commands would be swallowed");
-				return;
-			}
-		}
-
 		if (settings.loadSaveFirst) {
-			REX::INFO("loading the most recent save");
+			// Poking BGSSaveLoadManager from outside does not work at the main
+			// menu: no profile is selected, so currentPlayerID is 0,
+			// mostRecentSaveGame is null, and a queued kLoadMostRecentSave or
+			// kLoadGame is simply never consumed.  MainMenu has the flags its own
+			// buttons set; setting one lets the menu's update loop run the real
+			// path, exactly as a click would.
 			auto queued = std::make_shared<std::atomic_bool>(false);
 			RunOnGameThread([queued]() {
-				if (auto* manager = RE::BGSSaveLoadManager::GetSingleton()) {
-					manager->QueueSaveLoadTask(
-						RE::BGSSaveLoadManager::QUEUED_TASK::kLoadMostRecentSave);
-					queued->store(true);
+				auto* ui = RE::UI::GetSingleton();
+				if (!ui) {
+					REX::ERROR("UI singleton was null");
+					return;
 				}
+				const auto menu = ui->GetMenu<RE::MainMenu>();
+				if (!menu) {
+					REX::ERROR("MainMenu is not on the stack; cannot continue a game");
+					return;
+				}
+				REX::INFO("main menu: exitCondition={} choseContinue={} "
+						  "queueStartNewGame={} queueContinueGame={} queuedLoadIndex={}",
+					std::to_underlying(menu->mainMenuExitCondition), menu->choseContinue,
+					menu->queueStartNewGame, menu->queueContinueGame, menu->queuedLoadIndex);
+				menu->queueContinueGame = true;
+				queued->store(true);
 			});
+
 			if (!queued->load()) {
-				finish("BGSSaveLoadManager singleton was null; cannot load a save");
+				finish("could not reach MainMenu to continue a game; see the log");
 				return;
 			}
 
-			if (!WaitOutLoad("save", std::chrono::milliseconds{ settings.loadTimeout })) {
-				finish("the save never finished loading -- is there a save to load?");
+			REX::INFO("asked the main menu to continue the most recent game");
+			if (!WaitOutLoad("continue", std::chrono::milliseconds{ settings.loadTimeout })) {
+				finish("continuing the most recent game never produced a load");
 				return;
 			}
 			std::this_thread::sleep_for(std::chrono::milliseconds{ settings.loadSettleDelay });
 
-			const auto loaded = ReadWorldState();
-			report.cellFormIDBeforeCoc = loaded.cellFormID;
-			REX::INFO("save loaded; player is in cell {:08X}", loaded.cellFormID);
-			if (loaded.cellFormID == 0) {
-				finish("player has no parent cell after loading the save -- still at the menu");
+			const auto loadedState = ReadWorldState();
+			report.cellFormIDBeforeCoc = loadedState.cellFormID;
+			REX::INFO("game loaded; player is in cell {:08X} at ({:.1f}, {:.1f}, {:.1f})",
+				loadedState.cellFormID, loadedState.x, loadedState.y, loadedState.z);
+			if (loadedState.cellFormID == 0) {
+				finish("player has no parent cell after continuing; still at the menu");
 				return;
 			}
+		}
+
+		if (settings.openConsole) {
+			REX::INFO("opening the console");
+			SetConsoleVisible(true);
+			WaitFor("the console to open", IsConsoleOpen, 15s);
 		}
 
 		RunCommand("coc " + settings.cell);
