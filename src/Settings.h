@@ -63,6 +63,13 @@ struct Settings
 	// unattended run terminates by itself.
 	bool quitWhenDone{ true };
 
+	// Which "is pre-culling active" call sites to neutralise before the first
+	// capture: "none", "all", a range ("9-19") or a list ("20,23").  This is
+	// the bisection knob -- capture 01 is taken with these applied and previs
+	// still on, capture 02 with previs off, so a spec that fixes the bug makes
+	// the two images converge.
+	std::string previsFixSites{ "none" };
+
 	[[nodiscard]] static Settings& GetSingleton() noexcept;
 
 	// Reads the INI if present.  Never throws; unparseable values keep their

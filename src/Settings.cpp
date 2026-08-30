@@ -222,6 +222,7 @@ void Settings::Load()
 
 	ReadString(ini, "outputdir", outputDir);
 	ReadBool(ini, "quitwhendone", quitWhenDone);
+	ReadString(ini, "previsfixsites", previsFixSites);
 
 	REX::INFO("loaded {}", path.string());
 }
