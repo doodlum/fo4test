@@ -112,6 +112,23 @@ namespace
 		return *state;
 	}
 
+	// Waits out one loading screen.  Fallout 4 will not always have raised it
+	// by the time we start looking, so a missed appearance is tolerated -- but
+	// only if the player ends up somewhere, which the caller checks.  A
+	// loading screen that appears and never leaves is fatal.
+	bool WaitOutLoad(std::string_view a_what, std::chrono::milliseconds a_timeout)
+	{
+		const bool appeared = WaitFor(
+			std::format("the {} loading screen to appear", a_what), IsLoadingMenuOpen, 45s);
+		if (!appeared) {
+			REX::WARN("no loading screen appeared for {}", a_what);
+			return false;
+		}
+		return WaitFor(
+			std::format("the {} loading screen to finish", a_what),
+			[]() { return !IsLoadingMenuOpen(); }, a_timeout);
+	}
+
 	// Minimal hand-rolled JSON so the harness has no serialisation
 	// dependency; the file is small and every value is a number or a
 	// backslash-free string.
@@ -136,6 +153,7 @@ namespace
 		std::string   failure{};
 		std::string   cell{};
 		std::uint32_t cellFormID{ 0 };
+		std::uint32_t cellFormIDBeforeCoc{ 0 };
 		float         x{ 0.0f };
 		float         y{ 0.0f };
 		float         z{ 0.0f };
@@ -148,7 +166,7 @@ namespace
 
 	void WriteReport(const std::filesystem::path& a_dir, const Report& a_report)
 	{
-		const auto path = a_dir / "result.json";
+		const auto    path = a_dir / "result.json";
 		std::ofstream file{ path, std::ios::trunc };
 		if (!file) {
 			REX::ERROR("could not write {}", path.string());
@@ -160,6 +178,7 @@ namespace
 			 << "  \"failure\": " << Quote(a_report.failure) << ",\n"
 			 << "  \"cell\": " << Quote(a_report.cell) << ",\n"
 			 << "  \"cellFormID\": " << a_report.cellFormID << ",\n"
+			 << "  \"cellFormIDBeforeCoc\": " << a_report.cellFormIDBeforeCoc << ",\n"
 			 << "  \"playerX\": " << a_report.x << ",\n"
 			 << "  \"playerY\": " << a_report.y << ",\n"
 			 << "  \"playerZ\": " << a_report.z << ",\n"
@@ -208,7 +227,12 @@ namespace
 		report.cell = settings.cell;
 		report.toggleCommand = settings.toggleCommand;
 
+		bool finished = false;
 		const auto finish = [&](std::string_view a_failure) {
+			if (finished) {
+				return;
+			}
+			finished = true;
 			if (!a_failure.empty()) {
 				report.ok = false;
 				if (report.failure.empty()) {
@@ -223,25 +247,73 @@ namespace
 			}
 		};
 
-		// The main menu needs a moment past kGameDataReady before it will
-		// accept console input.
 		std::this_thread::sleep_for(std::chrono::milliseconds{ settings.mainMenuDelay });
+
+		// Fallout 4 has no console at the main menu, so `coc` there does
+		// nothing at all -- it does not even fail loudly, it is simply
+		// swallowed, and the harness then happily photographs the main menu's
+		// animated background twice and reports a 99% "difference".  Get into
+		// a real game first; from there the console works.
+		if (settings.loadSaveFirst) {
+			REX::INFO("loading the most recent save");
+			auto queued = std::make_shared<std::atomic_bool>(false);
+			RunOnGameThread([queued]() {
+				if (auto* manager = RE::BGSSaveLoadManager::GetSingleton()) {
+					manager->QueueSaveLoadTask(
+						RE::BGSSaveLoadManager::QUEUED_TASK::kLoadMostRecentSave);
+					queued->store(true);
+				}
+			});
+			if (!queued->load()) {
+				finish("BGSSaveLoadManager singleton was null; cannot load a save");
+				return;
+			}
+
+			if (!WaitOutLoad("save", std::chrono::milliseconds{ settings.loadTimeout })) {
+				finish("the save never finished loading -- is there a save to load?");
+				return;
+			}
+			std::this_thread::sleep_for(std::chrono::milliseconds{ settings.loadSettleDelay });
+
+			const auto loaded = ReadWorldState();
+			report.cellFormIDBeforeCoc = loaded.cellFormID;
+			REX::INFO("save loaded; player is in cell {:08X}", loaded.cellFormID);
+			if (loaded.cellFormID == 0) {
+				finish("player has no parent cell after loading the save -- still at the menu");
+				return;
+			}
+		}
 
 		RunCommand("coc " + settings.cell);
 
-		// coc from the main menu goes through a full load.  Wait for the
-		// loading screen to appear, then for it to go away again.  A missing
-		// appearance is not fatal on a fast machine, so only the disappearance
-		// is treated as required.
-		WaitFor("the loading screen to appear", IsLoadingMenuOpen, 30s);
-		if (!WaitFor(
-				"the loading screen to finish", []() { return !IsLoadingMenuOpen(); },
-				std::chrono::milliseconds{ settings.loadTimeout })) {
-			finish("the coc load never finished");
+		if (!WaitOutLoad("coc", std::chrono::milliseconds{ settings.loadTimeout })) {
+			finish("`coc " + settings.cell + "` did not trigger a load -- bad cell editor ID, "
+				   "or the console rejected the command");
 			return;
 		}
 
 		std::this_thread::sleep_for(std::chrono::milliseconds{ settings.loadSettleDelay });
+
+		const auto world = ReadWorldState();
+		report.cellFormID = world.cellFormID;
+		report.x = world.x;
+		report.y = world.y;
+		report.z = world.z;
+		REX::INFO("in cell {:08X} at ({:.1f}, {:.1f}, {:.1f})", world.cellFormID, world.x,
+			world.y, world.z);
+
+		// A null parent cell means we are looking at a menu, not a world.
+		// Capturing here is how the first version of this harness produced a
+		// confident, entirely meaningless result.
+		if (world.cellFormID == 0) {
+			finish("player has no parent cell after coc; refusing to capture a menu");
+			return;
+		}
+		if (settings.loadSaveFirst && world.cellFormID == report.cellFormIDBeforeCoc) {
+			finish("coc did not change cell -- still in " +
+				   std::format("{:08X}", world.cellFormID));
+			return;
+		}
 
 		for (const auto& command : settings.setupCommands) {
 			RunCommand(command);
@@ -259,14 +331,6 @@ namespace
 		}
 
 		std::this_thread::sleep_for(std::chrono::milliseconds{ settings.settleDelay });
-
-		const auto world = ReadWorldState();
-		report.cellFormID = world.cellFormID;
-		report.x = world.x;
-		report.y = world.y;
-		report.z = world.z;
-		REX::INFO("in cell {:08X} at ({:.1f}, {:.1f}, {:.1f})", world.cellFormID, world.x,
-			world.y, world.z);
 
 		report.before = CaptureTo(dir, "01_previs_on.bmp", report);
 		if (report.before.empty()) {

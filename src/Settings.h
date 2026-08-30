@@ -9,6 +9,12 @@ struct Settings
 	// plugin without driving the game (useful when attaching a debugger).
 	bool enabled{ true };
 
+	// Fallout 4 has no console at the main menu, so `coc` issued there is
+	// silently swallowed.  Load the most recent save first to get into a real
+	// game, then coc from there.  Turn this off only if something else is
+	// already putting you in-game.
+	bool loadSaveFirst{ true };
+
 	// Cell editor ID passed to `coc`.
 	std::string cell{ "FourLeafFishpacking02" };
 
