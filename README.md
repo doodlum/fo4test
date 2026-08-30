@@ -18,14 +18,24 @@ The manual repro this automates:
 On `kGameDataReady` (main menu up, form data loaded) a worker thread runs:
 
 1. wait `MainMenuDelay`
-2. `coc FourLeafFishpacking02`
-3. wait for `LoadingMenu` to appear, then disappear, then `LoadSettleDelay`
-4. `tm` (hide the HUD) and `tfc 1` (freeze the simulation, detach the camera) —
+2. `BGSSaveLoadManager::QueueSaveLoadTask(kLoadMostRecentSave)` — **Fallout 4
+   has no console at the main menu**, so a `coc` issued there is silently
+   swallowed. You have to be in a real game before the console does anything.
+3. wait out that load, then check the player actually has a parent cell
+4. `coc FourLeafFishpacking02`
+5. wait out that load; fail if no loading screen ever appeared, if the player
+   still has no parent cell, or if the cell did not change
+6. `tm` (hide the HUD) and `tfc 1` (freeze the simulation, detach the camera) —
    so the two frames differ **only** by the previs toggle
-5. capture `01_previs_on.bmp`
-6. `tpc`
-7. wait `SettleDelay`, capture `02_previs_off.bmp`
-8. write `result.json`, then `qqq`
+7. capture `01_previs_on.bmp`
+8. `tpc`
+9. wait `SettleDelay`, capture `02_previs_off.bmp`
+10. write `result.json`, then `qqq`
+
+Steps 3 and 5 exist because the first version of this harness skipped them: the
+`coc` did nothing, the harness photographed the animated main menu twice, and
+the comparison reported "99.868% of pixels changed" — a completely confident,
+completely meaningless result. Capturing with no parent cell is now fatal.
 
 Everything that touches game state is marshalled onto the main thread through
 F4SE's task interface; the worker thread only sleeps and polls.
