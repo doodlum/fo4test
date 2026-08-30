@@ -9,11 +9,17 @@ struct Settings
 	// plugin without driving the game (useful when attaching a debugger).
 	bool enabled{ true };
 
-	// Fallout 4 has no console at the main menu, so `coc` issued there is
-	// silently swallowed.  Load the most recent save first to get into a real
-	// game, then coc from there.  Turn this off only if something else is
-	// already putting you in-game.
-	bool loadSaveFirst{ true };
+	// Console::ExecuteCommand only does anything once the Console menu itself
+	// exists -- without this, commands issued at the main menu are swallowed
+	// silently.  Push a kShow at the menu first and the `coc` starts a new game
+	// in the target cell, which is the same trick as opening the console by
+	// hand and typing it.
+	bool openConsole{ true };
+
+	// Alternative way into a live game: load the most recent save before
+	// running any commands.  Off by default -- it depends on the machine
+	// having a loadable save, and opening the console is enough.
+	bool loadSaveFirst{ false };
 
 	// Cell editor ID passed to `coc`.
 	std::string cell{ "FourLeafFishpacking02" };

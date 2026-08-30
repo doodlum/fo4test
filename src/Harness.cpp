@@ -85,6 +85,22 @@ namespace
 		return ui && ui->GetMenuOpen<RE::LoadingMenu>();
 	}
 
+	[[nodiscard]] bool IsConsoleOpen()
+	{
+		const auto* ui = RE::UI::GetSingleton();
+		return ui && ui->GetMenuOpen(RE::Console::MENU_NAME);
+	}
+
+	void SetConsoleVisible(bool a_show)
+	{
+		RunOnGameThread([a_show]() {
+			if (auto* queue = RE::UIMessageQueue::GetSingleton()) {
+				queue->AddMessage(RE::Console::MENU_NAME,
+					a_show ? RE::UI_MESSAGE_TYPE::kShow : RE::UI_MESSAGE_TYPE::kHide);
+			}
+		});
+	}
+
 	struct WorldState
 	{
 		std::uint32_t cellFormID{ 0 };
@@ -249,11 +265,21 @@ namespace
 
 		std::this_thread::sleep_for(std::chrono::milliseconds{ settings.mainMenuDelay });
 
-		// Fallout 4 has no console at the main menu, so `coc` there does
-		// nothing at all -- it does not even fail loudly, it is simply
-		// swallowed, and the harness then happily photographs the main menu's
-		// animated background twice and reports a 99% "difference".  Get into
-		// a real game first; from there the console works.
+		// Console::ExecuteCommand routes through the Console menu, so at the
+		// main menu -- where that menu has never been created -- commands are
+		// swallowed without an error.  The harness then photographs the menu's
+		// animated background twice and reports a 99% "difference".  Showing
+		// the console first makes `coc` behave exactly as it does when typed by
+		// hand: it starts a new game in the target cell.
+		if (settings.openConsole) {
+			REX::INFO("opening the console");
+			SetConsoleVisible(true);
+			if (!WaitFor("the console to open", IsConsoleOpen, 15s)) {
+				finish("the console menu never opened; commands would be swallowed");
+				return;
+			}
+		}
+
 		if (settings.loadSaveFirst) {
 			REX::INFO("loading the most recent save");
 			auto queued = std::make_shared<std::atomic_bool>(false);
@@ -286,7 +312,16 @@ namespace
 
 		RunCommand("coc " + settings.cell);
 
-		if (!WaitOutLoad("coc", std::chrono::milliseconds{ settings.loadTimeout })) {
+		const bool loaded = WaitOutLoad("coc", std::chrono::milliseconds{ settings.loadTimeout });
+
+		// Whether or not it worked, get the console out of the frame before we
+		// photograph anything.
+		if (settings.openConsole) {
+			SetConsoleVisible(false);
+			WaitFor("the console to close", []() { return !IsConsoleOpen(); }, 10s);
+		}
+
+		if (!loaded) {
 			finish("`coc " + settings.cell + "` did not trigger a load -- bad cell editor ID, "
 				   "or the console rejected the command");
 			return;

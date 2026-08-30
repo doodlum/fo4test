@@ -201,6 +201,7 @@ void Settings::Load()
 	}
 
 	ReadBool(ini, "enabled", enabled);
+	ReadBool(ini, "openconsole", openConsole);
 	ReadBool(ini, "loadsavefirst", loadSaveFirst);
 	ReadString(ini, "cell", cell);
 	ReadCommands(ini, "setupcommands", setupCommands);
