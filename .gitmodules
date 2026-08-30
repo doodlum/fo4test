@@ -1,9 +1,4 @@
-[submodule "extern/CommonLibF4PreNG"]
-	path = extern/CommonLibF4PreNG
-	url = https://github.com/powerof3/CommonLibF4.git
-[submodule "extern/CommonLibF4PostNG"]
-	path = extern/CommonLibF4PostNG
-	url = https://github.com/powerof3/CommonLibF4.git
-[submodule "extern/CommonLibF4PostAE"]
-	path = extern/CommonLibF4PostAE
-	url = https://github.com/powerof3/CommonLibF4.git
+[submodule "extern/CommonLibF4"]
+	path = extern/CommonLibF4
+	url = https://github.com/libxse/commonlibf4.git
+	branch = main

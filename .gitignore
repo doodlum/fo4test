@@ -1,2 +1,7 @@
 /build
 /dist
+/.xmake
+/vsxmake*
+/compile_commands.json
+/.vs
+/.vscode

@@ -1,79 +1,135 @@
-# Skyrim Community Shaders
+# fo4test
 
-SKSE core plugin for community-driven advanced graphics modifications.
+An F4SE plugin on the current [CommonLibF4](https://github.com/libxse/commonlibf4)
+that reproduces the FourLeafFishpacking previs bug **without an operator at the
+keyboard**: it drives the game to the cell, captures a frame, toggles previs,
+captures a second frame, and writes both to disk with a machine-readable
+result. A companion script diffs the two.
 
-[Nexus](https://www.nexusmods.com/skyrimspecialedition/mods/86492)
+The manual repro this automates:
+
+> `coc FourLeafFishpacking02`
+> Open console and toggle previs (`tpc` console command).
+> Bug can be more apparent if you turn your flashlight on the object.
+> The cell above has a chemistry station that shows the bug easily.
+
+## What the harness does
+
+On `kGameDataReady` (main menu up, form data loaded) a worker thread runs:
+
+1. wait `MainMenuDelay`
+2. `coc FourLeafFishpacking02`
+3. wait for `LoadingMenu` to appear, then disappear, then `LoadSettleDelay`
+4. `tm` (hide the HUD) and `tfc 1` (freeze the simulation, detach the camera) —
+   so the two frames differ **only** by the previs toggle
+5. capture `01_previs_on.bmp`
+6. `tpc`
+7. wait `SettleDelay`, capture `02_previs_off.bmp`
+8. write `result.json`, then `qqq`
+
+Everything that touches game state is marshalled onto the main thread through
+F4SE's task interface; the worker thread only sleeps and polls.
+
+Output lands in `Documents/My Games/Fallout4/F4SE/fo4test/`:
+
+| file | what |
+|---|---|
+| `01_previs_on.bmp` | frame before the toggle |
+| `02_previs_off.bmp` | frame after the toggle |
+| `03_diff.bmp` | 8x-amplified difference (written by the compare script) |
+| `result.json` | cell form ID, player position, capture names, ok/failure |
+| `comparison.json` | changed-pixel count and fraction, max/mean channel delta |
+
+The plugin log is `Documents/My Games/Fallout4/F4SE/fo4test.log`.
 
 ## Requirements
 
-- Any terminal of your choice (e.g., PowerShell)
-- [Visual Studio Community 2022](https://visualstudio.microsoft.com/)
-  - Desktop development with C++
-- [CMake](https://cmake.org/)
-  - Edit the `PATH` environment variable and add the cmake.exe install path as a new value
-  - Instructions for finding and editing the `PATH` environment variable can be found [here](https://www.java.com/en/download/help/path.html)
-- [Git](https://git-scm.com/downloads)
-  - Edit the `PATH` environment variable and add the Git.exe install path as a new value
-- [Vcpkg](https://github.com/microsoft/vcpkg)
-  - Install vcpkg using the directions in vcpkg's [Quick Start Guide](https://github.com/microsoft/vcpkg#quick-start-windows)
-  - After install, add a new environment variable named `VCPKG_ROOT` with the value as the path to the folder containing vcpkg
+- [XMake](https://xmake.io) 3.0.0+
+- MSVC or Clang-CL with C++23 (Visual Studio 2022 17.10+ / 2026)
+- Fallout 4 **1.11.240** and [F4SE](https://f4se.silverlock.org/) 0.7.9
+  (`RUNTIME_LATEST` in CommonLibF4 is 1.11.240; the generated
+  `F4SEPlugin_Version` declares exactly that runtime)
+- [Address Library for F4SE Plugins](https://www.nexusmods.com/fallout4/mods/47327)
+  — `version-1-11-240-0.bin` must be in `Data/F4SE/Plugins/`
 
-## User Requirements
+## Build
 
-- [Address Library for SKSE](https://www.nexusmods.com/skyrimspecialedition/mods/32444)
-  - Needed for SSE/AE
-- [VR Address Library for SKSEVR](https://www.nexusmods.com/skyrimspecialedition/mods/58101)
-  - Needed for VR
-
-## Register Visual Studio as a Generator
-
-- Open `x64 Native Tools Command Prompt`
-- Run `cmake`
-- Close the cmd window
-
-## Clone and Build
-Open terminal (e.g., PowerShell) and run the following commands:
-
-```
-git clone https://github.com/doodlum/skyrim-community-shaders.git --recursive
-cd skyrim-community-shaders
-.\BuildRelease.bat
+```bat
+git clone --recurse-submodules -b commonlibf4-template https://github.com/doodlum/fo4test
+cd fo4test
+xmake build
 ```
 
-### CMAKE Options (optional)
-If you want an example CMakeUserPreset to start off with you can copy the `CMakeUserPresets.json.template` -> `CMakeUserPresets.json`
-#### AUTO_PLUGIN_DEPLOYMENT
-* This option is default `"OFF"`
-* Make sure `"AUTO_PLUGIN_DEPLOYMENT"` is set to `"ON"` in `CMakeUserPresets.json`
-* Change the `"CommunityShadersOutputDir"` value to match your desired outputs, if you want multiple folders you can separate them by `;` is shown in the template example
-#### AIO_ZIP_TO_DIST
-* This option is default `"ON"`
-* Make sure `"AIO_ZIP_TO_DIST"` is set to `"ON"` in `CMakeUserPresets.json`
-* This will create a `CommunityShaders_AIO.7z` archive in /dist containing all features and base mod
-#### ZIP_TO_DIST
-* This option is default `"ON"`
-* Make sure `"ZIP_TO_DIST"` is set to `"ON"` in `CMakeUserPresets.json`
-* This will create a zip for each feature and one for the base Community shaders in /dist containing
-#### TRACY_SUPPORT
-* This option is default `"OFF"`
-* This will enable tracy support, might need to delete build folder when this option is changed
+`xmake` fetches spdlog itself. The plugin lands in
+`build/windows/x64/releasedbg/fo4test.dll`.
 
+Optional, for a Visual Studio solution or clangd:
 
-When using custom preset you can call BuildRelease.bat with an parameter to specify which preset to configure eg:
-`.\BuildRelease.bat ALL-WITH-AUTO-DEPLOYMENT`
+```bat
+xmake project -k vsxmake
+xmake project -k compile_commands
+```
 
-When switching between different presets you might need to remove the build folder
+Set `XSE_FO4_GAME_PATH` (or `XSE_FO4_MODS_PATH`) before building and
+`xmake install` deploys the DLL into `Data/F4SE/Plugins` for you.
+
+## Run it
+
+```powershell
+pwsh -File tools/run_harness.ps1
+```
+
+This deploys the DLL and default INI, clears the previous run, launches
+`f4se_loader.exe`, waits for `result.json`, and then runs the comparison.
+Exit code `0` means the toggle changed the frame, `1` means the two captures
+were effectively identical, `2` means the run itself failed.
+
+To diff an existing run without relaunching the game:
+
+```bash
+python tools/compare_captures.py
+```
+
+## Configuration
+
+`package/F4SE/Plugins/fo4test.ini` documents every key; copy it next to the
+DLL. The ones worth knowing:
+
+- `Cell` — the `coc` target. `FourLeafFishpacking01` is the cell above, with
+  the chemistry station that shows the bug more obviously.
+- `SetupCommands` — pipe-separated, run before the first capture.
+- `ToggleCommand` — the command under test, run between captures.
+- `UsePose` / `PosX…AngZ` — pin the camera so runs on different machines are
+  directly comparable. Take the values from `result.json` after an exploratory
+  run.
+- `Enabled = 0` — load the plugin without it driving the game.
+
+## Layout
+
+```
+src/Plugin.cpp     F4SE entry point; registers the message listener
+src/Harness.cpp    the sequencer (worker thread + task-interface marshalling)
+src/Capture.cpp    swap chain back buffer -> 32-bit BGRA .bmp
+src/Settings.cpp   fo4test.ini
+tools/             launcher and capture diff
+extern/CommonLibF4 submodule, tracks main
+```
+
+`F4SEPlugin_Version` is generated by the `commonlibf4.plugin` xmake rule from
+the metadata in `xmake.lua` — do not declare it in `src/` as well.
+
+## Known limits
+
+- The flashlight step from the manual repro is not automated: Fallout 4 has no
+  console command for the Pip-Boy light. The pixel diff does not need it, but
+  if you find a command that works, add it to `SetupCommands`.
+- Captures are taken from the presented back buffer, so anything the driver
+  composites afterwards (overlays, HDR remapping) is not included.
+- `tfc 1` freezes the simulation but not the render loop; a frame is still
+  being drawn when we copy, which is why the capture runs on the game thread.
 
 ## License
 
-### Default
-
-[GPL-3.0-or-later](COPYING) WITH [Modding Exception AND GPL-3.0 Linking Exception (with Corresponding Source)](EXCEPTIONS.md).  
-Specifically, the Modded Code is Skyrim (and its variants) and Modding Libraries include [SKSE](https://skse.silverlock.org/) and Commonlib (and variants).
-
-### Shaders
-
-See LICENSE within each directory; if none, it's [Default](#default)
-
-- [Features Shaders](features)
-- [Package Shaders](package/Shaders/)
+[GPL-3.0-or-later](COPYING) WITH [Modding Exception AND GPL-3.0 Linking Exception (with Corresponding Source)](EXCEPTIONS.md).
+The Modded Code is Fallout 4 (and its variants); Modding Libraries include
+[F4SE](https://f4se.silverlock.org/) and CommonLibF4.
