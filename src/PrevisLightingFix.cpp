@@ -245,7 +245,14 @@ namespace
 		if (!context) {
 			return;
 		}
-		// The engine's one-shot latch: bit 51 set = lights already attached.
+		// The engine's lights-attached latch, NiAVObject flag bit 51.  Both
+		// halves are required and engine-faithful: nodes the engine fades in
+		// end up with the latch SET after their own attach, and the render
+		// path treats a clear latch as "light list not valid" -- attaching
+		// without setting it changed nothing (measured 52k wrong pixels),
+		// and gating on list emptiness skipped the broken nodes entirely
+		// (their lists are stale non-empty).  So: attach once, set the
+		// latch, exactly as a normal fade-in would have.
 		auto& flags = *reinterpret_cast<std::uint64_t*>(
 			reinterpret_cast<std::uint8_t*>(a_node) + 0x108);
 		if ((flags >> 51) & 1) {
@@ -265,8 +272,12 @@ namespace
 			reinterpret_cast<std::uint8_t*>(a_node) + 0xBC);
 		static REL::Relocation<LightIntoNode_t> attach{ REL::ID(kLightIntoNodeID) };
 		attach(a_node, root, 0, 0, radius < 150.0f, 1);
-		flags |= 1ull << 51;  // mirror the engine's latch so this stays one-shot
-		g_nodeUpdates.fetch_add(1, std::memory_order_relaxed);
+		flags |= 1ull << 51;
+		const auto n = g_nodeUpdates.fetch_add(1, std::memory_order_relaxed);
+		if (n == 0 || ((n + 1) & 0x1F) == 0) {
+			REX::INFO("light attach #{} (node {:#x}, r={:.0f})", n + 1,
+				reinterpret_cast<std::uintptr_t>(a_node), radius);
+		}
 	}
 
 	// kAttachLights: refresh fadeNode light lists from the previs batch's
