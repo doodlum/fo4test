@@ -61,7 +61,11 @@ namespace
 		const auto deadline = std::chrono::steady_clock::now() + a_timeout;
 		while (std::chrono::steady_clock::now() < deadline) {
 			auto hit = std::make_shared<std::atomic_bool>(false);
-			if (!RunOnGameThread([hit, &a_predicate]() { hit->store(a_predicate()); })) {
+			// Copy the predicate into the delegate rather than capturing it by
+			// reference: on the timeout path RunOnGameThread returns while the
+			// task is still queued, and a reference to our stack would dangle
+			// if it ran afterwards.
+			if (!RunOnGameThread([hit, a_predicate]() { hit->store(a_predicate()); })) {
 				REX::WARN("game thread stopped answering while waiting for {}", a_what);
 				return false;
 			}
