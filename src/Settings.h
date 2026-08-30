@@ -68,7 +68,17 @@ struct Settings
 	// the bisection knob -- capture 01 is taken with these applied and previs
 	// still on, capture 02 with previs off, so a spec that fixes the bug makes
 	// the two images converge.
-	std::string previsFixSites{ "none" };
+	// The fix.  See PrevisFix.h for what each site does and the numbers
+	// behind this exact set.
+	std::string previsFixSites{ "23,25,32-37" };
+
+	// 1 = interior-aware detours (the fix); 0 = hard previs-off at the sites
+	// (bisection mode, costs 2/3 of exterior fps -- experiments only).
+	bool conditionalSites{ true };
+
+	// Count BSGeometry::OnVisible calls around each capture, to see whether the
+	// previs path routes geometry through the same per-object entry point.
+	bool visibilityProbe{ true };
 
 	// Install the actual fix: hook the previs batch accumulation and restore
 	// the lighting-path flag the traversal batch always has.

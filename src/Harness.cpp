@@ -2,11 +2,16 @@
 
 #include "Harness.h"
 
+#include "REX/W32/OLE32.h"
+#include "REX/W32/SHELL32.h"
+
 #include "Capture.h"
 #include "Dump.h"
 #include "Input.h"
 #include "PrevisFix.h"
 #include "PrevisLightingFix.h"
+#include "SubmitProbe.h"
+#include "VisibilityProbe.h"
 #include "Settings.h"
 
 #include <format>
@@ -87,6 +92,51 @@ namespace
 	{
 		const auto* ui = RE::UI::GetSingleton();
 		return ui && ui->GetMenuOpen<RE::LoadingMenu>();
+	}
+
+	// Newest save whose file name contains a_substring (case-insensitive),
+	// as the extensionless name the console `load` command takes.
+	[[nodiscard]] std::string ResolveSaveName(std::string_view a_substring)
+	{
+		wchar_t*   buffer{ nullptr };
+		const auto result = REX::W32::SHGetKnownFolderPath(REX::W32::FOLDERID_Documents,
+			REX::W32::KF_FLAG_DEFAULT, nullptr, std::addressof(buffer));
+		const std::unique_ptr<wchar_t[], decltype(&REX::W32::CoTaskMemFree)> owned(
+			buffer, REX::W32::CoTaskMemFree);
+		if (!owned || result != 0) {
+			return {};
+		}
+		std::filesystem::path dir = owned.get();
+		dir /= "My Games";
+		dir /= F4SE::GetSaveFolderName();
+		dir /= "Saves";
+		auto lower = [](std::string s) {
+			for (auto& c : s) {
+				c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+			}
+			return s;
+		};
+		const auto needle = lower(std::string{ a_substring });
+
+		std::string best;
+		std::filesystem::file_time_type bestTime{};
+		std::error_code ec;
+		for (const auto& entry : std::filesystem::directory_iterator{ dir, ec }) {
+			if (!entry.is_regular_file(ec) ||
+				entry.path().extension() != ".fos") {
+				continue;
+			}
+			const auto stem = entry.path().stem().string();
+			if (lower(stem).find(needle) == std::string::npos) {
+				continue;
+			}
+			const auto time = entry.last_write_time(ec);
+			if (best.empty() || time > bestTime) {
+				best = stem;
+				bestTime = time;
+			}
+		}
+		return best;
 	}
 
 	[[nodiscard]] bool IsInWorld()
@@ -296,6 +346,8 @@ namespace
 		std::string   after{};
 		std::uint32_t width{ 0 };
 		std::uint32_t height{ 0 };
+		std::uint64_t onVisiblePrevisOn{ 0 };
+		std::uint64_t onVisiblePrevisOff{ 0 };
 		bool          lightingFixInstalled{ false };
 		std::uint64_t lightingFixHits{ 0 };
 		double        fpsPrevisOn{ 0.0 };
@@ -331,7 +383,9 @@ namespace
 			 << "  \"previsFixSites\": " << Quote(a_report.previsFixSites) << ",\n"
 			 << "  \"lightingFixInstalled\": "
 			 << (a_report.lightingFixInstalled ? "true" : "false") << ",\n"
-			 << "  \"lightingFixHits\": " << a_report.lightingFixHits << "\n"
+			 << "  \"lightingFixHits\": " << a_report.lightingFixHits << ",\n"
+			 << "  \"onVisiblePrevisOn\": " << a_report.onVisiblePrevisOn << ",\n"
+			 << "  \"onVisiblePrevisOff\": " << a_report.onVisiblePrevisOff << "\n"
 			 << "}\n";
 
 		REX::INFO("wrote {}", path.string());
@@ -440,6 +494,55 @@ namespace
 			//     mov  byte ptr [rip+...], 1       ; REL::ID(2698031)
 			//
 			// Both calls take no arguments (verified from their prologues).
+			//
+			// When SaveFile names a specific save, skip the Continue branch
+			// (which always takes the newest) and issue a console `load`
+			// instead -- at the main menu ExecuteCommand handles script
+			// commands, the same route `coc` uses for new games.
+			if (!settings.saveFile.empty()) {
+				const auto resolved = ResolveSaveName(settings.saveFile);
+				if (resolved.empty()) {
+					finish("no save matches SaveFile substring '" +
+						   settings.saveFile + "'");
+					return;
+				}
+				if (settings.openConsole) {
+					SetConsoleVisible(true);
+					WaitFor("the console to open", IsConsoleOpen, 15s);
+				}
+				RunCommand("load " + resolved);
+				if (settings.openConsole) {
+					SetConsoleVisible(false);
+					WaitFor("the console to close",
+						[]() { return !IsConsoleOpen(); }, 10s);
+				}
+				// A save from another character or an older game version pops
+				// a confirmation dialog ("relies on content that is no longer
+				// present"); accept it, or the load never starts.
+				const auto deadline = std::chrono::steady_clock::now() +
+					std::chrono::milliseconds{ settings.loadTimeout };
+				bool inWorld = false;
+				while (std::chrono::steady_clock::now() < deadline) {
+					if (WaitFor("the player to be in a cell", IsInWorld, 3s)) {
+						inWorld = true;
+						break;
+					}
+					auto boxOpen = std::make_shared<std::atomic_bool>(false);
+					RunOnGameThread([boxOpen]() {
+						const auto* ui = RE::UI::GetSingleton();
+						boxOpen->store(ui && ui->GetMenuOpen("MessageBoxMenu"));
+					});
+					if (boxOpen->load()) {
+						REX::INFO("message box during load; accepting it");
+						Input::FocusGameWindow();
+						Input::TapKey(0x0D);  // VK_RETURN
+					}
+				}
+				if (!inWorld) {
+					finish("`load " + resolved + "` never put the player in a cell");
+					return;
+				}
+			} else {
 			auto started = std::make_shared<std::atomic_bool>(false);
 			RunOnGameThread([started]() {
 				auto* ui = RE::UI::GetSingleton();
@@ -493,6 +596,7 @@ namespace
 				finish("the Continue branch ran but the player never reached a cell");
 				return;
 			}
+			}
 
 			// In the world; let the scene settle before reading state.
 			std::this_thread::sleep_for(std::chrono::milliseconds{ settings.loadSettleDelay });
@@ -511,7 +615,21 @@ namespace
 		// save IS the test scenario -- camera already framing the subject -- a coc
 		// would teleport the player away from the shot, so an empty Cell skips it.
 		if (!settings.cell.empty()) {
-			if (settings.openConsole) {
+			// Issued immediately after the load's fade-in, a coc can be
+			// swallowed without an error (measured: 10ms after load, no
+			// loading screen ever appeared for a valid cell).  Let the world
+			// settle first.
+			std::this_thread::sleep_for(
+				std::chrono::milliseconds{ settings.loadSettleDelay });
+
+			// The open-console dance exists for the MAIN MENU, where commands
+			// are otherwise swallowed.  In-game, ExecuteCommand works with the
+			// console closed (tm/tfc/tpc all run that way), and an open
+			// console menu pauses the world -- under which a queued cell
+			// change never fires (measured: valid coc, no loading screen,
+			// twice).  So only do the dance when not yet in a cell.
+			const bool inGame = IsInWorld();
+			if (settings.openConsole && !inGame) {
 				REX::INFO("opening the console");
 				SetConsoleVisible(true);
 				WaitFor("the console to open", IsConsoleOpen, 15s);
@@ -519,13 +637,13 @@ namespace
 
 			RunCommand("coc " + settings.cell);
 
-			const bool cocLoaded =
-				WaitOutLoad("coc", std::chrono::milliseconds{ settings.loadTimeout });
-
-			if (settings.openConsole) {
+			if (settings.openConsole && !inGame) {
 				SetConsoleVisible(false);
 				WaitFor("the console to close", []() { return !IsConsoleOpen(); }, 10s);
 			}
+
+			const bool cocLoaded =
+				WaitOutLoad("coc", std::chrono::milliseconds{ settings.loadTimeout });
 
 			if (!cocLoaded) {
 				finish("`coc " + settings.cell + "` did not trigger a load -- bad cell "
@@ -577,13 +695,35 @@ namespace
 
 		std::this_thread::sleep_for(std::chrono::milliseconds{ settings.settleDelay });
 
+		// The world is loaded and settled; only now is it safe to let the
+		// redirect divert (see PrevisLightingFix.cpp on why arming any
+		// earlier breaks the load itself).
+		if (PrevisLightingFix::Installed()) {
+			PrevisLightingFix::SetWorldReady(true);
+			REX::INFO("redirect diversion armed post-load");
+			std::this_thread::sleep_for(std::chrono::milliseconds{ 2000 });
+		}
+
 		report.previsFixSites = settings.previsFixSites;
 		report.lightingFixInstalled = PrevisLightingFix::Installed();
 		report.lightingFixHits = PrevisLightingFix::HitCount();
 		REX::INFO("previs lighting fix: installed={} hits={}", report.lightingFixInstalled,
 			report.lightingFixHits);
 
+		VisibilityProbe::Reset();
+		VisibilityProbe::RequestSnapshot();
+		SubmitProbe::Reset();
 		report.fpsPrevisOn = MeasureFps(std::chrono::milliseconds{ settings.fpsWindow });
+		RunOnGameThread([dir]() {
+			Dump::SubmittedBatches(dir / "submitted.txt", "previs ON");
+			Dump::ObjectFlags(dir / "objectflags.txt", "previs ON");
+		});
+		report.onVisiblePrevisOn = VisibilityProbe::Count();
+		REX::INFO("BSGeometry::OnVisible calls with previs ON: {}",
+			report.onVisiblePrevisOn);
+		RunOnGameThread([dir]() {
+			Dump::CullingProcesses(dir / "processes.txt", "previs ON");
+		});
 		REX::INFO("fps with previs ON (fix sites '{}'): {:.1f}", settings.previsFixSites,
 			report.fpsPrevisOn);
 
@@ -611,7 +751,24 @@ namespace
 		RunCommand(settings.toggleCommand);
 		std::this_thread::sleep_for(std::chrono::milliseconds{ settings.settleDelay });
 
+		VisibilityProbe::Reset();
+		VisibilityProbe::RequestSnapshot();
+		SubmitProbe::Reset();
 		report.fpsPrevisOff = MeasureFps(std::chrono::milliseconds{ settings.fpsWindow });
+		RunOnGameThread([dir]() {
+			Dump::SubmittedBatches(dir / "submitted.txt", "previs OFF");
+			Dump::ObjectFlags(dir / "objectflags.txt", "previs OFF");
+		});
+		report.onVisiblePrevisOff = VisibilityProbe::Count();
+		RunOnGameThread([dir]() {
+			Dump::CullingProcesses(dir / "processes.txt", "previs OFF");
+		});
+		REX::INFO("BSGeometry::OnVisible calls with previs OFF: {}  (previs culls {:.1f}%)",
+			report.onVisiblePrevisOff,
+			report.onVisiblePrevisOff > 0
+				? (1.0 - static_cast<double>(report.onVisiblePrevisOn) /
+						  static_cast<double>(report.onVisiblePrevisOff)) * 100.0
+				: 0.0);
 		REX::INFO("fps with previs OFF: {:.1f}  (previs benefit {:+.1f}%)",
 			report.fpsPrevisOff,
 			report.fpsPrevisOff > 0.0

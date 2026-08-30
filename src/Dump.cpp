@@ -2,6 +2,9 @@
 
 #include "Dump.h"
 
+#include "SubmitProbe.h"
+#include "VisibilityProbe.h"
+
 #include <format>
 #include <iomanip>
 #include <sstream>
@@ -45,6 +48,100 @@ namespace
 
 namespace Dump
 {
+	bool ObjectFlags(const std::filesystem::path& a_path, std::string_view a_label)
+	{
+		std::ofstream file{ a_path, std::ios::app };
+		if (!file) {
+			return false;
+		}
+
+		const auto records = VisibilityProbe::Records();
+		file << "===== " << a_label << " ===== " << records.size() << " objects\n";
+		for (const auto& r : records) {
+			file << std::format("{:#x} {:#018x} {}\n", r.geometry, r.flags, r.calls);
+		}
+		file << '\n';
+		REX::INFO("dumped {} object flag records ({})", records.size(), a_label);
+		return true;
+	}
+
+	bool SubmittedBatches(const std::filesystem::path& a_path, std::string_view a_label)
+	{
+		std::ofstream file{ a_path, std::ios::app };
+		if (!file) {
+			return false;
+		}
+
+		file << "===== " << a_label << " =====\n";
+		static constexpr const char* kNames[3] = { "previs-side batch",
+			"previs-off-side batch", "traversal batch" };
+
+		for (std::size_t i = 0; i < 3; ++i) {
+			const auto snap = SubmitProbe::Get(i);
+			file << std::format(
+				"\n-- {} valid={} batch={:#x} calls={} buffer={:#x} count={} "
+				"tailFlag={:#04x} captured={} lightBuf={:#x} lightCount={}\n",
+				kNames[i], snap.valid, snap.batch, snap.calls, snap.buffer, snap.count,
+				snap.tailFlag, snap.captured, snap.lightBuffer, snap.lightCount);
+			if (snap.valid) {
+				const auto base = REX::FModule::GetExecutingModule().GetBaseAddress();
+				for (std::uint32_t e = 0; e < snap.captured; ++e) {
+					// Report the vtable module-relative so it can be mapped
+					// back to a class through IDs_VTABLE.h despite ASLR.
+					const auto vt = snap.vtables[e];
+					const auto vtRva =
+						(vt > base && vt - base < 0x10000000) ? vt - base : 0;
+					file << std::format(
+						"   entry {:4} obj {:#x} flags {:#06x} vtrva {:#x} "
+						"pos {:.1f},{:.1f},{:.1f} r {:.1f} objflags {:#018x} "
+						"affected {}\n",
+						e, snap.objects[e], snap.entryFlags[e], vtRva, snap.bounds[e][0],
+						snap.bounds[e][1], snap.bounds[e][2], snap.bounds[e][3],
+						snap.objFlags[e], snap.affected[e]);
+				}
+			}
+		}
+
+		file << '\n';
+		return true;
+	}
+
+	bool CullingProcesses(const std::filesystem::path& a_path, std::string_view a_label)
+	{
+		std::ofstream file{ a_path, std::ios::app };
+		if (!file) {
+			return false;
+		}
+
+		const auto snapshot = VisibilityProbe::LastSnapshot();
+		if (snapshot.valid) {
+			file << std::format(
+				"-- in-hook snapshot: process {:#x} geometry {:#x} flags {:#018x}\n",
+				snapshot.process, snapshot.geometry, snapshot.geometryFlags);
+			HexDump(file, snapshot.bytes.data(), snapshot.bytes.size());
+			file << '\n';
+		}
+
+		const auto observed = VisibilityProbe::Processes();
+		const auto base = REX::FModule::GetExecutingModule().GetBaseAddress();
+
+		file << "===== " << a_label << " =====\n";
+		file << observed.size() << " distinct culling process(es)\n";
+
+		for (const auto& o : observed) {
+			file << std::format("\n-- process {:#x}  ({} calls)", o.process, o.calls);
+			if (o.process > base && o.process - base < 0x10000000) {
+				file << std::format("  module+{:#x}", o.process - base);
+			}
+			file << '\n';
+			HexDump(file, reinterpret_cast<const std::uint8_t*>(o.process), 0x170);
+		}
+
+		file << '\n';
+		REX::INFO("dumped {} culling process(es) ({})", observed.size(), a_label);
+		return true;
+	}
+
 	bool Accumulators(const std::filesystem::path& a_path, std::string_view a_label)
 	{
 		std::ofstream file{ a_path, std::ios::app };

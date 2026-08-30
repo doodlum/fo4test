@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import datetime
 import re
+import time
 import shutil
 import subprocess
 import sys
@@ -31,16 +33,61 @@ ARCHIVE = REPO / "reference" / "bisect"
 RUNNER = REPO / "tools" / "run_harness.ps1"
 
 
-def set_spec(spec: str) -> None:
+PLUGIN_DIR = GAME / "Data" / "F4SE" / "Plugins"
+BUILT_DLL = REPO / "build" / "windows" / "x64" / "releasedbg" / "fo4test.dll"
+
+
+def build_and_deploy() -> None:
+    """Build and install the plugin before any run.
+
+    run_harness.ps1 is invoked with -NoDeploy below, so nothing else in this
+    path copies the DLL.  Without this the sweep happily measures whatever
+    build happened to be installed last -- which has already produced one set
+    of confidently-reported, entirely meaningless numbers.  Build failures are
+    fatal here for the same reason.
+    """
+    proc = subprocess.run(["xmake", "build"], cwd=REPO,
+                          capture_output=True, text=True, shell=True)
+    if proc.returncode != 0:
+        sys.stderr.write(proc.stdout + proc.stderr)
+        raise SystemExit("build failed -- refusing to run against a stale DLL")
+    if not BUILT_DLL.is_file():
+        raise SystemExit(f"{BUILT_DLL} missing after a successful build")
+
+    PLUGIN_DIR.mkdir(parents=True, exist_ok=True)
+    target = PLUGIN_DIR / BUILT_DLL.name
+    # The previous run's game can still be shutting down and holding the DLL;
+    # give it up to a minute to let go rather than failing the whole sweep.
+    for attempt in range(30):
+        try:
+            shutil.copy2(BUILT_DLL, target)
+            break
+        except PermissionError:
+            if attempt == 29:
+                raise
+            time.sleep(2)
+
+    # copy2 preserves mtime, so this also proves the deployed file is the one
+    # just built rather than a leftover.
+    stamp = datetime.datetime.fromtimestamp(target.stat().st_mtime)
+    print(f"deployed {target.name} built {stamp:%H:%M:%S}", flush=True)
+
+
+def set_spec(spec: str, fix_mode: int | None = None) -> None:
     text = INI.read_text(encoding="utf-8", errors="replace")
     new, n = re.subn(r"(?im)^PrevisFixSites\s*=.*$", f"PrevisFixSites = {spec}", text)
     if n == 0:
         new = text.rstrip() + f"\nPrevisFixSites = {spec}\n"
+    if fix_mode is not None:
+        new, n = re.subn(r"(?im)^PrevisLightingFix\s*=.*$",
+                         f"PrevisLightingFix = {fix_mode}", new)
+        if n == 0:
+            new = new.rstrip() + f"\nPrevisLightingFix = {fix_mode}\n"
     INI.write_text(new, encoding="utf-8")
 
 
-def run_once(spec: str, timeout_min: int) -> dict | None:
-    set_spec(spec)
+def run_once(spec: str, timeout_min: int, fix_mode: int | None = None) -> dict | None:
+    set_spec(spec, fix_mode)
     proc = subprocess.run(
         ["powershell", "-ExecutionPolicy", "Bypass", "-File", str(RUNNER),
          "-NoDeploy", "-TimeoutMinutes", str(timeout_min)],
@@ -71,14 +118,18 @@ def main() -> int:
     ap.add_argument("specs", nargs="+")
     ap.add_argument("--repeat", type=int, default=1)
     ap.add_argument("--timeout-min", type=int, default=15)
+    ap.add_argument("--fix-mode", type=int, default=None,
+                    help="also rewrite PrevisLightingFix in the INI")
     args = ap.parse_args()
+
+    build_and_deploy()
 
     rows = []
     for spec in args.specs:
         for attempt in range(args.repeat):
             label = spec if args.repeat == 1 else f"{spec}#{attempt + 1}"
             print(f"\n=== {label} ===", flush=True)
-            stats = run_once(spec, args.timeout_min)
+            stats = run_once(spec, args.timeout_min, args.fix_mode)
             if stats is None:
                 rows.append((label, None))
                 continue

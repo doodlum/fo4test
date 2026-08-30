@@ -124,7 +124,34 @@ namespace
 		return out;
 	}
 
-	bool PatchSite(std::size_t a_index)
+	// The interior-aware predicate the conditional mode routes the lighting
+	// gates through.  Returns previs-active EXCEPT while the player stands in
+	// an interior cell, where the lighting stages take their previs-off path
+	// -- the traversal that path runs costs nothing measurable in interiors
+	// (267 -> 266 fps at the chem lab) but 66% of frame time in exteriors,
+	// which is why the fix must not be unconditional.  Cached per frame; the
+	// two cross-thread pointer reads are benign (stable singletons).
+	[[nodiscard]] bool LightingAwarePreCulling()
+	{
+		// rva 0x21ae520 -> EXACT 2317322 (rva2id.py); the real predicate.
+		static REL::Relocation<bool (*)()> isActive{ REL::ID(2317322) };
+		if (!isActive()) {
+			return false;
+		}
+
+		static REL::Relocation<std::uint32_t*> frame{ REL::ID(4784456) };
+		static std::atomic_uint32_t lastFrame{ 0xFFFFFFFFu };
+		static std::atomic_bool     interior{ false };
+		const auto f = *frame;
+		if (lastFrame.exchange(f, std::memory_order_relaxed) != f) {
+			const auto* player = RE::PlayerCharacter::GetSingleton();
+			const auto* cell = player ? player->GetParentCell() : nullptr;
+			interior.store(cell && cell->IsInterior(), std::memory_order_relaxed);
+		}
+		return !interior.load(std::memory_order_relaxed);
+	}
+
+	bool PatchSite(std::size_t a_index, bool a_conditional)
 	{
 		const auto& site = kSites[a_index];
 		const REL::Relocation<std::uintptr_t> fn{ REL::ID(site.id) };
@@ -136,6 +163,22 @@ namespace
 			REX::ERROR("site[{}] REL::ID({})+{:#x} is {:#04x}, not a call (0xE8); skipping",
 				a_index, site.id, site.offset, target[0]);
 			return false;
+		}
+
+		if (a_conditional) {
+			// Reroute the call through the interior-aware predicate instead
+			// of hard-forcing false -- the shipping configuration.
+			auto& trampoline = REL::GetTrampoline();
+			const auto original = trampoline.write_call<5>(
+				reinterpret_cast<std::uintptr_t>(target),
+				reinterpret_cast<std::uintptr_t>(&LightingAwarePreCulling));
+			if (!original) {
+				REX::ERROR("site[{}]: trampoline refused the detour", a_index);
+				return false;
+			}
+			REX::INFO("site[{:2}] conditional: REL::ID({})+{:#x} @ {:#x}", a_index,
+				site.id, site.offset, reinterpret_cast<std::uintptr_t>(target));
+			return true;
 		}
 
 		DWORD old{};
@@ -170,7 +213,7 @@ namespace PrevisFix
 
 	std::size_t SiteCount() noexcept { return kSiteCount; }
 
-	std::size_t Apply(std::string_view a_spec)
+	std::size_t Apply(std::string_view a_spec, bool a_conditional)
 	{
 		const auto wanted = ParseSpec(a_spec);
 		if (wanted.empty()) {
@@ -180,12 +223,12 @@ namespace PrevisFix
 
 		std::size_t done = 0;
 		for (const auto i : wanted) {
-			if (PatchSite(i)) {
+			if (PatchSite(i, a_conditional)) {
 				++done;
 			}
 		}
-		REX::INFO("previs fix: patched {}/{} selected site(s) from spec '{}'", done,
-			wanted.size(), a_spec);
+		REX::INFO("previs fix: {} {}/{} selected site(s) from spec '{}'",
+			a_conditional ? "detoured" : "patched", done, wanted.size(), a_spec);
 		return done;
 	}
 }

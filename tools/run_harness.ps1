@@ -84,45 +84,66 @@ if (-not (Test-Path -LiteralPath $versionBin)) {
 # one that quietly disabled previs.  Turn it off for the run and put the
 # operator's setting back afterwards, whatever happens.
 $prefs = Join-Path $HOME 'Documents\My Games\Fallout4\Fallout4Prefs.ini'
-$prefsBackup = $null
+$prefsBackup = "$prefs.harness-backup"
+$prefsOriginal = $null
 if (Test-Path -LiteralPath $prefs) {
-    $prefsBackup = "$prefs.harness-backup"
-    Copy-Item -LiteralPath $prefs -Destination $prefsBackup -Force
+    # Remember the value itself, not just a file copy.  A previous run that was
+    # killed before its restore leaves the modified file in place; backing that
+    # up would capture iPresentInterval=0 as though it were the operator's
+    # setting, and the original would be lost for good.  Refuse to overwrite an
+    # existing backup for the same reason.
+    $prefsOriginal = ((Get-Content -LiteralPath $prefs) -match '^iPresentInterval\s*=') |
+        Select-Object -First 1
+    if (-not (Test-Path -LiteralPath $prefsBackup)) {
+        Copy-Item -LiteralPath $prefs -Destination $prefsBackup -Force
+    }
     (Get-Content -LiteralPath $prefs) `
         -replace '^iPresentInterval\s*=.*$', 'iPresentInterval=0' |
         Set-Content -LiteralPath $prefs -Encoding utf8
-    Write-Step 'Disabled vsync for this run (original saved)'
+    Write-Step "Disabled vsync for this run (was: $prefsOriginal)"
 }
 
-Write-Step 'Launching Fallout 4 through F4SE'
-Start-Process -FilePath $loader -WorkingDirectory $GamePath | Out-Null
+try {
+    Write-Step 'Launching Fallout 4 through F4SE'
+    Start-Process -FilePath $loader -WorkingDirectory $GamePath | Out-Null
+
+    $deadline = (Get-Date).AddMinutes($TimeoutMinutes)
+    Write-Step "Waiting for $resultPath (up to $TimeoutMinutes min)"
+    while (-not (Test-Path -LiteralPath $resultPath)) {
+        if ((Get-Date) -gt $deadline) {
+            Write-Warning 'Timed out; closing the game.'
+            Get-Process -Name 'Fallout4' -ErrorAction SilentlyContinue | Stop-Process -Force
+            throw "The harness never wrote $resultPath. Check Documents\My Games\Fallout4\F4SE\fo4test.log."
+        }
+        Start-Sleep -Seconds 5
+    }
+
+    Write-Step 'Harness reported in; waiting for the game to exit'
+    $exitDeadline = (Get-Date).AddMinutes(2)
+    while (Get-Process -Name 'Fallout4' -ErrorAction SilentlyContinue) {
+        if ((Get-Date) -gt $exitDeadline) {
+            Get-Process -Name 'Fallout4' -ErrorAction SilentlyContinue | Stop-Process -Force
+            break
+        }
+        Start-Sleep -Seconds 2
+    }
+
+
+
+    Write-Step 'Comparing captures'
+    & python (Join-Path $PSScriptRoot 'compare_captures.py') $OutputDir
+    $script:exitCode = $LASTEXITCODE
 
-$deadline = (Get-Date).AddMinutes($TimeoutMinutes)
-Write-Step "Waiting for $resultPath (up to $TimeoutMinutes min)"
-while (-not (Test-Path -LiteralPath $resultPath)) {
-    if ((Get-Date) -gt $deadline) {
-        Write-Warning 'Timed out; closing the game.'
-        Get-Process -Name 'Fallout4' -ErrorAction SilentlyContinue | Stop-Process -Force
-        throw "The harness never wrote $resultPath. Check Documents\My Games\Fallout4\F4SE\fo4test.log."
+}
+finally {
+    # Always put the operator's vsync setting back, however this run ended.
+    if ($prefsOriginal) {
+        (Get-Content -LiteralPath $prefs) `
+            -replace '^iPresentInterval\s*=.*$', $prefsOriginal |
+            Set-Content -LiteralPath $prefs -Encoding utf8
+        Write-Step "Restored $prefsOriginal"
     }
-    Start-Sleep -Seconds 5
+    Remove-Item -LiteralPath $prefsBackup -Force -ErrorAction SilentlyContinue
 }
 
-Write-Step 'Harness reported in; waiting for the game to exit'
-$exitDeadline = (Get-Date).AddMinutes(2)
-while (Get-Process -Name 'Fallout4' -ErrorAction SilentlyContinue) {
-    if ((Get-Date) -gt $exitDeadline) {
-        Get-Process -Name 'Fallout4' -ErrorAction SilentlyContinue | Stop-Process -Force
-        break
-    }
-    Start-Sleep -Seconds 2
-}
-
-if ($prefsBackup -and (Test-Path -LiteralPath $prefsBackup)) {
-    Move-Item -LiteralPath $prefsBackup -Destination $prefs -Force
-    Write-Step 'Restored the original vsync setting'
-}
-
-Write-Step 'Comparing captures'
-& python (Join-Path $PSScriptRoot 'compare_captures.py') $OutputDir
-exit $LASTEXITCODE
+exit $script:exitCode

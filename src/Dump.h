@@ -17,4 +17,16 @@ namespace Dump
 {
 	// Writes a hex dump of both globals to a_path.  Game thread only.
 	bool Accumulators(const std::filesystem::path& a_path, std::string_view a_label);
+
+	// Dumps the culling processes the visibility probe actually observed being
+	// passed to OnVisible, rather than the globals the world draw passes.
+	bool CullingProcesses(const std::filesystem::path& a_path, std::string_view a_label);
+
+	// Dumps the batch captured at submit time on each side of the previs
+	// branch, which is where the two paths finally diverge.
+	bool SubmittedBatches(const std::filesystem::path& a_path, std::string_view a_label);
+
+	// One line per geometry seen by OnVisible, with its flags, so the two
+	// previs states can be diffed object by object.
+	bool ObjectFlags(const std::filesystem::path& a_path, std::string_view a_label);
 }

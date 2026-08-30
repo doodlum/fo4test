@@ -2,8 +2,11 @@
 
 #include "Harness.h"
 #include "PrevisFix.h"
+#include "Crash.h"
 #include "PrevisLightingFix.h"
 #include "Settings.h"
+#include "SubmitProbe.h"
+#include "VisibilityProbe.h"
 
 namespace
 {
@@ -14,6 +17,13 @@ namespace
 			// The main menu is up and form data is loaded, so the console
 			// will accept `coc`.  This is where the harness takes over.
 			Harness::Start();
+			break;
+		case F4SE::MessagingInterface::kPreLoadGame:
+			// Loads tear the scene down while frames still render; the fix's
+			// own per-frame player-cell sampling re-arms it once the world is
+			// actually back, but dropping the gate here closes the window
+			// between load start and the first sampled frame.
+			PrevisLightingFix::SetWorldReady(false);
 			break;
 		default:
 			break;
@@ -35,9 +45,17 @@ F4SE_PLUGIN_LOAD(const F4SE::LoadInterface* a_f4se)
 
 	Settings::GetSingleton().Load();
 
+	Crash::Install();
+
 	// Patch before anything renders.  Applying it at load keeps the first
 	// capture and every frame before it consistent.
-	PrevisFix::Apply(Settings::GetSingleton().previsFixSites);
+	PrevisFix::Apply(Settings::GetSingleton().previsFixSites,
+		Settings::GetSingleton().conditionalSites);
+
+	if (Settings::GetSingleton().visibilityProbe) {
+		VisibilityProbe::Install();
+		SubmitProbe::Install();
+	}
 
 	switch (Settings::GetSingleton().previsLightingFix) {
 	case 1:
@@ -45,6 +63,24 @@ F4SE_PLUGIN_LOAD(const F4SE::LoadInterface* a_f4se)
 		break;
 	case 2:
 		PrevisLightingFix::Install(PrevisLightingFix::Mode::kConsumer);
+		break;
+	case 3:
+		PrevisLightingFix::Install(PrevisLightingFix::Mode::kNoSkip);
+		break;
+	case 4:
+		PrevisLightingFix::Install(PrevisLightingFix::Mode::kRedirect);
+		break;
+	case 5:
+		PrevisLightingFix::Install(PrevisLightingFix::Mode::kWrapPrepOnly);
+		break;
+	case 6:
+		PrevisLightingFix::Install(PrevisLightingFix::Mode::kWrapChildOnly);
+		break;
+	case 7:
+		PrevisLightingFix::Install(PrevisLightingFix::Mode::kWrapBoth);
+		break;
+	case 8:
+		PrevisLightingFix::Install(PrevisLightingFix::Mode::kLightRecords);
 		break;
 	default:
 		REX::INFO("previs lighting fix disabled by fo4test.ini");

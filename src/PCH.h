@@ -3,6 +3,8 @@
 #include <F4SE/F4SE.h>
 #include <RE/Fallout.h>
 
+#include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <filesystem>

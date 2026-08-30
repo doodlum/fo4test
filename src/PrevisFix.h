@@ -1,19 +1,66 @@
 #pragma once
 
-// Neutralises individual call sites of BSPreCulledObjects' "is pre-culling
-// active" predicate (0x1421ae520), so the engine takes its previs-OFF path at
-// exactly those sites while previs itself stays enabled.
+// THE FIX -- and the instrument that found it.
+//
+// Fallout 4 gates roughly forty draw-path decisions on BSPreCulledObjects'
+// "is pre-culling active" predicate (0x1421ae520, REL::ID(2317322)).  With
+// previs enabled, eight of those gates also skip the work that binds lighting
+// state to visible geometry, which is why transparent objects (the chem-lab
+// glassware in the repro) render with cold, default environment lighting:
+// their light<->geometry association is simply never built.
+//
+// Neutralising exactly those eight gates -- and only those -- makes the
+// lighting pipeline take its previs-OFF path while previs culling itself
+// stays enabled.  Measured on the chem-lab save (1280x720, deltas are strong
+// pixels vs an unpatched previs-OFF reference):
+//
+//     vanilla previs ON       ~52,600 px wrong    267 fps
+//     fixed   previs ON            13 px          266 fps   <- the fix
+//     fixed   previs OFF (tpc)      -             241 fps   (previs still +10%)
+//
+// The eight sites (default spec "23,25,32-37"):
+//
+//     23  2318289+0x165  world-draw selector: previs branch gate; patched,
+//                        the scene-graph traversal accumulates instead of
+//                        the previs list
+//     25  2318289+0x1c5  the selector's second gate; patched, the previs-only
+//                        continuation is skipped coherently with 23
+//     32  2318292+0x3cb  DrawWorld: runs the previs-off-only portal/room
+//                        block
+//     33  2318292+0x485  DrawWorld: prepares and submits the scene-graph
+//                        batch (REL::ID(4784648)) -- the batch that carries
+//                        the light-association entries
+//     34  2318292+0x532  DrawWorld: second submit-region gate, keeps the
+//                        submit path coherent with 33
+//     35  2318321+0x75   frame driver: skips the previs-only render-list
+//                        block that 23/25/33 replace
+//     36  2318321+0x2b0  frame driver: runs the camera-position lighting
+//                        pre-pass (0x1421f0e90) previs otherwise skips; this
+//                        alone removes most of the broad frame difference
+//     37  2319338+0xb9   inside the portal/occlusion routine the previs-off
+//                        path drives (0x142250400)
+//
+// Every subset of the eight was measured worse on both image and fps (partial
+// patching leaves previs- and non-previs-style work running side by side),
+// and every superset tried was slower.  Previs itself remains active: its
+// data still loads, the unpatched gates (cell pre-culling, OnVisible checks,
+// the previs batch enqueue) still run, and the fixed build keeps a measured
+// fps advantage over its own previs-OFF state.
 //
 // Each site is a 5-byte `call rel32` whose result is immediately consumed by
 // `test al, al`.  Replacing it with `xor eax, eax` + 3 nops makes the
-// predicate read false there and nowhere else -- which is what lets the cause
-// be bisected across 38 sites with a handful of automated runs instead of
-// guessed at.
+// predicate read false there and nowhere else.  All addresses are
+// REL::ID + in-function offsets, so the plugin follows game updates through
+// the address library.
 namespace PrevisFix
 {
 	// a_spec: "none", "all", a range like "9-19", or a list like "20,23,28".
-	// Returns the number of sites patched.
-	std::size_t Apply(std::string_view a_spec);
+	// a_conditional: true routes each site through the interior-aware
+	// predicate (the shipping fix -- previs-off lighting in interiors only,
+	// where it is free); false hard-forces previs-off at the site (the
+	// bisection instrument, and measurably too expensive in exteriors).
+	// Returns the number of sites handled.
+	std::size_t Apply(std::string_view a_spec, bool a_conditional);
 
 	// How many sites the table knows about.
 	[[nodiscard]] std::size_t SiteCount() noexcept;

@@ -1,3 +1,13 @@
+// VirtualProtect/FlushInstructionCache for the no-skip byte patch.  NOGDI
+// keeps windows.h from defining an ERROR macro over REX::ERROR.
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#define NOGDI
+#include <windows.h>
+#ifdef ERROR
+#	undef ERROR
+#endif
+
 #include "PCH.h"
 
 #include "PrevisLightingFix.h"
@@ -18,8 +28,137 @@ namespace
 	constexpr std::uint64_t  kConsumerCallerID = 2275918;
 	constexpr std::ptrdiff_t kConsumerCallOffset = 0x2e2;
 
+	// The batch globals and the previs-activity check the redirect keys on.
+	constexpr std::uint64_t  kParam2BatchID = 4784648;         // 0x142F97C40
+	constexpr std::uint64_t  kPrevisBatchID = 4784667;         // 0x142F98090
+	// Verified against the address library: rva 0x21ae520 -> EXACT 2317322.
+	// (2317355, the first value used here, resolves to an unrelated function;
+	// calling it as the gate was what crashed and hung the redirect runs.)
+	constexpr std::uint64_t  kIsPreCullingActiveID = 2317322;  // 0x1421AE520
+
+	// DrawWorld's child loop routes each object by objFlags bit 40: clear ->
+	// accumulate into the param_2 batch, set -> the traversal batch.  This is
+	// the (sole) call that accumulates the bit-40-clear objects:
+	//
+	//     lea  rcx, [rip+...]      ; 0x142F97C40, the param_2 batch
+	//     xor  r9d, r9d
+	//     lea  r8, [rdx+0xB0]      ; the object's world bound
+	//     call FUN_1417e0030       ; +0x328
+	constexpr std::ptrdiff_t kChildAccumulateCall = 0x328;
+
+	// The engine's frame counter (the same one the harness samples for fps).
+	constexpr std::uint64_t kFrameCounterID = 4784456;
+
+	// The per-object batch append, REL::ID(2275908) = 0x1417deb90 (verified
+	// with rva2id.py).  It computes
+	//     bVar11 = IsPreCullingActive() && page[0x3a6f] == 0
+	// and uses it twice: once for the entry's marker byte, and once at +0x121
+	//     0x1417decae  test r10b, r10b
+	//     0x1417decb1  jne  +0x155          ; 0F 85 55 01 00 00
+	//     0x1417decb7  call [rax+0x40]      ; GetLight -> type 0xf ->
+	//                                       ; append per-affected-node records
+	// to skip the light-record block whenever previs is active.  Those records
+	// are the light<->geometry association the transparent shader needs; with
+	// previs on they are never written, which is the bug.  NOPing only this
+	// branch appends them unconditionally while the marker byte -- whose
+	// previs-on value rendering depends on (forcing it previs-off broke the
+	// whole frame at 571 fps) -- keeps its vanilla semantics.
+	constexpr std::uint64_t  kAppendFnID = 2275908;
+	constexpr std::ptrdiff_t kLightSkipBranch = 0x121;
+	constexpr std::uint8_t   kLightSkipBytes[6] = { 0x0F, 0x85, 0x55, 0x01, 0x00, 0x00 };
+
+	// DrawWorld's previs-gated child skip: `jne <next child>`, 2 bytes.
+	constexpr std::uint64_t  kDrawWorldMainID = 2318292;
+	constexpr std::ptrdiff_t kSkipJumpOffset = 0x315;
+	constexpr std::uint8_t   kSkipJump[2] = { 0x75, 0x16 };  // jne +0x16
+	constexpr std::uint8_t   kNops[2] = { 0x90, 0x90 };
+
 	using Accumulate_t = void (*)(std::uint8_t*, void*, void*, std::uint64_t);
 	using Consume_t = void (*)(std::uint8_t*, void*, void*);
+
+	Accumulate_t         g_originalChildAccumulate{ nullptr };
+	Accumulate_t         g_originalPrevisAccumulate{ nullptr };
+	std::atomic_uint64_t g_redirected{ 0 };
+
+	// Frame number of the most recent previs-root accumulation, i.e. the last
+	// frame on which the engine itself reset, filled, and will submit the
+	// previs batch.  ~0 means never.
+	std::atomic_uint64_t g_previsPreppedFrame{ ~0ull };
+
+	// kWrap* diagnostics: when false the redirect gate never diverts, making
+	// both hooks pure pass-through wrappers.
+	bool g_divert{ true };
+
+	// Diversion is armed explicitly (SetWorldReady) and dropped on
+	// kPreLoadGame.  Every automatic arming condition tried so far -- previs
+	// prep having run this frame, kPostLoadGame, the player having a parent
+	// cell -- turned out to become true while the save load is still in
+	// flight, and diverting in that window reliably breaks the load (the
+	// player never finishes attaching to the cell).  The harness arms it once
+	// its own load-settled check passes; whether steady-state diversion is
+	// safe is exactly what that measures.
+	std::atomic_bool g_worldReady{ false };
+
+
+	[[nodiscard]] std::uint64_t CurrentFrame()
+	{
+		static REL::Relocation<std::uint32_t*> counter{ REL::ID(kFrameCounterID) };
+		return *counter;
+	}
+
+	// Chaining hook on the previs branch's own accumulate (REL::ID(2318289)
+	// +0x192).  Its only job is to record that the previs batch is live this
+	// frame; the original always runs.
+	void NotePrevisPrep(std::uint8_t* a_batch, void* a_object, void* a_bound,
+		std::uint64_t a_flags)
+	{
+		const auto frame = CurrentFrame();
+		if (g_previsPreppedFrame.exchange(frame, std::memory_order_relaxed) == ~0ull) {
+			REX::INFO("previs prep first seen on frame {} (root {:#x})", frame,
+				reinterpret_cast<std::uintptr_t>(a_object));
+		}
+		g_originalPrevisAccumulate(a_batch, a_object, a_bound, a_flags);
+	}
+
+	// While previs is active, objects the child loop would file into the
+	// param_2 batch -- which is never submitted with previs on -- go into the
+	// previs batch instead, through the engine's own accumulate.  A second
+	// submit of the stranded batch is NOT an option: the submit's chunk walk
+	// terminates only on exact pointer equality with its end sentinel, so a
+	// batch in any state it does not expect loops forever (measured; froze
+	// the game).  Appending to the batch that is already submitted keeps one
+	// submit of one batch and every invariant the walk depends on.
+	void RedirectChildAccumulate(std::uint8_t* a_batch, void* a_object,
+		void* a_bound, std::uint64_t a_flags)
+	{
+		// The globals ARE the batches; the call site passes their addresses.
+		static const auto param2 = reinterpret_cast<std::uint8_t*>(
+			REL::Relocation<std::uintptr_t>{ REL::ID(kParam2BatchID) }.address());
+		static const auto previs = reinterpret_cast<std::uint8_t*>(
+			REL::Relocation<std::uintptr_t>{ REL::ID(kPrevisBatchID) }.address());
+		static REL::Relocation<bool (*)()> isActive{ REL::ID(kIsPreCullingActiveID) };
+
+		// Redirect only on frames where the engine has already prepared the
+		// previs batch (2318292 calls 2318289 -- where that happens -- before
+		// this child loop, on the same thread).  During loading screens previs
+		// reads as active but the previs branch never runs, so an ungated
+		// redirect appends to a batch that is never reset and never submitted,
+		// growing it every frame until the game locks up.  Measured; this gate
+		// is what stops it.
+		if (g_divert && g_worldReady.load(std::memory_order_relaxed) &&
+			a_batch == param2 && isActive() &&
+			g_previsPreppedFrame.load(std::memory_order_relaxed) == CurrentFrame()) {
+			a_batch = previs;
+			const auto n = g_redirected.fetch_add(1, std::memory_order_relaxed);
+			if (n == 0) {
+				REX::INFO("first redirect on frame {} (object {:#x})", CurrentFrame(),
+					reinterpret_cast<std::uintptr_t>(a_object));
+			} else if ((n & 0xFFF) == 0) {
+				REX::INFO("redirects: {}", n);
+			}
+		}
+		g_originalChildAccumulate(a_batch, a_object, a_bound, a_flags);
+	}
 
 	Accumulate_t          g_original{ nullptr };
 	Consume_t             g_originalConsume{ nullptr };
@@ -55,12 +194,126 @@ namespace PrevisLightingFix
 {
 	bool Installed() noexcept { return g_installed; }
 
-	std::uint64_t HitCount() noexcept { return g_hits.load(std::memory_order_relaxed); }
+	void SetWorldReady(bool a_ready) noexcept
+	{
+		g_worldReady.store(a_ready, std::memory_order_relaxed);
+	}
+
+	std::uint64_t HitCount() noexcept
+	{
+		const auto hits = g_hits.load(std::memory_order_relaxed);
+		return hits ? hits : g_redirected.load(std::memory_order_relaxed);
+	}
 
 	bool Install(Mode a_mode)
 	{
 		if (g_installed || a_mode == Mode::kOff) {
 			return g_installed;
+		}
+
+		if (a_mode == Mode::kLightRecords) {
+			const REL::Relocation<std::uintptr_t> append{ REL::ID(kAppendFnID) };
+			const auto site = append.address() + kLightSkipBranch;
+			if (std::memcmp(reinterpret_cast<const void*>(site), kLightSkipBytes,
+					sizeof(kLightSkipBytes)) != 0) {
+				REX::ERROR("previs lighting fix: REL::ID({})+{:#x} is not the "
+						   "expected jne; refusing to patch",
+					kAppendFnID, kLightSkipBranch);
+				return false;
+			}
+
+			constexpr std::uint8_t nops[6] = { 0x90, 0x90, 0x90, 0x90, 0x90, 0x90 };
+			DWORD old{};
+			if (!VirtualProtect(reinterpret_cast<void*>(site), sizeof(nops),
+					PAGE_EXECUTE_READWRITE, &old)) {
+				REX::ERROR("previs lighting fix: VirtualProtect failed");
+				return false;
+			}
+			std::memcpy(reinterpret_cast<void*>(site), nops, sizeof(nops));
+			VirtualProtect(reinterpret_cast<void*>(site), sizeof(nops), old, &old);
+			FlushInstructionCache(GetCurrentProcess(),
+				reinterpret_cast<void*>(site), sizeof(nops));
+
+			g_installed = true;
+			REX::INFO("previs lighting fix installed (light records) at "
+					  "REL::ID({})+{:#x}",
+				kAppendFnID, kLightSkipBranch);
+			return true;
+		}
+
+		if (a_mode == Mode::kRedirect || a_mode == Mode::kWrapPrepOnly ||
+			a_mode == Mode::kWrapChildOnly || a_mode == Mode::kWrapBoth) {
+			g_divert = a_mode == Mode::kRedirect;
+			const bool wantPrep = a_mode != Mode::kWrapChildOnly;
+			const bool wantChild = a_mode != Mode::kWrapPrepOnly;
+
+			const REL::Relocation<std::uintptr_t> drawWorld{ REL::ID(kDrawWorldMainID) };
+			const auto site = drawWorld.address() + kChildAccumulateCall;
+			const REL::Relocation<std::uintptr_t> worldDraw{ REL::ID(kDrawWorldID) };
+			const auto prepSite = worldDraw.address() + kAccumulateCallOffset;
+			if (wantChild && *reinterpret_cast<const std::uint8_t*>(site) != 0xE8) {
+				REX::ERROR("previs lighting fix: REL::ID({})+{:#x} is not a call",
+					kDrawWorldMainID, kChildAccumulateCall);
+				return false;
+			}
+			if (wantPrep && *reinterpret_cast<const std::uint8_t*>(prepSite) != 0xE8) {
+				REX::ERROR("previs lighting fix: REL::ID({})+{:#x} is not a call",
+					kDrawWorldID, kAccumulateCallOffset);
+				return false;
+			}
+
+			auto& trampoline = REL::GetTrampoline();
+			if (wantPrep) {
+				g_originalPrevisAccumulate = reinterpret_cast<Accumulate_t>(
+					trampoline.write_call<5>(prepSite,
+						reinterpret_cast<std::uintptr_t>(&NotePrevisPrep)));
+				if (!g_originalPrevisAccumulate) {
+					REX::ERROR("previs lighting fix: trampoline refused the prep hook");
+					return false;
+				}
+			}
+			if (wantChild) {
+				g_originalChildAccumulate = reinterpret_cast<Accumulate_t>(
+					trampoline.write_call<5>(site,
+						reinterpret_cast<std::uintptr_t>(&RedirectChildAccumulate)));
+				if (!g_originalChildAccumulate) {
+					REX::ERROR("previs lighting fix: trampoline refused the child hook");
+					return false;
+				}
+			}
+
+			g_installed = true;
+			REX::INFO("previs lighting fix installed: divert={} prepHook={} childHook={}",
+				g_divert, wantPrep, wantChild);
+			return true;
+		}
+
+		if (a_mode == Mode::kNoSkip) {
+			const REL::Relocation<std::uintptr_t> drawWorld{ REL::ID(kDrawWorldMainID) };
+			auto* target =
+				reinterpret_cast<std::uint8_t*>(drawWorld.address() + kSkipJumpOffset);
+
+			if (std::memcmp(target, kSkipJump, sizeof(kSkipJump)) != 0) {
+				REX::ERROR("previs lighting fix: REL::ID({})+{:#x} is {:02X} {:02X}, "
+						   "expected 75 16 (jne); refusing to patch",
+					kDrawWorldMainID, kSkipJumpOffset, target[0], target[1]);
+				return false;
+			}
+
+			DWORD old{};
+			if (!VirtualProtect(target, sizeof(kNops), PAGE_EXECUTE_READWRITE, &old)) {
+				REX::ERROR("previs lighting fix: VirtualProtect failed");
+				return false;
+			}
+			std::memcpy(target, kNops, sizeof(kNops));
+			VirtualProtect(target, sizeof(kNops), old, &old);
+			FlushInstructionCache(GetCurrentProcess(), target, sizeof(kNops));
+
+			g_installed = true;
+			REX::INFO("previs lighting fix installed (no-skip) at REL::ID({})+{:#x} ({:#x})",
+				kDrawWorldMainID, kSkipJumpOffset,
+				reinterpret_cast<std::uintptr_t>(target));
+			return true;
 		}
 
 		const auto id = (a_mode == Mode::kConsumer) ? kConsumerCallerID : kDrawWorldID;
