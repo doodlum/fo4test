@@ -3,6 +3,7 @@
 #include "Harness.h"
 
 #include "Capture.h"
+#include "Input.h"
 #include "Settings.h"
 
 #include <format>
@@ -85,6 +86,12 @@ namespace
 		return ui && ui->GetMenuOpen<RE::LoadingMenu>();
 	}
 
+	[[nodiscard]] bool IsInWorld()
+	{
+		auto* player = RE::PlayerCharacter::GetSingleton();
+		return player && player->GetParentCell() != nullptr;
+	}
+
 	[[nodiscard]] bool IsConsoleOpen()
 	{
 		const auto* ui = RE::UI::GetSingleton();
@@ -98,6 +105,85 @@ namespace
 				queue->AddMessage(RE::Console::MENU_NAME,
 					a_show ? RE::UI_MESSAGE_TYPE::kShow : RE::UI_MESSAGE_TYPE::kHide);
 			}
+		});
+	}
+
+	// --- MainMenu layout on Fallout 4 1.11.240 ---------------------------
+	//
+	// CommonLibF4 declares StartMenuBase as 0x228 bytes, so it puts MainMenu's
+	// own members at 0x230 onwards.  The real object is 0x20 bytes bigger: the
+	// constructor (reached from VTABLE::MainMenu, REL::ID(643428)) installs its
+	// second base's vtable at +0x248, and initialises
+	//
+	//     mov dword ptr [rsi+0x290], r12d   ; r12 = -1  -> queuedLoadIndex
+	//     mov dword ptr [rsi+0x298], 0x10000           -> allowSkip = 1
+	//
+	// which are exactly the header's 0x270 (queuedLoadIndex, inits to -1) and
+	// 0x27A (allowSkip, inits to true, byte 2 of that dword) shifted up 0x20.
+	// Two independent initialised values pin both the shift and the field order.
+	//
+	// Writing queueContinueGame at the header's 0x276 lands in the middle of
+	// another member and does nothing -- which is what the first attempt did,
+	// logging exitCondition=538521264 and queuedLoadIndex=-43998920.
+	inline constexpr std::ptrdiff_t kMainMenuMemberDelta = 0x20;
+	inline constexpr std::ptrdiff_t kQueuedLoadIndexOffset = 0x270 + kMainMenuMemberDelta;
+	inline constexpr std::ptrdiff_t kQueueContinueGameOffset = 0x276 + kMainMenuMemberDelta;
+
+	// Confirms the pointer really is a MainMenu before we write a raw offset
+	// into it: the vtable slot must hold VTABLE::MainMenu, resolved through the
+	// address library rather than hardcoded.
+	[[nodiscard]] bool LooksLikeMainMenu(const void* a_menu)
+	{
+		if (!a_menu) {
+			return false;
+		}
+		const auto vtbl = *reinterpret_cast<const std::uintptr_t*>(a_menu);
+		const auto expected = RE::VTABLE::MainMenu[0].address();
+		if (vtbl != expected) {
+			REX::ERROR("not a MainMenu: vtable {:#x} != VTABLE::MainMenu {:#x}", vtbl, expected);
+			return false;
+		}
+		// queuedLoadIndex is -1 on a freshly built main menu; a second,
+		// independent check that the 0x20 shift still holds on this build.
+		const auto queued = *reinterpret_cast<const std::int32_t*>(
+			reinterpret_cast<const std::uint8_t*>(a_menu) + kQueuedLoadIndexOffset);
+		if (queued != -1) {
+			REX::WARN("queuedLoadIndex at +{:#x} is {}, expected -1 -- MainMenu layout "
+					  "may have shifted again on this runtime", kQueuedLoadIndexOffset, queued);
+		}
+		return true;
+	}
+
+	// Dumps the menu's own view of itself, using the offsets verified against
+	// the constructor.  Tells "the menu has no Continue" apart from "the menu
+	// has not become interactive yet", which look identical from outside.
+	void LogMainMenuState(std::string_view a_when)
+	{
+		RunOnGameThread([when = std::string{ a_when }]() {
+			auto* ui = RE::UI::GetSingleton();
+			if (!ui) {
+				return;
+			}
+			REX::INFO("[{}] MainMenu open={} LoadingMenu open={}", when,
+				ui->GetMenuOpen<RE::MainMenu>(), ui->GetMenuOpen<RE::LoadingMenu>());
+
+			const auto menu = ui->GetMenu<RE::MainMenu>();
+			if (!menu) {
+				return;
+			}
+			auto* raw = reinterpret_cast<const std::uint8_t*>(menu.get());
+			if (!LooksLikeMainMenu(raw)) {
+				return;
+			}
+			const auto b = [&](std::ptrdiff_t o) { return static_cast<int>(raw[o]); };
+			REX::INFO("[{}] exitCondition={} queuedLoadIndex={} | choseContinue={} "
+					  "queueStartNewGame={} queueContinueGame={} creditScreen={} "
+					  "userEngaged={} mainBinkShown={} allowSkip={} debounce={}",
+				when,
+				*reinterpret_cast<const std::int32_t*>(raw + 0x250),
+				*reinterpret_cast<const std::int32_t*>(raw + kQueuedLoadIndexOffset),
+				b(0x294), b(0x295), b(0x296), b(0x297),
+				b(0x298), b(0x299), b(0x29a), b(0x29b));
 		});
 	}
 
@@ -272,42 +358,100 @@ namespace
 		// the console first makes `coc` behave exactly as it does when typed by
 		// hand: it starts a new game in the target cell.
 		if (settings.loadSaveFirst) {
-			// Poking BGSSaveLoadManager from outside does not work at the main
-			// menu: no profile is selected, so currentPlayerID is 0,
-			// mostRecentSaveGame is null, and a queued kLoadMostRecentSave or
-			// kLoadGame is simply never consumed.  MainMenu has the flags its own
-			// buttons set; setting one lets the menu's update loop run the real
-			// path, exactly as a click would.
-			auto queued = std::make_shared<std::atomic_bool>(false);
-			RunOnGameThread([queued]() {
+			// Everything that pokes the menu's state from outside fails here:
+			//
+			//   BGSSaveLoadManager kLoadMostRecentSave -- currentPlayerID is 0 and
+			//     mostRecentSaveGame is null at the menu, so it has nothing to load
+			//   kLoadGame with queuedEntryToLoad set -- never consumed
+			//   MainMenu::queueContinueGame (+0x296, offset verified against the
+			//     constructor) plus the Scaleform invoke at REL::ID(2249309) --
+			//     the movie ignores it until the menu has been engaged
+			//
+			// So press the key.  CONTINUE is the default selection when a save
+			// exists, and this drives the same code the shipped game does.
+			// Wait for the menu to actually exist rather than trusting a delay.
+			if (!WaitFor("the main menu to open", []() {
+					const auto* ui = RE::UI::GetSingleton();
+					return ui && ui->GetMenuOpen<RE::MainMenu>();
+				}, 90s)) {
+				finish("the main menu never opened");
+				return;
+			}
+			LogMainMenuState("menu open");
+
+			// Run the Continue branch directly.  Neither the queued flag nor
+			// synthetic input gets the menu to do it: the flag is only read by the
+			// menu's message handler, and key presses reach the game (mainBinkShown
+			// flips) but the list never activates.  The branch itself is small and
+			// fully visible, at REL::ID(2249301)+0x53a:
+			//
+			//     mov  byte ptr [rdi+0x294], 1     ; choseContinue = true
+			//     mov  byte ptr [rdi+0x296], 0     ; queueContinueGame = false
+			//     mov  rcx, <BGSSaveLoadManager>
+			//     call 0x1410856c0                 ; REL::ID(2249692) -- any save?
+			//     test al, al
+			//     je   <no-save path>
+			//     mov  dword ptr [rdi+0x250], 2    ; exitCondition = kContinue
+			//     call 0x140c14240                 ; REL::ID(2228370)
+			//     call 0x140c37720                 ; Main::DoBeforeNewOrLoad
+			//     mov  byte ptr [rip+...], 1       ; REL::ID(2698031)
+			//
+			// Both calls take no arguments (verified from their prologues).
+			auto started = std::make_shared<std::atomic_bool>(false);
+			RunOnGameThread([started]() {
 				auto* ui = RE::UI::GetSingleton();
-				if (!ui) {
-					REX::ERROR("UI singleton was null");
-					return;
-				}
-				const auto menu = ui->GetMenu<RE::MainMenu>();
+				const auto menu = ui ? ui->GetMenu<RE::MainMenu>() : nullptr;
 				if (!menu) {
-					REX::ERROR("MainMenu is not on the stack; cannot continue a game");
+					REX::ERROR("MainMenu not on the stack");
 					return;
 				}
-				REX::INFO("main menu: exitCondition={} choseContinue={} "
-						  "queueStartNewGame={} queueContinueGame={} queuedLoadIndex={}",
-					std::to_underlying(menu->mainMenuExitCondition), menu->choseContinue,
-					menu->queueStartNewGame, menu->queueContinueGame, menu->queuedLoadIndex);
-				menu->queueContinueGame = true;
-				queued->store(true);
+				auto* raw = reinterpret_cast<std::uint8_t*>(menu.get());
+				if (!LooksLikeMainMenu(raw)) {
+					return;
+				}
+
+				using canContinue_t = bool (*)(void*);
+				static REL::Relocation<canContinue_t> canContinue{ REL::ID(2249692) };
+				auto* saveLoad = RE::BGSSaveLoadManager::GetSingleton();
+				if (!saveLoad || !canContinue(saveLoad)) {
+					REX::ERROR("the engine reports no save available to continue");
+					return;
+				}
+
+				raw[0x294] = 1;                                        // choseContinue
+				raw[kQueueContinueGameOffset] = 0;                     // queueContinueGame
+				*reinterpret_cast<std::int32_t*>(raw + 0x250) = 2;      // kContinue
+
+				using void_t = void (*)();
+				static REL::Relocation<void_t> prepare{ REL::ID(2228370) };
+				static REL::Relocation<void_t> doBeforeNewOrLoad{ REL::ID(2228951) };
+				static REL::Relocation<std::uint8_t*> loadPending{ REL::ID(2698031) };
+
+				REX::INFO("running the Continue branch (exitCondition=kContinue)");
+				prepare();
+				doBeforeNewOrLoad();
+				*loadPending = 1;
+				started->store(true);
 			});
 
-			if (!queued->load()) {
-				finish("could not reach MainMenu to continue a game; see the log");
+			if (!started->load()) {
+				finish("could not run the Continue branch; see the log");
 				return;
 			}
 
-			REX::INFO("asked the main menu to continue the most recent game");
-			if (!WaitOutLoad("continue", std::chrono::milliseconds{ settings.loadTimeout })) {
-				finish("continuing the most recent game never produced a load");
+			LogMainMenuState("after continue");
+
+			// Wait to actually be in the world.  The loading screen is a transient
+			// -- the previous attempt watched for it, never saw one, and declared
+			// failure while the game was busy loading.
+			if (!WaitFor("the player to be in a cell", IsInWorld,
+					std::chrono::milliseconds{ settings.loadTimeout })) {
+				LogMainMenuState("no load");
+				finish("the Continue branch ran but the player never reached a cell");
 				return;
 			}
+
+			// In the world; let the scene settle before reading state.
 			std::this_thread::sleep_for(std::chrono::milliseconds{ settings.loadSettleDelay });
 
 			const auto loadedState = ReadWorldState();
@@ -315,32 +459,38 @@ namespace
 			REX::INFO("game loaded; player is in cell {:08X} at ({:.1f}, {:.1f}, {:.1f})",
 				loadedState.cellFormID, loadedState.x, loadedState.y, loadedState.z);
 			if (loadedState.cellFormID == 0) {
-				finish("player has no parent cell after continuing; still at the menu");
+				finish("player has no parent cell after loading; still at the menu");
 				return;
 			}
 		}
 
-		if (settings.openConsole) {
-			REX::INFO("opening the console");
-			SetConsoleVisible(true);
-			WaitFor("the console to open", IsConsoleOpen, 15s);
-		}
+		// `coc` is only for reaching a cell the save is not already in.  When the
+		// save IS the test scenario -- camera already framing the subject -- a coc
+		// would teleport the player away from the shot, so an empty Cell skips it.
+		if (!settings.cell.empty()) {
+			if (settings.openConsole) {
+				REX::INFO("opening the console");
+				SetConsoleVisible(true);
+				WaitFor("the console to open", IsConsoleOpen, 15s);
+			}
 
-		RunCommand("coc " + settings.cell);
+			RunCommand("coc " + settings.cell);
 
-		const bool loaded = WaitOutLoad("coc", std::chrono::milliseconds{ settings.loadTimeout });
+			const bool cocLoaded =
+				WaitOutLoad("coc", std::chrono::milliseconds{ settings.loadTimeout });
 
-		// Whether or not it worked, get the console out of the frame before we
-		// photograph anything.
-		if (settings.openConsole) {
-			SetConsoleVisible(false);
-			WaitFor("the console to close", []() { return !IsConsoleOpen(); }, 10s);
-		}
+			if (settings.openConsole) {
+				SetConsoleVisible(false);
+				WaitFor("the console to close", []() { return !IsConsoleOpen(); }, 10s);
+			}
 
-		if (!loaded) {
-			finish("`coc " + settings.cell + "` did not trigger a load -- bad cell editor ID, "
-				   "or the console rejected the command");
-			return;
+			if (!cocLoaded) {
+				finish("`coc " + settings.cell + "` did not trigger a load -- bad cell "
+					   "editor ID, or the console rejected the command");
+				return;
+			}
+		} else {
+			REX::INFO("no Cell configured; using the save's own location");
 		}
 
 		std::this_thread::sleep_for(std::chrono::milliseconds{ settings.loadSettleDelay });
@@ -360,7 +510,8 @@ namespace
 			finish("player has no parent cell after coc; refusing to capture a menu");
 			return;
 		}
-		if (settings.loadSaveFirst && world.cellFormID == report.cellFormIDBeforeCoc) {
+		if (!settings.cell.empty() && settings.loadSaveFirst &&
+			world.cellFormID == report.cellFormIDBeforeCoc) {
 			finish("coc did not change cell -- still in " +
 				   std::format("{:08X}", world.cellFormID));
 			return;

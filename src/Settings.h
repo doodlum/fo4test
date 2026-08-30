@@ -25,8 +25,10 @@ struct Settings
 	// non-corrupt save".  Pin this for a reproducible starting point.
 	std::string saveFile{};
 
-	// Cell editor ID passed to `coc`.
-	std::string cell{ "FourLeafFishpacking02" };
+	// Cell editor ID passed to `coc`.  EMPTY means "the save is already the
+	// scenario" -- no coc is issued and the camera stays exactly where the
+	// save left it, which is what the chem-lab glass test needs.
+	std::string cell{};
 
 	// Commands run once the coc load has finished, before the first capture.
 	// `tm` hides the HUD and `tfc 1` freezes the game and detaches the camera,

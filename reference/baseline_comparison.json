@@ -1,0 +1,17 @@
+{
+  "width": 1280,
+  "height": 720,
+  "pixels": 921600,
+  "changedPixels": 729256,
+  "changedFraction": 0.7912934027777778,
+  "maxChannelDelta": 108,
+  "meanDeltaOverChanged": 5.255985552398609,
+  "cell": "",
+  "cellFormID": "0010F1F0",
+  "toggleCommand": "tpc",
+  "player": [
+    2307.41,
+    1772.45,
+    -28.7177
+  ]
+}
