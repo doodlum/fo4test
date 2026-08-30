@@ -82,6 +82,9 @@ F4SE_PLUGIN_LOAD(const F4SE::LoadInterface* a_f4se)
 	case 8:
 		PrevisLightingFix::Install(PrevisLightingFix::Mode::kLightRecords);
 		break;
+	case 9:
+		PrevisLightingFix::Install(PrevisLightingFix::Mode::kLightScoped);
+		break;
 	default:
 		REX::INFO("previs lighting fix disabled by fo4test.ini");
 		break;

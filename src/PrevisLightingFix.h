@@ -107,6 +107,17 @@ namespace PrevisLightingFix
 		// light<->geometry association records are written even while previs
 		// is active.  Needs no fix sites, no diversion, and no arming.
 		kLightRecords,
+		// EXPERIMENTAL, unfinished: a candidate exterior-safe fix.  After
+		// the engine's own previs accumulate, walk the scene for
+		// light-carrying nodes only and accumulate them into the traversal
+		// batch (submitted in both modes), with the append's record branch
+		// un-gated (kLightRecords' patch); pair with PrevisFixSites = 16 so
+		// the consumer dispatches the light-runs.  Status: walks armed by
+		// the harness only (an unarmed walk during save deserialisation hit
+		// a garbage vtable and crashed); never image-validated -- the
+		// shipped fix is the interior-aware PrevisFixSites detour, and this
+		// is kept for future exterior work.
+		kLightScoped,
 	};
 
 	// Installs the hook.  Requires F4SE::Init to have allocated a trampoline.

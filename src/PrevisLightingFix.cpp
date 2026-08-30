@@ -49,6 +49,12 @@ namespace
 	// The engine's frame counter (the same one the harness samples for fps).
 	constexpr std::uint64_t kFrameCounterID = 4784456;
 
+	// The traversal root global (0x143e5df60) and the traversal batch
+	// (0x142f97db0) -- the batch that is submitted whether previs is on or
+	// off, which is what makes it the safe carrier for the light entries.
+	constexpr std::uint64_t kTraversalRootID = 2712479;
+	constexpr std::uint64_t kTraversalBatchID = 4784655;
+
 	// The per-object batch append, REL::ID(2275908) = 0x1417deb90 (verified
 	// with rva2id.py).  It computes
 	//     bVar11 = IsPreCullingActive() && page[0x3a6f] == 0
@@ -109,6 +115,63 @@ namespace
 	// Chaining hook on the previs branch's own accumulate (REL::ID(2318289)
 	// +0x192).  Its only job is to record that the previs batch is live this
 	// frame; the original always runs.
+	// ---- kLightScoped ----------------------------------------------------
+
+	std::atomic_uint64_t g_lightsAccumulated{ 0 };
+
+	// NiAVObject basics, laid out as the walk in FUN_1421f1010 reads them.
+	constexpr std::ptrdiff_t kChildArray = 0x128;   // NiPointer<NiAVObject>[]
+	constexpr std::ptrdiff_t kChildCount = 0x132;   // std::uint16_t
+	constexpr std::ptrdiff_t kObjFlags = 0x108;     // bit 0 = culled
+	constexpr std::ptrdiff_t kWorldBound = 0xB0;
+
+	[[nodiscard]] void* GetLightOf(std::uint8_t* a_node)
+	{
+		// vtable slot +0x40 -- the same virtual the engine's append uses to
+		// route light objects.  Mid-teardown nodes can carry garbage vtable
+		// pointers (measured: called one, crashed in heap), so refuse any
+		// vtable outside the game module.
+		const auto vtbl = *reinterpret_cast<std::uintptr_t*>(a_node);
+		static const auto base = REX::FModule::GetExecutingModule().GetBaseAddress();
+		if (vtbl <= base || vtbl - base >= 0x10000000) {
+			return nullptr;
+		}
+		const auto fn = *reinterpret_cast<void* (**)(std::uint8_t*)>(vtbl + 0x40);
+		return fn(a_node);
+	}
+
+	// Depth-limited walk accumulating light-carrying nodes into a_batch.
+	void AccumulateLights(std::uint8_t* a_batch, std::uint8_t* a_node, int a_depth,
+		int& a_budget)
+	{
+		if (!a_node || a_depth > 6 || a_budget <= 0) {
+			return;
+		}
+		if (*reinterpret_cast<std::uint64_t*>(a_node + kObjFlags) & 1) {
+			return;  // culled subtree
+		}
+
+		if (GetLightOf(a_node)) {
+			static REL::Relocation<Accumulate_t> accumulate{ REL::ID(2275917) };
+			accumulate(a_batch, a_node, a_node + kWorldBound, 0);
+			--a_budget;
+			g_lightsAccumulated.fetch_add(1, std::memory_order_relaxed);
+			return;  // a light is a leaf for our purposes
+		}
+
+		const auto count = *reinterpret_cast<std::uint16_t*>(a_node + kChildCount);
+		auto* children = *reinterpret_cast<std::uint8_t***>(a_node + kChildArray);
+		if (!children) {
+			return;
+		}
+		for (std::uint16_t i = 0; i < count && a_budget > 0; ++i) {
+			AccumulateLights(a_batch, children[i], a_depth + 1, a_budget);
+		}
+	}
+
+
+	bool g_lightScoped{ false };
+
 	void NotePrevisPrep(std::uint8_t* a_batch, void* a_object, void* a_bound,
 		std::uint64_t a_flags)
 	{
@@ -118,6 +181,30 @@ namespace
 				reinterpret_cast<std::uintptr_t>(a_object));
 		}
 		g_originalPrevisAccumulate(a_batch, a_object, a_bound, a_flags);
+
+		if (!g_lightScoped) {
+			return;
+		}
+		// Only touch a live world.  A parent-cell check is NOT enough: the
+		// player gets a cell early in save deserialisation while the scene
+		// is still half-built (walking it then crashed on a garbage vtable).
+		// g_worldReady is armed explicitly once the world has settled and
+		// dropped on kPreLoadGame.
+		if (!g_worldReady.load(std::memory_order_relaxed)) {
+			return;
+		}
+		static const auto traversalBatch = reinterpret_cast<std::uint8_t*>(
+			REL::Relocation<std::uintptr_t>{ REL::ID(kTraversalBatchID) }.address());
+		static const auto root = reinterpret_cast<std::uint8_t*>(
+			REL::Relocation<std::uintptr_t>{ REL::ID(kTraversalRootID) }.address());
+		int budget = 256;
+		const auto before = g_lightsAccumulated.load(std::memory_order_relaxed);
+		AccumulateLights(traversalBatch, root, 0, budget);
+		const auto added = g_lightsAccumulated.load(std::memory_order_relaxed) - before;
+		static std::atomic_bool loggedOnce{ false };
+		if (added && !loggedOnce.exchange(true)) {
+			REX::INFO("light-scoped: first frame accumulated {} light node(s)", added);
+		}
 	}
 
 	// While previs is active, objects the child loop would file into the
@@ -202,7 +289,11 @@ namespace PrevisLightingFix
 	std::uint64_t HitCount() noexcept
 	{
 		const auto hits = g_hits.load(std::memory_order_relaxed);
-		return hits ? hits : g_redirected.load(std::memory_order_relaxed);
+		if (hits) {
+			return hits;
+		}
+		const auto lights = g_lightsAccumulated.load(std::memory_order_relaxed);
+		return lights ? lights : g_redirected.load(std::memory_order_relaxed);
 	}
 
 	bool Install(Mode a_mode)
@@ -238,6 +329,34 @@ namespace PrevisLightingFix
 			REX::INFO("previs lighting fix installed (light records) at "
 					  "REL::ID({})+{:#x}",
 				kAppendFnID, kLightSkipBranch);
+			return true;
+		}
+
+		if (a_mode == Mode::kLightScoped) {
+			if (!Install(Mode::kLightRecords)) {
+				return false;
+			}
+			g_installed = false;  // kLightRecords set it; not done yet
+
+			const REL::Relocation<std::uintptr_t> worldDraw{ REL::ID(kDrawWorldID) };
+			const auto prepSite = worldDraw.address() + kAccumulateCallOffset;
+			if (*reinterpret_cast<const std::uint8_t*>(prepSite) != 0xE8) {
+				REX::ERROR("previs lighting fix: REL::ID({})+{:#x} is not a call",
+					kDrawWorldID, kAccumulateCallOffset);
+				return false;
+			}
+			auto& trampoline = REL::GetTrampoline();
+			g_originalPrevisAccumulate = reinterpret_cast<Accumulate_t>(
+				trampoline.write_call<5>(prepSite,
+					reinterpret_cast<std::uintptr_t>(&NotePrevisPrep)));
+			if (!g_originalPrevisAccumulate) {
+				REX::ERROR("previs lighting fix: trampoline refused the prep hook");
+				return false;
+			}
+			g_lightScoped = true;
+			g_installed = true;
+			REX::INFO("previs lighting fix installed (light-scoped); pair with "
+					  "PrevisFixSites = 16");
 			return true;
 		}
 
