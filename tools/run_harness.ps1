@@ -66,6 +66,19 @@ Get-ChildItem -LiteralPath $OutputDir -Include '*.bmp', '*.json' -File -ErrorAct
     Remove-Item -Force
 $resultPath = Join-Path $OutputDir 'result.json'
 
+# F4SE's address-library check opens the RELATIVE path
+# "Data\F4SE\Plugins\version-<major>-<minor>-<build>-0.bin", and f4se_loader
+# calls CreateProcess with a null lpCurrentDirectory, so Fallout4.exe inherits
+# whatever CWD the loader was started with.  Launch it from anywhere but the
+# game folder and F4SE cannot find the .bin, so it disables every
+# address-library plugin with "address library needs to be updated" -- which
+# looks exactly like the plugin being out of date.  -WorkingDirectory is what
+# keeps that from happening; do not drop it.
+$versionBin = Join-Path $GamePath 'Data\F4SE\Plugins\version-1-11-240-0.bin'
+if (-not (Test-Path -LiteralPath $versionBin)) {
+    throw "$versionBin is missing -- install Address Library for F4SE Plugins (Nexus 47327). Without it F4SE disables the plugin."
+}
+
 Write-Step 'Launching Fallout 4 through F4SE'
 Start-Process -FilePath $loader -WorkingDirectory $GamePath | Out-Null
 
