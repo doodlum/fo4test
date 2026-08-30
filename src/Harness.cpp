@@ -352,6 +352,8 @@ namespace
 		std::uint64_t lightingFixHits{ 0 };
 		double        fpsPrevisOn{ 0.0 };
 		double        fpsPrevisOff{ 0.0 };
+		double        fpsFixOn{ 0.0 };
+		double        fpsFixOff{ 0.0 };
 		std::string   previsFixSites{};
 	};
 
@@ -378,6 +380,8 @@ namespace
 			 << "  \"after\": " << Quote(a_report.after) << ",\n"
 			 << "  \"width\": " << a_report.width << ",\n"
 			 << "  \"height\": " << a_report.height << ",\n"
+			 << "  \"fpsFixOn\": " << a_report.fpsFixOn << ",\n"
+			 << "  \"fpsFixOff\": " << a_report.fpsFixOff << ",\n"
 			 << "  \"fpsPrevisOn\": " << a_report.fpsPrevisOn << ",\n"
 			 << "  \"fpsPrevisOff\": " << a_report.fpsPrevisOff << ",\n"
 			 << "  \"previsFixSites\": " << Quote(a_report.previsFixSites) << ",\n"
@@ -499,7 +503,7 @@ namespace
 			// (which always takes the newest) and issue a console `load`
 			// instead -- at the main menu ExecuteCommand handles script
 			// commands, the same route `coc` uses for new games.
-			if (!settings.saveFile.empty()) {
+			if (settings.loadSaveFirst && !settings.saveFile.empty()) {
 				const auto resolved = ResolveSaveName(settings.saveFile);
 				if (resolved.empty()) {
 					finish("no save matches SaveFile substring '" +
@@ -701,7 +705,52 @@ namespace
 		if (PrevisLightingFix::Installed()) {
 			PrevisLightingFix::SetWorldReady(true);
 			REX::INFO("redirect diversion armed post-load");
+			{
+				// One-shot: BSShaderAccumulator::RegisterObject's per-mode
+				// dispatch table (0x143e5f290) is runtime-populated; log its
+				// entries module-relative so the register implementations can
+				// be decompiled.
+				const REL::Relocation<std::uintptr_t*> table{ REL::Offset(0x3e5f290) };
+				const auto base = REX::FModule::GetExecutingModule().GetBaseAddress();
+				for (int i = 0; i < 6; ++i) {
+					const auto fn = table.get()[i];
+					REX::INFO("registerObject mode {} -> {:#x} (rva {:#x})", i, fn,
+						(fn > base && fn - base < 0x10000000) ? fn - base : 0);
+				}
+			}
 			std::this_thread::sleep_for(std::chrono::milliseconds{ 2000 });
+		}
+
+		// Interleaved A/B: alternate the conditional fix off/on within this
+		// one session and sample fps for each window.  Session-scale thermal
+		// drift hits both configurations equally, which no pair of separate
+		// runs on this machine can guarantee.
+		if (settings.conditionalSites && !settings.previsFixSites.empty() &&
+			settings.previsFixSites != "none") {
+			double onSum = 0.0, offSum = 0.0;
+			constexpr int kRounds = 4;
+			for (int i = 0; i < kRounds; ++i) {
+				// Alternate which configuration goes first each round so the
+				// within-round warming penalty is shared evenly; without this
+				// the second window is systematically hotter and whoever owns
+				// it loses ~1.5% that is not theirs.
+				const bool fixFirst = (i % 2) == 0;
+				for (int half = 0; half < 2; ++half) {
+					const bool fixOn = (half == 0) == fixFirst;
+					PrevisFix::SetFixActive(fixOn);
+					std::this_thread::sleep_for(500ms);
+					const auto fps = MeasureFps(std::chrono::milliseconds{ 2500 });
+					(fixOn ? onSum : offSum) += fps;
+				}
+			}
+			report.fpsFixOff = offSum / kRounds;
+			report.fpsFixOn = onSum / kRounds;
+			REX::INFO("interleaved A/B: fix OFF {:.1f} fps, fix ON {:.1f} fps "
+					  "({:+.1f}%)",
+				report.fpsFixOff, report.fpsFixOn,
+				report.fpsFixOff > 0.0
+					? (report.fpsFixOn / report.fpsFixOff - 1.0) * 100.0
+					: 0.0);
 		}
 
 		report.previsFixSites = settings.previsFixSites;
@@ -712,11 +761,15 @@ namespace
 
 		VisibilityProbe::Reset();
 		VisibilityProbe::RequestSnapshot();
+		VisibilityProbe::ArmNearCapture(
+			static_cast<float>(world.x), static_cast<float>(world.y),
+			static_cast<float>(world.z));
 		SubmitProbe::Reset();
 		report.fpsPrevisOn = MeasureFps(std::chrono::milliseconds{ settings.fpsWindow });
 		RunOnGameThread([dir]() {
 			Dump::SubmittedBatches(dir / "submitted.txt", "previs ON");
 			Dump::ObjectFlags(dir / "objectflags.txt", "previs ON");
+			Dump::NearGeometry(dir / "neargeo.txt", "previs ON");
 		});
 		report.onVisiblePrevisOn = VisibilityProbe::Count();
 		REX::INFO("BSGeometry::OnVisible calls with previs ON: {}",
@@ -753,11 +806,15 @@ namespace
 
 		VisibilityProbe::Reset();
 		VisibilityProbe::RequestSnapshot();
+		VisibilityProbe::ArmNearCapture(
+			static_cast<float>(world.x), static_cast<float>(world.y),
+			static_cast<float>(world.z));
 		SubmitProbe::Reset();
 		report.fpsPrevisOff = MeasureFps(std::chrono::milliseconds{ settings.fpsWindow });
 		RunOnGameThread([dir]() {
 			Dump::SubmittedBatches(dir / "submitted.txt", "previs OFF");
 			Dump::ObjectFlags(dir / "objectflags.txt", "previs OFF");
+			Dump::NearGeometry(dir / "neargeo.txt", "previs OFF");
 		});
 		report.onVisiblePrevisOff = VisibilityProbe::Count();
 		RunOnGameThread([dir]() {

@@ -40,14 +40,101 @@ namespace
 	std::map<std::uintptr_t, Rec> g_records;
 
 	std::atomic_bool               g_snapshotWanted{ false };
+
+	// Near-geometry capture state.  Guarded by g_mutex like everything else.
+	constexpr std::size_t kNearMax = 8;
+	bool                  g_nearArmed{ false };
+	float                 g_nearPoint[3]{};
+	std::vector<VisibilityProbe::NearGeometry> g_near;
+
+	[[nodiscard]] bool PointsIntoModule(std::uintptr_t a_ptr)
+	{
+		static const auto base = REX::FModule::GetExecutingModule().GetBaseAddress();
+		return a_ptr > base && a_ptr - base < 0x10000000;
+	}
+
+	void TryNearCapture(std::uintptr_t a_geometry)
+	{
+		if (!g_nearArmed || g_near.size() >= kNearMax) {
+			return;
+		}
+		for (const auto& existing : g_near) {
+			if (existing.geometry == a_geometry) {
+				return;
+			}
+		}
+		const auto* geo = reinterpret_cast<const std::uint8_t*>(a_geometry);
+		const auto* bound = reinterpret_cast<const float*>(geo + 0xB0);
+		const float dx = bound[0] - g_nearPoint[0];
+		const float dy = bound[1] - g_nearPoint[1];
+		const float dz = bound[2] - g_nearPoint[2];
+		const float d2 = dx * dx + dy * dy + dz * dz;
+		if (d2 > 60.0f * 60.0f) {
+			return;
+		}
+
+		VisibilityProbe::NearGeometry rec;
+		rec.geometry = a_geometry;
+		rec.distance = std::sqrt(d2);
+		std::memcpy(rec.geoBytes.data(), geo, rec.geoBytes.size());
+		for (int slot = 0; slot < 2; ++slot) {
+			const auto prop = *reinterpret_cast<const std::uintptr_t*>(
+				geo + 0x130 + slot * 8);
+			auto& dst = slot == 0 ? rec.prop0Bytes : rec.prop1Bytes;
+			(slot == 0 ? rec.prop0 : rec.prop1) = prop;
+			if (prop && PointsIntoModule(*reinterpret_cast<const std::uintptr_t*>(prop))) {
+				std::memcpy(dst.data(), reinterpret_cast<const void*>(prop), dst.size());
+				if (slot == 1) {
+					// prop1's render pass list head; a pass is a plain struct
+					// whose first field is a BSShader* (vtabled), which makes
+					// it validatable the same way.
+					const auto pass = *reinterpret_cast<const std::uintptr_t*>(
+						prop + 0x38);
+					if (pass) {
+						const auto shader =
+							*reinterpret_cast<const std::uintptr_t*>(pass);
+						if (shader &&
+							PointsIntoModule(
+								*reinterpret_cast<const std::uintptr_t*>(shader))) {
+							rec.pass0 = pass;
+							std::memcpy(rec.pass0Bytes.data(),
+								reinterpret_cast<const void*>(pass),
+								rec.pass0Bytes.size());
+						}
+					}
+				}
+			}
+		}
+		g_near.push_back(std::move(rec));
+	}
 	VisibilityProbe::Snapshot      g_snapshot{};
 
 	// NiAVObject's 64-bit flags word; BSFadeNode::OnVisible reads and writes
 	// it at this offset, so it is correct for this runtime.
 	constexpr std::ptrdiff_t kObjectFlags = 0x108;
 
+	// Mode-10 experiment: force the shader-property flag bits the previs-off
+	// path sets (see neargeo.txt diff -- OFF = bits 8 and 11 set, bit 4
+	// clear, everything else in the 0x1C0-byte property identical).
+	std::atomic_bool g_forceFlags{ false };
+
+	void MaybeForceFlags(void* a_geometry)
+	{
+		if (!g_forceFlags.load(std::memory_order_relaxed)) {
+			return;
+		}
+		const auto* geo = reinterpret_cast<const std::uint8_t*>(a_geometry);
+		auto* prop = *reinterpret_cast<std::uint8_t* const*>(geo + 0x138);
+		if (!prop) {
+			return;
+		}
+		auto& flags = *reinterpret_cast<std::uint64_t*>(prop + 0x30);
+		flags = (flags | 0x900ull) & ~0x10ull;
+	}
+
 	void OnVisibleProbe(void* a_this, void* a_cullingProcess)
 	{
+		MaybeForceFlags(a_this);
 		g_count.fetch_add(1, std::memory_order_relaxed);
 		{
 			// Bounded: a frame only ever uses a handful of culling processes,
@@ -65,6 +152,7 @@ namespace
 			}
 		}
 
+		TryNearCapture(reinterpret_cast<std::uintptr_t>(a_this));
 		if (g_snapshotWanted.exchange(false)) {
 			const std::scoped_lock lock{ g_mutex };
 			g_snapshot.valid = true;
@@ -113,6 +201,28 @@ namespace VisibilityProbe
 	}
 
 	void RequestSnapshot() noexcept { g_snapshotWanted.store(true); }
+
+	void SetForceFlags(bool a_on) noexcept
+	{
+		g_forceFlags.store(a_on, std::memory_order_relaxed);
+	}
+
+	void ArmNearCapture(float a_x, float a_y, float a_z) noexcept
+	{
+		const std::scoped_lock lock{ g_mutex };
+		g_nearPoint[0] = a_x;
+		g_nearPoint[1] = a_y;
+		g_nearPoint[2] = a_z;
+		g_near.clear();
+		g_nearArmed = true;
+	}
+
+	std::vector<NearGeometry> NearCaptures()
+	{
+		const std::scoped_lock lock{ g_mutex };
+		g_nearArmed = false;
+		return g_near;
+	}
 
 	Snapshot LastSnapshot()
 	{

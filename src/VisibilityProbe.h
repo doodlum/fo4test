@@ -42,6 +42,10 @@ namespace VisibilityProbe
 	// process, and also the geometry's own flags word, into a buffer.
 	void RequestSnapshot() noexcept;
 
+	// Mode-10 experiment: apply the previs-off shader-property flag deltas
+	// (set bits 8/11, clear bit 4) to every geometry passing OnVisible.
+	void SetForceFlags(bool a_on) noexcept;
+
 	struct Snapshot
 	{
 		bool                       valid;
@@ -52,6 +56,30 @@ namespace VisibilityProbe
 	};
 
 	[[nodiscard]] Snapshot LastSnapshot();
+
+	// Deep state capture for the geometry nearest a reference point (the
+	// glass, when the point is the camera).  For each of the N nearest
+	// geometries seen after arming, the hook copies the BSGeometry object and
+	// both of its NiProperty targets (properties[2] at +0x130/+0x138) so the
+	// broken and correct frames can be byte-diffed offline.  Everything is
+	// copied inside the hook, on the thread that owns the objects.
+	void ArmNearCapture(float a_x, float a_y, float a_z) noexcept;
+
+	struct NearGeometry
+	{
+		std::uintptr_t                  geometry{ 0 };
+		float                           distance{ 0.0f };
+		std::uintptr_t                  prop0{ 0 };
+		std::uintptr_t                  prop1{ 0 };
+		std::uintptr_t                  pass0{ 0 };
+		std::array<std::uint8_t, 0x160> geoBytes{};
+		// First BSRenderPass of prop1's renderPassList (+0x38), raw.
+		std::array<std::uint8_t, 0x68>  pass0Bytes{};
+		std::array<std::uint8_t, 0x1C0> prop0Bytes{};
+		std::array<std::uint8_t, 0x1C0> prop1Bytes{};
+	};
+
+	[[nodiscard]] std::vector<NearGeometry> NearCaptures();
 
 	// Per-object record: every geometry that reaches OnVisible in the window,
 	// with its NiAVObject flags at +0x108.  The geometry set and call count

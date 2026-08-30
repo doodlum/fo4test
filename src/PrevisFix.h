@@ -1,6 +1,11 @@
 #pragma once
 
-// THE FIX -- and the instrument that found it.
+// The bisection instrument that located the bug, and the superseded first
+// fix.  The shipping fix is PrevisLightingFix::Mode::kNodeUpdate (mode 12):
+// a one-shot per-node light attach; see PrevisLightingFix.h.  Kept intact:
+// the 38-site table remains the map of every previs gate in the draw path,
+// and the interior-aware detour configuration below still works as a
+// fallback.
 //
 // Fallout 4 gates roughly forty draw-path decisions on BSPreCulledObjects'
 // "is pre-culling active" predicate (0x1421ae520, REL::ID(2317322)).  With
@@ -61,6 +66,10 @@ namespace PrevisFix
 	// bisection instrument, and measurably too expensive in exteriors).
 	// Returns the number of sites handled.
 	std::size_t Apply(std::string_view a_spec, bool a_conditional);
+
+	// Benchmark kill-switch for the conditional detours: false = vanilla
+	// behaviour at every detoured gate.  No effect on hard-patched sites.
+	void SetFixActive(bool a_active) noexcept;
 
 	// How many sites the table knows about.
 	[[nodiscard]] std::size_t SiteCount() noexcept;

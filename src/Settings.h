@@ -68,9 +68,9 @@ struct Settings
 	// the bisection knob -- capture 01 is taken with these applied and previs
 	// still on, capture 02 with previs off, so a spec that fixes the bug makes
 	// the two images converge.
-	// The fix.  See PrevisFix.h for what each site does and the numbers
-	// behind this exact set.
-	std::string previsFixSites{ "23,25,32-37" };
+	// Diagnostic site patching; superseded as the fix by PrevisLightingFix
+	// mode 12 (the one-shot light attach).  See PrevisFix.h for history.
+	std::string previsFixSites{ "none" };
 
 	// 1 = interior-aware detours (the fix); 0 = hard previs-off at the sites
 	// (bisection mode, costs 2/3 of exterior fps -- experiments only).
@@ -83,7 +83,7 @@ struct Settings
 	// Install the actual fix: hook the previs batch accumulation and restore
 	// the lighting-path flag the traversal batch always has.
 	// 0 = off, 1 = accumulate-site hook, 2 = consumer-site hook.
-	std::uint32_t previsLightingFix{ 0 };
+	std::uint32_t previsLightingFix{ 12 };
 
 	// Force the previs culling batch's +0x169 control byte set for a while
 	// before the first capture.  See PrevisFix::ForcePrevisBatchFlag.

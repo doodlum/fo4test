@@ -29,4 +29,8 @@ namespace Dump
 	// One line per geometry seen by OnVisible, with its flags, so the two
 	// previs states can be diffed object by object.
 	bool ObjectFlags(const std::filesystem::path& a_path, std::string_view a_label);
+
+	// The near-camera geometry state captures (VisibilityProbe::NearCaptures),
+	// hex-dumped for offline byte-diffing between the broken and fixed frames.
+	bool NearGeometry(const std::filesystem::path& a_path, std::string_view a_label);
 }

@@ -65,6 +65,38 @@ namespace Dump
 		return true;
 	}
 
+	bool NearGeometry(const std::filesystem::path& a_path, std::string_view a_label)
+	{
+		std::ofstream file{ a_path, std::ios::app };
+		if (!file) {
+			return false;
+		}
+		const auto base = REX::FModule::GetExecutingModule().GetBaseAddress();
+		const auto caps = VisibilityProbe::NearCaptures();
+		file << "===== " << a_label << " ===== " << caps.size() << " capture(s)\n";
+		for (const auto& c : caps) {
+			const auto vt = *reinterpret_cast<const std::uintptr_t*>(c.geoBytes.data());
+			file << std::format(
+				"\n-- geo {:#x} d={:.1f} vtrva {:#x} prop0={:#x} prop1={:#x}\n",
+				c.geometry, c.distance,
+				(vt > base && vt - base < 0x10000000) ? vt - base : 0, c.prop0,
+				c.prop1);
+			file << "geo bytes:\n";
+			HexDump(file, c.geoBytes.data(), c.geoBytes.size());
+			if (c.prop0) {
+				file << "prop0 bytes:\n";
+				HexDump(file, c.prop0Bytes.data(), c.prop0Bytes.size());
+			}
+			if (c.prop1) {
+				file << "prop1 bytes:\n";
+				HexDump(file, c.prop1Bytes.data(), c.prop1Bytes.size());
+			}
+		}
+		file << '\n';
+		REX::INFO("dumped {} near-geometry capture(s) ({})", caps.size(), a_label);
+		return true;
+	}
+
 	bool SubmittedBatches(const std::filesystem::path& a_path, std::string_view a_label)
 	{
 		std::ofstream file{ a_path, std::ios::app };

@@ -55,6 +55,42 @@ namespace
 	constexpr std::uint64_t kTraversalRootID = 2712479;
 	constexpr std::uint64_t kTraversalBatchID = 4784655;
 
+	// The engine's light-to-subtree attach: rva 0x21bafb0 -> EXACT 2317474
+	// (rva2id.py).  The camera pre-pass calls it as (mainLight, root, 1);
+	// FUN_1421bb030 underneath recurses the subtree culled by the light's
+	// bound and refreshes each intersecting BSFadeNode::lightData (+0x140),
+	// which BSLightingShaderProperty::GetRenderPasses reads its per-pass
+	// lights from (via 0x142240540: slot 0 = sun, then the node's list).
+	constexpr std::uint64_t kAttachLightID = 2317474;
+	using AttachLight_t = std::uint64_t (*)(void*, void*, std::uint32_t);
+
+	// The per-node fade + light-attach update (0x14217d450; EXACT id from
+	// callers.py).  The previs-off batch consumer calls it per accumulated
+	// entry with the camera context stored at batch+0x160; the previs branch
+	// never calls it, which is the source of the stale per-node light lists.
+	constexpr std::uint64_t  kNodeUpdateID = 2316460;
+
+	// The light-into-node attach the node update guards (0x1421bb030 -> EXACT
+	// 2317475), the scene-root array it scans (2712479 = 0x143e5df60) and the
+	// active-root index byte (2712516 = 0x143e5e009).  The engine runs this
+	// ONCE per node, at fade-in:
+	//     if (!bit51(node) && (bit33(node) || rootDirty || mid-fade))
+	//         attach(node, root[idx], 0, 0, radius < 150, flag);
+	// A node faded in under previs never takes the mid-fade branch (the batch
+	// consumer that drives it only sees previs's 23 entries), so its
+	// lightData stays empty from load onward -- the source of the bug.
+	constexpr std::uint64_t kLightIntoNodeID = 2317475;
+	constexpr std::uint64_t kRootIndexID = 2712516;
+	using LightIntoNode_t =
+		void (*)(void*, void*, std::uint32_t, std::uint32_t, bool, std::uint8_t);
+	constexpr std::ptrdiff_t kBatchCamContext = 0x160;
+	using NodeUpdate_t = void (*)(void*, void*, std::uint8_t);
+
+	// BSFadeNode's vtable (IDs_VTABLE.h) and the OnVisible slot, the same
+	// slot VisibilityProbe patches on the geometry classes.
+	constexpr std::uint64_t  kBSFadeNodeVtblID = 93613;  // IDs_VTABLE.h, verified
+	constexpr std::ptrdiff_t kOnVisibleSlot = 0x1C8;
+
 	// The per-object batch append, REL::ID(2275908) = 0x1417deb90 (verified
 	// with rva2id.py).  It computes
 	//     bVar11 = IsPreCullingActive() && page[0x3a6f] == 0
@@ -171,6 +207,124 @@ namespace
 
 
 	bool g_lightScoped{ false };
+	bool g_attachLights{ false };
+
+	using OnVisible_t = void (*)(void*, void*);
+	OnVisible_t          g_originalOnVisible{ nullptr };
+	std::atomic_uint64_t g_nodeUpdates{ 0 };
+
+	void FadeNodeOnVisibleHook(void* a_node, void* a_cullingProcess)
+	{
+		g_originalOnVisible(a_node, a_cullingProcess);
+
+		// Self-contained world gate (no harness arming): the hook receives
+		// only nodes the engine is actively processing, and the attach is
+		// the engine's own load-safe routine, so a cheap frame-cached
+		// player-in-cell check suffices.
+		{
+			static std::atomic_uint32_t lastFrame{ 0xFFFFFFFFu };
+			static std::atomic_bool     inWorld{ false };
+			const auto f = CurrentFrame();
+			if (lastFrame.exchange(static_cast<std::uint32_t>(f),
+					std::memory_order_relaxed) != f) {
+				const auto* player = RE::PlayerCharacter::GetSingleton();
+				inWorld.store(player && player->GetParentCell() != nullptr,
+					std::memory_order_relaxed);
+			}
+			if (!inWorld.load(std::memory_order_relaxed)) {
+				return;
+			}
+		}
+		static REL::Relocation<bool (*)()> isActive{ REL::ID(kIsPreCullingActiveID) };
+		if (!isActive()) {
+			return;  // previs off: the engine already runs this via the batch
+		}
+		static const auto previsBatch = reinterpret_cast<std::uint8_t*>(
+			REL::Relocation<std::uintptr_t>{ REL::ID(kPrevisBatchID) }.address());
+		auto* context = *reinterpret_cast<void**>(previsBatch + kBatchCamContext);
+		if (!context) {
+			return;
+		}
+		// The engine's one-shot latch: bit 51 set = lights already attached.
+		auto& flags = *reinterpret_cast<std::uint64_t*>(
+			reinterpret_cast<std::uint8_t*>(a_node) + 0x108);
+		if ((flags >> 51) & 1) {
+			return;
+		}
+
+		static const auto rootArray =
+			REL::Relocation<std::uintptr_t>{ REL::ID(kTraversalRootID) }.address();
+		static const auto rootIndex = reinterpret_cast<const std::uint8_t*>(
+			REL::Relocation<std::uintptr_t>{ REL::ID(kRootIndexID) }.address());
+		const auto root = *reinterpret_cast<void**>(rootArray + *rootIndex * 8);
+		if (!root) {
+			return;
+		}
+
+		const auto radius = *reinterpret_cast<const float*>(
+			reinterpret_cast<std::uint8_t*>(a_node) + 0xBC);
+		static REL::Relocation<LightIntoNode_t> attach{ REL::ID(kLightIntoNodeID) };
+		attach(a_node, root, 0, 0, radius < 150.0f, 1);
+		flags |= 1ull << 51;  // mirror the engine's latch so this stays one-shot
+		g_nodeUpdates.fetch_add(1, std::memory_order_relaxed);
+	}
+
+	// kAttachLights: refresh fadeNode light lists from the previs batch's
+	// own light entries.  Runs in the prep hook, i.e. inside the previs
+	// branch, after the engine's own accumulate.
+	void AttachBatchLights()
+	{
+		static const auto previsBatch = reinterpret_cast<std::uint8_t*>(
+			REL::Relocation<std::uintptr_t>{ REL::ID(kPrevisBatchID) }.address());
+		static const auto root = reinterpret_cast<std::uint8_t*>(
+			REL::Relocation<std::uintptr_t>{ REL::ID(kTraversalRootID) }.address());
+		static REL::Relocation<AttachLight_t> attach{ REL::ID(kAttachLightID) };
+
+		auto* buffer = *reinterpret_cast<std::uint8_t**>(previsBatch + 0xD0);
+		if (!buffer) {
+			return;
+		}
+		const auto count = std::min<std::uint32_t>(
+			*reinterpret_cast<const std::uint32_t*>(buffer + 0x3A68), 64);
+		const auto* entries =
+			reinterpret_cast<std::uint8_t* const*>(buffer + 0x2060);
+		std::uint32_t attached = 0;
+		for (std::uint32_t i = 0; i < count && attached < 24; ++i) {
+			auto* obj = entries[i];
+			if (!obj) {
+				continue;
+			}
+			// The previs append never routes these through GetLight, and
+			// NiPointLight's +0x40 virtual returns null (measured: zero
+			// lights found that way) -- identify lights by exact vtable.
+			static const auto niPointLightVtbl =
+				REL::Relocation<std::uintptr_t>{ REL::ID(496353) }.address();
+			if (*reinterpret_cast<const std::uintptr_t*>(obj) != niPointLightVtbl) {
+				continue;
+			}
+			// The engine wrapper (2317474) forwards a payload from the
+			// light's +0x30 virtual only when NiAVObject flag bit 14 is set,
+			// and the recursion dereferences it unconditionally (calling it
+			// with the payload null crashed at +0x11).  Only attach lights
+			// the engine itself would.
+			const auto flags =
+				*reinterpret_cast<const std::uint64_t*>(obj + 0x108);
+			if (((flags >> 14) & 1) == 0) {
+				continue;
+			}
+			const auto vtbl = *reinterpret_cast<std::uintptr_t*>(obj);
+			const auto getPayload =
+				*reinterpret_cast<void* (**)(std::uint8_t*)>(vtbl + 0x30);
+			if (!getPayload(obj)) {
+				continue;
+			}
+			attach(obj, root, 1);
+			++attached;
+		}
+		if (attached) {
+			g_lightsAccumulated.fetch_add(attached, std::memory_order_relaxed);
+		}
+	}
 
 	void NotePrevisPrep(std::uint8_t* a_batch, void* a_object, void* a_bound,
 		std::uint64_t a_flags)
@@ -182,7 +336,7 @@ namespace
 		}
 		g_originalPrevisAccumulate(a_batch, a_object, a_bound, a_flags);
 
-		if (!g_lightScoped) {
+		if (!g_lightScoped && !g_attachLights) {
 			return;
 		}
 		// Only touch a live world.  A parent-cell check is NOT enough: the
@@ -193,6 +347,18 @@ namespace
 		if (!g_worldReady.load(std::memory_order_relaxed)) {
 			return;
 		}
+		if (g_attachLights) {
+			const auto before = g_lightsAccumulated.load(std::memory_order_relaxed);
+			AttachBatchLights();
+			const auto added =
+				g_lightsAccumulated.load(std::memory_order_relaxed) - before;
+			static std::atomic_bool logged{ false };
+			if (added && !logged.exchange(true)) {
+				REX::INFO("attach-lights: first frame attached {} light(s)", added);
+			}
+			return;
+		}
+
 		static const auto traversalBatch = reinterpret_cast<std::uint8_t*>(
 			REL::Relocation<std::uintptr_t>{ REL::ID(kTraversalBatchID) }.address());
 		static const auto root = reinterpret_cast<std::uint8_t*>(
@@ -293,7 +459,11 @@ namespace PrevisLightingFix
 			return hits;
 		}
 		const auto lights = g_lightsAccumulated.load(std::memory_order_relaxed);
-		return lights ? lights : g_redirected.load(std::memory_order_relaxed);
+		if (lights) {
+			return lights;
+		}
+		const auto updates = g_nodeUpdates.load(std::memory_order_relaxed);
+		return updates ? updates : g_redirected.load(std::memory_order_relaxed);
 	}
 
 	bool Install(Mode a_mode)
@@ -329,6 +499,48 @@ namespace PrevisLightingFix
 			REX::INFO("previs lighting fix installed (light records) at "
 					  "REL::ID({})+{:#x}",
 				kAppendFnID, kLightSkipBranch);
+			return true;
+		}
+
+		if (a_mode == Mode::kNodeUpdate) {
+			const REL::Relocation<std::uintptr_t> vtbl{ REL::ID(kBSFadeNodeVtblID) };
+			auto* slot = reinterpret_cast<std::uintptr_t*>(
+				vtbl.address() + kOnVisibleSlot);
+
+			DWORD old{};
+			if (!VirtualProtect(slot, sizeof(*slot), PAGE_READWRITE, &old)) {
+				REX::ERROR("previs lighting fix: VirtualProtect failed on vtable");
+				return false;
+			}
+			g_originalOnVisible = reinterpret_cast<OnVisible_t>(*slot);
+			*slot = reinterpret_cast<std::uintptr_t>(&FadeNodeOnVisibleHook);
+			VirtualProtect(slot, sizeof(*slot), old, &old);
+
+			g_installed = true;
+			REX::INFO("previs lighting fix installed (node-update) on "
+					  "BSFadeNode::OnVisible");
+			return true;
+		}
+
+		if (a_mode == Mode::kAttachLights) {
+			const REL::Relocation<std::uintptr_t> worldDraw{ REL::ID(kDrawWorldID) };
+			const auto prepSite = worldDraw.address() + kAccumulateCallOffset;
+			if (*reinterpret_cast<const std::uint8_t*>(prepSite) != 0xE8) {
+				REX::ERROR("previs lighting fix: REL::ID({})+{:#x} is not a call",
+					kDrawWorldID, kAccumulateCallOffset);
+				return false;
+			}
+			auto& trampoline = REL::GetTrampoline();
+			g_originalPrevisAccumulate = reinterpret_cast<Accumulate_t>(
+				trampoline.write_call<5>(prepSite,
+					reinterpret_cast<std::uintptr_t>(&NotePrevisPrep)));
+			if (!g_originalPrevisAccumulate) {
+				REX::ERROR("previs lighting fix: trampoline refused the prep hook");
+				return false;
+			}
+			g_attachLights = true;
+			g_installed = true;
+			REX::INFO("previs lighting fix installed (attach-lights)");
 			return true;
 		}
 

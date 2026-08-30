@@ -85,6 +85,18 @@ F4SE_PLUGIN_LOAD(const F4SE::LoadInterface* a_f4se)
 	case 9:
 		PrevisLightingFix::Install(PrevisLightingFix::Mode::kLightScoped);
 		break;
+	case 12:
+		PrevisLightingFix::Install(PrevisLightingFix::Mode::kNodeUpdate);
+		break;
+	case 11:
+		PrevisLightingFix::Install(PrevisLightingFix::Mode::kAttachLights);
+		break;
+	case 10:
+		// Experiment: shader-property flag forcing lives in the probe hook,
+		// so it needs VisibilityProbe = 1 as well.
+		VisibilityProbe::SetForceFlags(true);
+		REX::INFO("shader-property flag forcing enabled (requires VisibilityProbe)");
+		break;
 	default:
 		REX::INFO("previs lighting fix disabled by fo4test.ini");
 		break;

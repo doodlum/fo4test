@@ -131,12 +131,21 @@ namespace
 	// (267 -> 266 fps at the chem lab) but 66% of frame time in exteriors,
 	// which is why the fix must not be unconditional.  Cached per frame; the
 	// two cross-thread pointer reads are benign (stable singletons).
+	// Runtime kill-switch for A/B benchmarking: false makes every detoured
+	// gate behave exactly vanilla, so fix-on and fix-off frame rates can be
+	// sampled in alternating windows of one session -- the only measurement
+	// this machine's thermal throttling cannot fake.
+	std::atomic_bool g_fixActive{ true };
+
 	[[nodiscard]] bool LightingAwarePreCulling()
 	{
 		// rva 0x21ae520 -> EXACT 2317322 (rva2id.py); the real predicate.
 		static REL::Relocation<bool (*)()> isActive{ REL::ID(2317322) };
 		if (!isActive()) {
 			return false;
+		}
+		if (!g_fixActive.load(std::memory_order_relaxed)) {
+			return true;  // vanilla: previs stays active at this gate
 		}
 
 		static REL::Relocation<std::uint32_t*> frame{ REL::ID(4784456) };
@@ -198,6 +207,11 @@ namespace
 
 namespace PrevisFix
 {
+	void SetFixActive(bool a_active) noexcept
+	{
+		g_fixActive.store(a_active, std::memory_order_relaxed);
+	}
+
 	void ForcePrevisBatchFlag()
 	{
 		// The previs-side culling batch, from the r9 argument of the world
