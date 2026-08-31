@@ -72,6 +72,15 @@ namespace VisibilityProbe
 		std::uintptr_t                  prop0{ 0 };
 		std::uintptr_t                  prop1{ 0 };
 		std::uintptr_t                  pass0{ 0 };
+		std::uintptr_t                  fadeNode{ 0 };
+		bool                            prop1Valid{ false };
+		bool                            fadeValid{ false };
+		std::array<std::uint8_t, 0x1C8> fadeBytes{};
+		// prop1->renderPassList chain (+0x38 head, pass->next at +0x38),
+		// captured raw at snapshot time; passes are transient so this only
+		// carries data when captured during accumulation/submit.
+		std::uint32_t                             passCount{ 0 };
+		std::array<std::array<std::uint8_t, 0x40>, 6> passBytes{};
 		std::array<std::uint8_t, 0x160> geoBytes{};
 		// First BSRenderPass of prop1's renderPassList (+0x38), raw.
 		std::array<std::uint8_t, 0x68>  pass0Bytes{};
@@ -80,6 +89,17 @@ namespace VisibilityProbe
 	};
 
 	[[nodiscard]] std::vector<NearGeometry> NearCaptures();
+
+	// Fill the armed near-captures' render-pass chains.  Pass lists are
+	// transient (null at OnVisible, freed after render), so this must be
+	// called mid-frame from the submit hook, where they provably exist.
+	void CapturePassChainsNow();
+
+	// Hook BSLightingShaderProperty::GetRenderPasses (vtable slot 0x2B) and
+	// log calls whose geometry is near the armed point: this catches the
+	// object that actually builds the visible glass's passes, whether it is
+	// the original shape or the packed combined instance.
+	bool InstallGetRenderPassesLog();
 
 	// Per-object record: every geometry that reaches OnVisible in the window,
 	// with its NiAVObject flags at +0x108.  The geometry set and call count

@@ -91,6 +91,17 @@ namespace Dump
 				file << "prop1 bytes:\n";
 				HexDump(file, c.prop1Bytes.data(), c.prop1Bytes.size());
 			}
+			file << std::format("prop1Valid={} fadeNode={:#x} fadeValid={}\n",
+				c.prop1Valid, c.fadeNode, c.fadeValid);
+			if (c.fadeValid) {
+				file << "fadeNode bytes:\n";
+				HexDump(file, c.fadeBytes.data(), c.fadeBytes.size());
+			}
+			file << std::format("passCount={}\n", c.passCount);
+			for (std::uint32_t pi = 0; pi < c.passCount; ++pi) {
+				file << std::format("pass[{}] bytes:\n", pi);
+				HexDump(file, c.passBytes[pi].data(), 0x40);
+			}
 		}
 		file << '\n';
 		REX::INFO("dumped {} near-geometry capture(s) ({})", caps.size(), a_label);

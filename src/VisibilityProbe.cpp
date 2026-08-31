@@ -58,6 +58,14 @@ namespace
 		if (!g_nearArmed || g_near.size() >= kNearMax) {
 			return;
 		}
+		// Packed combined instances (BSMultiStreamInstanceTriShape, VTABLE id
+		// 95842) have merged-mesh bounds whose centres sit far from the
+		// camera, so the radius filter below excludes exactly the shapes the
+		// previs-mode glass is drawn from.  Capture them unconditionally.
+		static const auto packedVtbl =
+			REL::Relocation<std::uintptr_t>{ REL::ID(95842) }.address();
+		const bool isPacked =
+			*reinterpret_cast<const std::uintptr_t*>(a_geometry) == packedVtbl;
 		for (const auto& existing : g_near) {
 			if (existing.geometry == a_geometry) {
 				return;
@@ -69,7 +77,7 @@ namespace
 		const float dy = bound[1] - g_nearPoint[1];
 		const float dz = bound[2] - g_nearPoint[2];
 		const float d2 = dx * dx + dy * dy + dz * dz;
-		if (d2 > 60.0f * 60.0f) {
+		if (!isPacked && d2 > 60.0f * 60.0f) {
 			return;
 		}
 
@@ -85,22 +93,35 @@ namespace
 			if (prop && PointsIntoModule(*reinterpret_cast<const std::uintptr_t*>(prop))) {
 				std::memcpy(dst.data(), reinterpret_cast<const void*>(prop), dst.size());
 				if (slot == 1) {
-					// prop1's render pass list head; a pass is a plain struct
-					// whose first field is a BSShader* (vtabled), which makes
-					// it validatable the same way.
-					const auto pass = *reinterpret_cast<const std::uintptr_t*>(
+					rec.prop1Valid = true;
+					const auto fade = *reinterpret_cast<const std::uintptr_t*>(
+						prop + 0x48);
+					rec.fadeNode = fade;
+					if (fade &&
+						PointsIntoModule(
+							*reinterpret_cast<const std::uintptr_t*>(fade))) {
+						std::memcpy(rec.fadeBytes.data(),
+							reinterpret_cast<const void*>(fade),
+							rec.fadeBytes.size());
+						rec.fadeValid = true;
+					}
+					// Walk the render pass chain: head at prop+0x38, next at
+					// pass+0x38.  Validate via the pass's shader vtable.
+					auto pass = *reinterpret_cast<const std::uintptr_t*>(
 						prop + 0x38);
-					if (pass) {
+					while (pass && rec.passCount < 6) {
 						const auto shader =
 							*reinterpret_cast<const std::uintptr_t*>(pass);
-						if (shader &&
-							PointsIntoModule(
+						if (!shader ||
+							!PointsIntoModule(
 								*reinterpret_cast<const std::uintptr_t*>(shader))) {
-							rec.pass0 = pass;
-							std::memcpy(rec.pass0Bytes.data(),
-								reinterpret_cast<const void*>(pass),
-								rec.pass0Bytes.size());
+							break;
 						}
+						std::memcpy(rec.passBytes[rec.passCount].data(),
+							reinterpret_cast<const void*>(pass), 0x40);
+						++rec.passCount;
+						pass = *reinterpret_cast<const std::uintptr_t*>(
+							pass + 0x38);
 					}
 				}
 			}
@@ -175,6 +196,50 @@ namespace
 		RE::VTABLE::BSDynamicTriShape,
 		RE::VTABLE::BSGeometry,
 	};
+	using GetRenderPasses_t = void* (*)(void*, void*, std::uint32_t, void*);
+	GetRenderPasses_t     g_originalGRP{ nullptr };
+	std::atomic_uint32_t  g_grpLogged{ 0 };
+
+	void* GetRenderPassesLog(void* a_prop, void* a_geometry, std::uint32_t a_mode,
+		void* a_accumulator)
+	{
+		auto* result = g_originalGRP(a_prop, a_geometry, a_mode, a_accumulator);
+		if (g_nearArmed && a_geometry && g_grpLogged.load(std::memory_order_relaxed) < 60) {
+			const auto* geo = reinterpret_cast<const std::uint8_t*>(a_geometry);
+			const auto* bound = reinterpret_cast<const float*>(geo + 0xB0);
+			const float dx = bound[0] - g_nearPoint[0];
+			const float dy = bound[1] - g_nearPoint[1];
+			const float dz = bound[2] - g_nearPoint[2];
+			const float d2 = dx * dx + dy * dy + dz * dz;
+			// Near by centre OR huge bound enclosing the camera.
+			if (d2 < 120.0f * 120.0f || bound[3] * bound[3] > d2) {
+				const auto vt = *reinterpret_cast<const std::uintptr_t*>(a_geometry);
+				static const auto base =
+					REX::FModule::GetExecutingModule().GetBaseAddress();
+				const auto fade = *reinterpret_cast<const std::uintptr_t*>(
+					reinterpret_cast<const std::uint8_t*>(a_prop) + 0x48);
+				const auto head = result
+					? *reinterpret_cast<const std::uintptr_t*>(result)
+					: 0;
+				std::uint32_t passEnum = 0;
+				std::uint8_t numLights = 0;
+				if (head) {
+					passEnum = *reinterpret_cast<const std::uint32_t*>(head + 0x18);
+					numLights = *reinterpret_cast<const std::uint8_t*>(head + 0x1F);
+				}
+				g_grpLogged.fetch_add(1, std::memory_order_relaxed);
+				REX::INFO(
+					"GRP geo={:#x} vtrva={:#x} d={:.0f} r={:.0f} mode={} fade={:#x} "
+					"pass0={:#x} enum={:#x} lights={}",
+					reinterpret_cast<std::uintptr_t>(a_geometry),
+					(vt > base && vt - base < 0x10000000) ? vt - base : 0,
+					std::sqrt(d2),
+					bound[3], a_mode, fade, head, passEnum, numLights);
+			}
+		}
+		return result;
+	}
+
 }
 
 namespace VisibilityProbe
@@ -207,6 +272,21 @@ namespace VisibilityProbe
 		g_forceFlags.store(a_on, std::memory_order_relaxed);
 	}
 
+	bool InstallGetRenderPassesLog()
+	{
+		const REL::Relocation<std::uintptr_t> vtbl{ REL::ID(241915) };
+		auto* slot = reinterpret_cast<std::uintptr_t*>(vtbl.address() + 0x2B * 8);
+		DWORD old{};
+		if (!VirtualProtect(slot, sizeof(*slot), PAGE_READWRITE, &old)) {
+			return false;
+		}
+		g_originalGRP = reinterpret_cast<GetRenderPasses_t>(*slot);
+		*slot = reinterpret_cast<std::uintptr_t>(&GetRenderPassesLog);
+		VirtualProtect(slot, sizeof(*slot), old, &old);
+		REX::INFO("GetRenderPasses logger installed");
+		return true;
+	}
+
 	void ArmNearCapture(float a_x, float a_y, float a_z) noexcept
 	{
 		const std::scoped_lock lock{ g_mutex };
@@ -214,7 +294,43 @@ namespace VisibilityProbe
 		g_nearPoint[1] = a_y;
 		g_nearPoint[2] = a_z;
 		g_near.clear();
+		g_grpLogged.store(0, std::memory_order_relaxed);
 		g_nearArmed = true;
+	}
+
+	void CapturePassChainsNow()
+	{
+		const std::scoped_lock lock{ g_mutex };
+		for (auto& rec : g_near) {
+			if (rec.passCount || !rec.geometry) {
+				continue;
+			}
+			const auto* geo = reinterpret_cast<const std::uint8_t*>(rec.geometry);
+			auto* prop = *reinterpret_cast<std::uint8_t* const*>(geo + 0x138);
+			if (!prop || !PointsIntoModule(*reinterpret_cast<const std::uintptr_t*>(prop))) {
+				continue;
+			}
+			// Forward passes live in BSLightingShaderProperty::forwardPassList
+			// (+0xB0); the base renderPassList (+0x38) serves other render
+			// modes.  Walk both.
+			for (const auto headOff : { 0xB0, 0x38 }) {
+				auto pass = *reinterpret_cast<const std::uintptr_t*>(
+					prop + headOff);
+				while (pass && rec.passCount < 6) {
+					const auto shader =
+						*reinterpret_cast<const std::uintptr_t*>(pass);
+					if (!shader ||
+						!PointsIntoModule(
+							*reinterpret_cast<const std::uintptr_t*>(shader))) {
+						break;
+					}
+					std::memcpy(rec.passBytes[rec.passCount].data(),
+						reinterpret_cast<const void*>(pass), 0x40);
+					++rec.passCount;
+					pass = *reinterpret_cast<const std::uintptr_t*>(pass + 0x38);
+				}
+			}
+		}
 	}
 
 	std::vector<NearGeometry> NearCaptures()

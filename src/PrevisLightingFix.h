@@ -138,6 +138,15 @@ namespace PrevisLightingFix
 		// Validate fixes against a pristine same-timing vanilla run, never
 		// with in-run diffs alone.
 		kNodeUpdate,
+		// v2 root cause: combined-mesh (precombined) shader properties have
+		// no fadeNode, so BSLightingShaderProperty::GetRenderPasses skips
+		// light selection entirely -- packed-rendered surfaces get the sun
+		// and nothing else, which is the previs glass bug (previs mode is
+		// what renders via the packed meshes; sco off = fixed frame).  This
+		// gives such properties a minimal proxy node holding only what the
+		// pass builder reads, with a light list gathered from the scene
+		// root's light registry against the geometry's own bound.
+		kPackedLights,
 	};
 
 	// Installs the hook.  Requires F4SE::Init to have allocated a trampoline.

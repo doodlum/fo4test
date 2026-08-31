@@ -55,6 +55,7 @@ F4SE_PLUGIN_LOAD(const F4SE::LoadInterface* a_f4se)
 	if (Settings::GetSingleton().visibilityProbe) {
 		VisibilityProbe::Install();
 		SubmitProbe::Install();
+		VisibilityProbe::InstallGetRenderPassesLog();
 	}
 
 	switch (Settings::GetSingleton().previsLightingFix) {
@@ -84,6 +85,9 @@ F4SE_PLUGIN_LOAD(const F4SE::LoadInterface* a_f4se)
 		break;
 	case 9:
 		PrevisLightingFix::Install(PrevisLightingFix::Mode::kLightScoped);
+		break;
+	case 13:
+		PrevisLightingFix::Install(PrevisLightingFix::Mode::kPackedLights);
 		break;
 	case 12:
 		PrevisLightingFix::Install(PrevisLightingFix::Mode::kNodeUpdate);

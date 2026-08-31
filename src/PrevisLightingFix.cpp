@@ -80,6 +80,22 @@ namespace
 	// consumer that drives it only sees previs's 23 entries), so its
 	// lightData stays empty from load onward -- the source of the bug.
 	constexpr std::uint64_t kLightIntoNodeID = 2317475;
+	// The renderer's accumulation stamp (0x143e5dfa0 -> EXACT 2712486);
+	// RegisterObject writes it into prop->lastAccumTime, and the forward
+	// pass builder rebuilds a property's cached passes only when
+	// lastAccumTime <= lightData.lightListChanged.  Bumping the node's
+	// lightListChanged to this stamp is therefore the engine's own "light
+	// list changed, rebuild passes" signal -- the piece the bare attach was
+	// missing (passes stayed cached with stale lights, so attaching alone
+	// changed nothing on screen).
+	constexpr std::uint64_t  kAccumStampID = 2712486;
+
+	// Light-vs-bound intersection used by the engine's own gather
+	// (0x1421fe3e0 -> EXACT 2318424, rva2id.py): (BSLight*, const NiBound*,
+	// NiAVObject* lightObj, float scale) -> bool.
+	constexpr std::uint64_t kLightIntersectID = 2318424;
+	using LightIntersect_t = bool (*)(void*, const float*, void*, float);
+	constexpr std::ptrdiff_t kLightListChanged = 0x148;
 	constexpr std::uint64_t kRootIndexID = 2712516;
 	using LightIntoNode_t =
 		void (*)(void*, void*, std::uint32_t, std::uint32_t, bool, std::uint8_t);
@@ -208,9 +224,202 @@ namespace
 
 	bool g_lightScoped{ false };
 	bool g_attachLights{ false };
+	bool g_nodeUpdateDiag{ false };
+
+	// ---- kPackedLights ----------------------------------------------------
+	//
+	// Proxy "fade node" for combined-mesh properties.  Only the fields the
+	// forward pass builder (FUN_14217aea0) and GetRenderPasses actually read
+	// exist meaningfully; everything else stays zero.
+	struct ProxyFadeNode
+	{
+		std::uint8_t   pad000[0x108]{};
+		std::uint64_t  flags{ 1ull << 15 };       // 108: builder visibility bit
+		std::uint8_t   pad110[0x0C]{};            // 110
+		std::uint8_t   byte11C{ 0 };              // 11C: != 6 -> plain path
+		std::uint8_t   pad11D{ 0 };               // 11D
+		std::uint8_t   byte11E{ 3 };              // 11E: LOD mode default
+		std::uint8_t   pad11F[0x21]{};            // 11F
+		std::uint32_t  lightListFence{ 0 };       // 140
+		std::uint32_t  shadowAccumFlags{ 0 };     // 144
+		std::uint32_t  lightListChanged{ 0 };     // 148
+		std::uint32_t  pad14C{ 0 };               // 14C
+		void*          lightListData{ nullptr };  // 150
+		std::uint32_t  lightListCapacity{ 0 };    // 158
+		std::uint32_t  pad15C{ 0 };               // 15C
+		std::uint32_t  lightListCount{ 0 };       // 160
+		std::uint8_t   pad164[0x3C]{};            // 164
+		float          currentFade{ 1.0f };       // 1A0
+		float          currentDecalFade{ 1.0f };  // 1A4
+		std::uint8_t   pad1A8[0x10]{};            // 1A8
+		float          posX{ 0.0f };              // 1B8
+		float          posY{ 0.0f };              // 1BC
+		std::uint8_t   tail[0x40]{};              // 1C0 slack
+
+		// our storage for the light list
+		void* lights[16]{};
+	};
+	static_assert(offsetof(ProxyFadeNode, flags) == 0x108);
+	static_assert(offsetof(ProxyFadeNode, lightListFence) == 0x140);
+	static_assert(offsetof(ProxyFadeNode, lightListData) == 0x150);
+	static_assert(offsetof(ProxyFadeNode, lightListCount) == 0x160);
+	static_assert(offsetof(ProxyFadeNode, currentFade) == 0x1A0);
+	static_assert(offsetof(ProxyFadeNode, posX) == 0x1B8);
+
+	bool g_packedLights{ false };
+	std::atomic_uint64_t g_proxiesMade{ 0 };
+
+	// prop -> proxy, small open-addressed map; cleared on load.
+	constexpr std::uint32_t kProxySlots = 1024;
+	std::array<std::atomic_uintptr_t, kProxySlots> g_proxyProps{};
+	std::array<ProxyFadeNode*, kProxySlots>        g_proxies{};
+
+	void ClearProxies()
+	{
+		for (std::uint32_t i = 0; i < kProxySlots; ++i) {
+			g_proxyProps[i].store(0, std::memory_order_relaxed);
+			delete g_proxies[i];
+			g_proxies[i] = nullptr;
+		}
+	}
+
+	std::atomic_uint32_t g_dbgCalls{ 0 }, g_dbgNoProp{ 0 }, g_dbgHasFade{ 0 },
+		g_dbgNoRoot{ 0 }, g_dbgNoLights{ 0 }, g_dbgNoHit{ 0 };
+
+	void DumpPackedDebug()
+	{
+		REX::INFO("packed-lights debug: calls={} noProp={} hasFade={} noRoot={} "
+				  "noRegistry={} noIntersect={} proxies={}",
+			g_dbgCalls.load(), g_dbgNoProp.load(), g_dbgHasFade.load(),
+			g_dbgNoRoot.load(), g_dbgNoLights.load(), g_dbgNoHit.load(),
+			g_proxiesMade.load());
+	}
+
+	void MaybeGivePackedLights(std::uint8_t* a_geometry)
+	{
+		g_dbgCalls.fetch_add(1, std::memory_order_relaxed);
+		auto* prop = *reinterpret_cast<std::uint8_t**>(a_geometry + 0x138);
+		if (!prop) {
+			g_dbgNoProp.fetch_add(1, std::memory_order_relaxed);
+			return;
+		}
+		// Only properties with no fade node -- the combined-mesh case.
+		if (*reinterpret_cast<std::uintptr_t*>(prop + 0x48) != 0) {
+			g_dbgHasFade.fetch_add(1, std::memory_order_relaxed);
+			return;
+		}
+
+		const auto key = reinterpret_cast<std::uintptr_t>(prop);
+		auto idx = (key >> 4) & (kProxySlots - 1);
+		for (std::uint32_t probe = 0; probe < 8; ++probe) {
+			const auto cur = g_proxyProps[idx].load(std::memory_order_relaxed);
+			if (cur == key) {
+				return;  // already proxied
+			}
+			if (cur == 0) {
+				break;
+			}
+			idx = (idx + 1) & (kProxySlots - 1);
+		}
+		if (g_proxyProps[idx].load(std::memory_order_relaxed) != 0) {
+			return;  // table full in this neighbourhood
+		}
+
+		// Gather lights intersecting the GEOMETRY's world bound from the
+		// scene root's light registry, with the engine's own test.
+		static const auto rootArray =
+			REL::Relocation<std::uintptr_t>{ REL::ID(kTraversalRootID) }.address();
+		static const auto rootIndex = reinterpret_cast<const std::uint8_t*>(
+			REL::Relocation<std::uintptr_t>{ REL::ID(kRootIndexID) }.address());
+		const auto root =
+			*reinterpret_cast<std::uint8_t**>(rootArray + *rootIndex * 8);
+		if (!root) {
+			g_dbgNoRoot.fetch_add(1, std::memory_order_relaxed);
+			return;
+		}
+		auto** lights = *reinterpret_cast<void***>(root + 0x158);
+		const auto lightCount =
+			*reinterpret_cast<const std::uint32_t*>(root + 0x168);
+		if (!lights || lightCount == 0) {
+			g_dbgNoLights.fetch_add(1, std::memory_order_relaxed);
+			return;
+		}
+
+		auto proxy = std::make_unique<ProxyFadeNode>();
+		const auto* bound = reinterpret_cast<const float*>(a_geometry + 0xB0);
+		proxy->posX = bound[0];
+		proxy->posY = bound[1];
+
+		static REL::Relocation<LightIntersect_t> intersects{
+			REL::ID(kLightIntersectID)
+		};
+		std::uint32_t got = 0;
+		for (std::uint32_t i = 0; i < lightCount && got < 16; ++i) {
+			auto* light = lights[i];
+			if (!light) {
+				continue;
+			}
+			auto* lightObj = *reinterpret_cast<void**>(
+				reinterpret_cast<std::uint8_t*>(light) + 0xB8);
+			if (!lightObj) {
+				continue;
+			}
+			if (intersects(light, bound, lightObj, 1.0f)) {
+				proxy->lights[got++] = light;
+			}
+		}
+		if (got == 0) {
+			g_dbgNoHit.fetch_add(1, std::memory_order_relaxed);
+			return;  // nothing would change; keep the property untouched
+		}
+		proxy->lightListData = proxy->lights;
+		proxy->lightListCapacity = 16;
+		proxy->lightListCount = got;
+		static const auto stamp = reinterpret_cast<const std::uint32_t*>(
+			REL::Relocation<std::uintptr_t>{ REL::ID(kAccumStampID) }.address());
+		proxy->lightListChanged = *stamp;
+
+		// Publish: property gets its light source.
+		*reinterpret_cast<std::uintptr_t*>(prop + 0x48) =
+			reinterpret_cast<std::uintptr_t>(proxy.get());
+		g_proxies[idx] = proxy.release();
+		g_proxyProps[idx].store(key, std::memory_order_relaxed);
+		const auto n = g_proxiesMade.fetch_add(1, std::memory_order_relaxed);
+		if (n == 0 || ((n + 1) & 0xF) == 0) {
+			REX::INFO("packed-lights proxy #{} (prop {:#x}, {} light(s))", n + 1,
+				key, got);
+		}
+	}
+
+	constexpr std::uint32_t kSeenSize = 4096;  // power of two
+	std::array<std::atomic_uintptr_t, kSeenSize> g_seenNodes{};
 
 	using OnVisible_t = void (*)(void*, void*);
 	OnVisible_t          g_originalOnVisible{ nullptr };
+	OnVisible_t          g_originalGeomOnVisible{ nullptr };
+
+	void GeomOnVisibleHook(void* a_geometry, void* a_cullingProcess)
+	{
+		g_originalGeomOnVisible(a_geometry, a_cullingProcess);
+		if (!g_packedLights) {
+			return;
+		}
+		{
+			static std::atomic_uint32_t lastFrame{ 0xFFFFFFFFu };
+			static std::atomic_bool     inWorld{ false };
+			const auto f = CurrentFrame();
+			if (lastFrame.exchange(static_cast<std::uint32_t>(f),
+					std::memory_order_relaxed) != f) {
+				const auto* player = RE::PlayerCharacter::GetSingleton();
+				inWorld.store(player && player->GetParentCell() != nullptr,
+					std::memory_order_relaxed);
+			}
+			if (!inWorld.load(std::memory_order_relaxed)) {
+				return;
+			}
+		}
+		MaybeGivePackedLights(reinterpret_cast<std::uint8_t*>(a_geometry));
+	}
 	std::atomic_uint64_t g_nodeUpdates{ 0 };
 
 	void FadeNodeOnVisibleHook(void* a_node, void* a_cullingProcess)
@@ -245,18 +454,31 @@ namespace
 		if (!context) {
 			return;
 		}
-		// The engine's lights-attached latch, NiAVObject flag bit 51.  Both
-		// halves are required and engine-faithful: nodes the engine fades in
-		// end up with the latch SET after their own attach, and the render
-		// path treats a clear latch as "light list not valid" -- attaching
-		// without setting it changed nothing (measured 52k wrong pixels),
-		// and gating on list emptiness skipped the broken nodes entirely
-		// (their lists are stale non-empty).  So: attach once, set the
-		// latch, exactly as a normal fade-in would have.
-		auto& flags = *reinterpret_cast<std::uint64_t*>(
+		// Skip nodes the engine itself attached (its latch, bit 51) -- and
+		// do NOT write that latch: earlier builds that wrote it blocked the
+		// previs-off path's own repair, which made tpc a no-op and poisoned
+		// the in-run validation metric.
+		const auto flags = *reinterpret_cast<const std::uint64_t*>(
 			reinterpret_cast<std::uint8_t*>(a_node) + 0x108);
 		if ((flags >> 51) & 1) {
 			return;
+		}
+
+		// One-shot per node per world, tracked in our own table.
+		{
+			const auto key = reinterpret_cast<std::uintptr_t>(a_node);
+			auto idx = (key >> 4) & (kSeenSize - 1);
+			for (std::uint32_t probe = 0; probe < 8; ++probe) {
+				const auto cur = g_seenNodes[idx].load(std::memory_order_relaxed);
+				if (cur == key) {
+					return;
+				}
+				if (cur == 0) {
+					g_seenNodes[idx].store(key, std::memory_order_relaxed);
+					break;
+				}
+				idx = (idx + 1) & (kSeenSize - 1);
+			}
 		}
 
 		static const auto rootArray =
@@ -268,15 +490,23 @@ namespace
 			return;
 		}
 
-		const auto radius = *reinterpret_cast<const float*>(
-			reinterpret_cast<std::uint8_t*>(a_node) + 0xBC);
-		static REL::Relocation<LightIntoNode_t> attach{ REL::ID(kLightIntoNodeID) };
-		attach(a_node, root, 0, 0, radius < 150.0f, 1);
-		flags |= 1ull << 51;
+		// Reproduce the tpc repair exactly: the toggle fixes the glass by
+		// running the per-node update (REL::ID(2316460)) with its light
+		// guard passing.  Calling the attach directly (with or without a
+		// pass-cache bump) measured broken both times -- d450's surrounding
+		// property/fade work is part of the repair.  So: set the node's
+		// "needs light update" flag (bit 33, the guard's first clause) and
+		// run the engine's own update with the batch camera context.
+		*reinterpret_cast<std::uint64_t*>(
+			reinterpret_cast<std::uint8_t*>(a_node) + 0x108) |= 1ull << 33;
+		static REL::Relocation<NodeUpdate_t> update{ REL::ID(kNodeUpdateID) };
+		update(a_node, context, 1);
+		(void)root;
+
 		const auto n = g_nodeUpdates.fetch_add(1, std::memory_order_relaxed);
 		if (n == 0 || ((n + 1) & 0x1F) == 0) {
-			REX::INFO("light attach #{} (node {:#x}, r={:.0f})", n + 1,
-				reinterpret_cast<std::uintptr_t>(a_node), radius);
+			REX::INFO("node update #{} (node {:#x})", n + 1,
+				reinterpret_cast<std::uintptr_t>(a_node));
 		}
 	}
 
@@ -346,6 +576,31 @@ namespace
 				reinterpret_cast<std::uintptr_t>(a_object));
 		}
 		g_originalPrevisAccumulate(a_batch, a_object, a_bound, a_flags);
+
+		// v2 diagnostics: the scene-root light registry (root+0x158 array,
+		// +0x168 count) is what the fade-in attach scans; whether previs-on
+		// leaves it empty is the deciding question for the root-cause fix.
+		if (g_nodeUpdateDiag) {
+			static const auto rootArray =
+				REL::Relocation<std::uintptr_t>{ REL::ID(kTraversalRootID) }.address();
+			static const auto rootIndex = reinterpret_cast<const std::uint8_t*>(
+				REL::Relocation<std::uintptr_t>{ REL::ID(kRootIndexID) }.address());
+			const auto idx = *rootIndex;
+			const auto root = *reinterpret_cast<std::uint8_t**>(rootArray + idx * 8);
+			if (root) {
+				const auto count =
+					*reinterpret_cast<const std::uint32_t*>(root + 0x168);
+				static std::atomic_uint32_t lastLogged{ 0xFFFFFFFFu };
+				if (lastLogged.exchange(count, std::memory_order_relaxed) != count) {
+					static REL::Relocation<bool (*)()> isActive{
+						REL::ID(kIsPreCullingActiveID)
+					};
+					REX::INFO("root[{}]={:#x} lightRegistry count={} (previs={})",
+						idx, reinterpret_cast<std::uintptr_t>(root), count,
+						isActive());
+				}
+			}
+		}
 
 		if (!g_lightScoped && !g_attachLights) {
 			return;
@@ -461,10 +716,22 @@ namespace PrevisLightingFix
 	void SetWorldReady(bool a_ready) noexcept
 	{
 		g_worldReady.store(a_ready, std::memory_order_relaxed);
+		if (!a_ready) {
+			for (auto& slot : g_seenNodes) {
+				slot.store(0, std::memory_order_relaxed);
+			}
+			// Proxies reference dying scene objects; drop them with the
+			// world.  (The properties pointing at them die too.)
+			ClearProxies();
+		}
 	}
 
 	std::uint64_t HitCount() noexcept
 	{
+		if (g_packedLights) {
+			DumpPackedDebug();
+			return g_proxiesMade.load(std::memory_order_relaxed);
+		}
 		const auto hits = g_hits.load(std::memory_order_relaxed);
 		if (hits) {
 			return hits;
@@ -513,7 +780,49 @@ namespace PrevisLightingFix
 			return true;
 		}
 
+		if (a_mode == Mode::kPackedLights) {
+			// Patch the shared BSGeometry OnVisible slot on the classes the
+			// combined meshes use (plain tri shapes; VisibilityProbe verified
+			// they share one implementation).
+			static constexpr std::uint64_t kGeomVtbls[] = {
+				183326,  // BSTriShape
+				248868,  // BSSubIndexTriShape
+				95842,   // BSMultiStreamInstanceTriShape
+			};
+			for (const auto id : kGeomVtbls) {
+				const REL::Relocation<std::uintptr_t> vt{ REL::ID(id) };
+				auto* slot =
+					reinterpret_cast<std::uintptr_t*>(vt.address() + kOnVisibleSlot);
+				DWORD old{};
+				if (!VirtualProtect(slot, sizeof(*slot), PAGE_READWRITE, &old)) {
+					REX::ERROR("packed-lights: VirtualProtect failed ({})", id);
+					return false;
+				}
+				if (!g_originalGeomOnVisible) {
+					g_originalGeomOnVisible =
+						reinterpret_cast<OnVisible_t>(*slot);
+				}
+				*slot = reinterpret_cast<std::uintptr_t>(&GeomOnVisibleHook);
+				VirtualProtect(slot, sizeof(*slot), old, &old);
+			}
+			g_packedLights = true;
+			g_installed = true;
+			REX::INFO("previs lighting fix installed (packed-lights)");
+			return true;
+		}
+
 		if (a_mode == Mode::kNodeUpdate) {
+			// Prep hook purely for the registry diagnostics.
+			const REL::Relocation<std::uintptr_t> worldDraw2{ REL::ID(kDrawWorldID) };
+			const auto prepSite2 = worldDraw2.address() + kAccumulateCallOffset;
+			if (*reinterpret_cast<const std::uint8_t*>(prepSite2) == 0xE8) {
+				auto& tramp = REL::GetTrampoline();
+				g_originalPrevisAccumulate = reinterpret_cast<Accumulate_t>(
+					tramp.write_call<5>(prepSite2,
+						reinterpret_cast<std::uintptr_t>(&NotePrevisPrep)));
+				g_nodeUpdateDiag = g_originalPrevisAccumulate != nullptr;
+			}
+
 			const REL::Relocation<std::uintptr_t> vtbl{ REL::ID(kBSFadeNodeVtblID) };
 			auto* slot = reinterpret_cast<std::uintptr_t*>(
 				vtbl.address() + kOnVisibleSlot);

@@ -2,6 +2,8 @@
 
 #include "SubmitProbe.h"
 
+#include "VisibilityProbe.h"
+
 #include <mutex>
 
 namespace
@@ -109,12 +111,16 @@ namespace
 	{
 		Capture(0, a_batch);
 		g_originalPrevis(a_batch, a_arg);
+		// Post-submit: this frame's render passes now exist; harvest the
+		// armed near-capture pass chains here.
+		VisibilityProbe::CapturePassChainsNow();
 	}
 
 	void SubmitNoPrevis(std::uint8_t* a_batch, void* a_arg)
 	{
 		Capture(1, a_batch);
 		g_originalNoPrevis(a_batch, a_arg);
+		VisibilityProbe::CapturePassChainsNow();
 	}
 
 	// Submitted on both paths, so whatever the previs branch drops may simply
