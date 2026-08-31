@@ -147,6 +147,14 @@ namespace PrevisLightingFix
 		// pass builder reads, with a light list gathered from the scene
 		// root's light registry against the geometry's own bound.
 		kPackedLights,
+		// v2 candidate: the packed/instanced pipeline builds its passes in
+		// the instance-group register (REL::ID(2319030)), which calls
+		// GetRenderPasses on the group's SHARED property (group+0x138).
+		// That property's fadeNode lightData is the light source previs
+		// never fills.  Chain the register and, before the original builds
+		// passes, run the engine attach (2317475) on that fadeNode and stamp
+		// lightListChanged so the pass cache rebuilds with real lights.
+		kInstancedLights,
 	};
 
 	// Installs the hook.  Requires F4SE::Init to have allocated a trampoline.

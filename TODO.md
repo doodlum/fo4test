@@ -34,3 +34,14 @@ room/ambient state there; alternatively, per-shape transparent exclusion at
 packed-instance build time (render originals for transparent members only).
 The v1 gate-detour fix works precisely because it routes drawing to the
 originals in interiors.
+
+## v2 session-end addendum
+GetRenderPasses mode map: 0x15/0 = lit forward path (per-pass lights from
+fadeNode lightData via 0x142240540, up to 16); 0x18/0x12 = deferred/unlit
+passes (FUN_14221d4a0(pass, 0, 0) unconditionally).  Near-glass properties are
+only ever asked for mode-24 (0x18) passes IN BOTH PREVIS STATES, so the
+lighting divergence is not per-pass lights at all -- it lives in the deferred
+(clustered) light assignment for packed geometry.  Next tool: RenderDoc-grade
+GPU capture of ON vs OFF frames, or RE of the deferred light-cluster build for
+packed instances.  Modes 9-14 in PrevisLightingFix are the falsified
+hypotheses ladder, kept for the record.

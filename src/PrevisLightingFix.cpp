@@ -94,6 +94,22 @@ namespace
 	// (0x1421fe3e0 -> EXACT 2318424, rva2id.py): (BSLight*, const NiBound*,
 	// NiAVObject* lightObj, float scale) -> bool.
 	constexpr std::uint64_t kLightIntersectID = 2318424;
+
+	// Instance-group register (0x14223f380 -> EXACT 2319030) and its three
+	// direct call sites (callers.py): 2317856+0xb0, 2317861+0x73,
+	// 2317865+0x8e.  We chain the FUNCTION entry's callers via write_call.
+	constexpr std::uint64_t kInstRegisterID = 2319030;
+	struct InstCallSite
+	{
+		std::uint64_t  id;
+		std::ptrdiff_t offset;
+	};
+	constexpr InstCallSite kInstCallSites[] = {
+		{ 2317856, 0xb0 },
+		{ 2317861, 0x73 },
+		{ 2317865, 0x8e },
+	};
+	using InstRegister_t = void* (*)(void*, std::uint32_t);
 	using LightIntersect_t = bool (*)(void*, const float*, void*, float);
 	constexpr std::ptrdiff_t kLightListChanged = 0x148;
 	constexpr std::uint64_t kRootIndexID = 2712516;
@@ -267,6 +283,72 @@ namespace
 	static_assert(offsetof(ProxyFadeNode, posX) == 0x1B8);
 
 	bool g_packedLights{ false };
+	bool g_instancedLights{ false };
+	InstRegister_t       g_originalInstRegister{ nullptr };
+	std::atomic_uint64_t g_instAttaches{ 0 };
+
+	void AttachLightsToSharedProp(std::uint8_t* a_group)
+	{
+		// The group's shared geometry/property holder at +0x138; its first
+		// deref is the property object whose fadeNode feeds pass lighting.
+		auto* holder = *reinterpret_cast<std::uint8_t**>(a_group + 0x138);
+		if (!holder) {
+			return;
+		}
+		auto* prop = *reinterpret_cast<std::uint8_t**>(holder);
+		if (!prop ||
+			*reinterpret_cast<std::uintptr_t*>(prop) == 0) {
+			return;
+		}
+		auto* fade = *reinterpret_cast<std::uint8_t**>(prop + 0x48);
+		if (!fade) {
+			return;
+		}
+		// One attach per fadeNode per world: reuse NiAVObject bit 51 read
+		// (engine latch) plus our stamp check -- if lightListChanged is
+		// already the current stamp, skip.
+		static const auto stamp = reinterpret_cast<const std::uint32_t*>(
+			REL::Relocation<std::uintptr_t>{ REL::ID(kAccumStampID) }.address());
+		auto& changed = *reinterpret_cast<std::uint32_t*>(fade + 0x148);
+		const auto flags = *reinterpret_cast<const std::uint64_t*>(fade + 0x108);
+		if ((flags >> 51) & 1) {
+			return;  // engine-attached already
+		}
+		if (changed == *stamp) {
+			return;  // we already refreshed it this frame
+		}
+
+		static const auto rootArray =
+			REL::Relocation<std::uintptr_t>{ REL::ID(kTraversalRootID) }.address();
+		static const auto rootIndex = reinterpret_cast<const std::uint8_t*>(
+			REL::Relocation<std::uintptr_t>{ REL::ID(kRootIndexID) }.address());
+		const auto root = *reinterpret_cast<void**>(rootArray + *rootIndex * 8);
+		if (!root) {
+			return;
+		}
+		const auto radius = *reinterpret_cast<const float*>(fade + 0xBC);
+		static REL::Relocation<LightIntoNode_t> attach{ REL::ID(kLightIntoNodeID) };
+		attach(fade, root, 0, 0, radius < 150.0f, 1);
+		changed = *stamp;
+		const auto n = g_instAttaches.fetch_add(1, std::memory_order_relaxed);
+		if (n == 0 || ((n + 1) & 0x3F) == 0) {
+			REX::INFO("instanced-lights attach #{} (fade {:#x}, r={:.0f})", n + 1,
+				reinterpret_cast<std::uintptr_t>(fade), radius);
+		}
+	}
+
+	void* InstRegisterHook(void* a_group, std::uint32_t a_mode)
+	{
+		if (g_instancedLights && a_group) {
+			static REL::Relocation<bool (*)()> isActive{
+				REL::ID(kIsPreCullingActiveID)
+			};
+			if (isActive()) {
+				AttachLightsToSharedProp(reinterpret_cast<std::uint8_t*>(a_group));
+			}
+		}
+		return g_originalInstRegister(a_group, a_mode);
+	}
 	std::atomic_uint64_t g_proxiesMade{ 0 };
 
 	// prop -> proxy, small open-addressed map; cleared on load.
@@ -777,6 +859,35 @@ namespace PrevisLightingFix
 			REX::INFO("previs lighting fix installed (light records) at "
 					  "REL::ID({})+{:#x}",
 				kAppendFnID, kLightSkipBranch);
+			return true;
+		}
+
+		if (a_mode == Mode::kInstancedLights) {
+			auto& trampoline = REL::GetTrampoline();
+			std::size_t done = 0;
+			for (const auto& site : kInstCallSites) {
+				const REL::Relocation<std::uintptr_t> fn{ REL::ID(site.id) };
+				const auto addr = fn.address() + site.offset;
+				if (*reinterpret_cast<const std::uint8_t*>(addr) != 0xE8) {
+					REX::ERROR("instanced-lights: REL::ID({})+{:#x} is not a call",
+						site.id, site.offset);
+					continue;
+				}
+				const auto orig = trampoline.write_call<5>(addr,
+					reinterpret_cast<std::uintptr_t>(&InstRegisterHook));
+				if (!g_originalInstRegister) {
+					g_originalInstRegister =
+						reinterpret_cast<InstRegister_t>(orig);
+				}
+				++done;
+			}
+			if (!done) {
+				return false;
+			}
+			g_instancedLights = true;
+			g_installed = true;
+			REX::INFO("previs lighting fix installed (instanced-lights, {} sites)",
+				done);
 			return true;
 		}
 

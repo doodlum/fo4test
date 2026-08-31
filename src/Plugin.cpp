@@ -86,6 +86,9 @@ F4SE_PLUGIN_LOAD(const F4SE::LoadInterface* a_f4se)
 	case 9:
 		PrevisLightingFix::Install(PrevisLightingFix::Mode::kLightScoped);
 		break;
+	case 14:
+		PrevisLightingFix::Install(PrevisLightingFix::Mode::kInstancedLights);
+		break;
 	case 13:
 		PrevisLightingFix::Install(PrevisLightingFix::Mode::kPackedLights);
 		break;
