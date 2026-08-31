@@ -126,21 +126,17 @@ namespace PrevisLightingFix
 		// reads its up-to-16 lights from.  No traversal, no batch changes,
 		// previs culling untouched.
 		kAttachLights,
-		// THE FIX.  The engine attaches lights into BSFadeNode::lightData
-		// (+0x140) exactly once per node, at fade-in, from the per-entry
-		// update the previs-off batch consumer drives -- a path nodes made
-		// visible by previs never take, so their light lists stay empty from
-		// load onward and BSLightingShaderProperty::GetRenderPasses (which
-		// reads up to 16 pass lights from that list via 0x142240540) lights
-		// them with the sun alone.  Transparent surfaces show it worst.
-		//
-		// This chains BSFadeNode::OnVisible and, while previs is active, for
-		// nodes whose lights-attached latch (NiAVObject flag bit 51) is
-		// clear, calls the engine's own bound-culled attach
-		// (REL::ID(2317475), the same call the fade-in path makes) once,
-		// then sets the latch.  53 calls total at the chem-lab repro, image
-		// 52,600 -> ~15-500 wrong pixels, vanilla frame rate, previs fully
-		// enabled and unmodified.
+		// FALSIFIED as a fix -- kept as the record of a wrong turn and a
+		// methodology lesson.  The theory (nodes made visible by previs miss
+		// their one-shot fade-in light attach) may still be right, but this
+		// implementation attaches from the scene root's light set, which
+		// previs-on never populates, so it attaches nothing useful -- and
+		// its bit-51 latch write then blocks tpc's real previs-off repair.
+		// Result: BOTH captures broken identically, so in-run diffs read
+		// "fixed" (258 px) while both frames were 52k wrong against a
+		// pristine vanilla previs-off run.  Caught by the user in-game.
+		// Validate fixes against a pristine same-timing vanilla run, never
+		// with in-run diffs alone.
 		kNodeUpdate,
 	};
 
