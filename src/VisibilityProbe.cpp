@@ -198,12 +198,32 @@ namespace
 	};
 	using GetRenderPasses_t = void* (*)(void*, void*, std::uint32_t, void*);
 	GetRenderPasses_t     g_originalGRP{ nullptr };
+	GetRenderPasses_t     g_originalGRPEffect{ nullptr };
 	std::atomic_uint32_t  g_grpLogged{ 0 };
+
+	void LogGRP(const char* a_cls, void* a_geometry, std::uint32_t a_mode,
+		void* a_prop, void* a_resultArray);
 
 	void* GetRenderPassesLog(void* a_prop, void* a_geometry, std::uint32_t a_mode,
 		void* a_accumulator)
 	{
 		auto* result = g_originalGRP(a_prop, a_geometry, a_mode, a_accumulator);
+		LogGRP("LT", a_geometry, a_mode, a_prop, result);
+		return result;
+	}
+
+	void* GetRenderPassesLogFX(void* a_prop, void* a_geometry, std::uint32_t a_mode,
+		void* a_accumulator)
+	{
+		auto* result = g_originalGRPEffect(a_prop, a_geometry, a_mode, a_accumulator);
+		LogGRP("FX", a_geometry, a_mode, a_prop, result);
+		return result;
+	}
+
+	void LogGRP(const char* a_cls, void* a_geometry, std::uint32_t a_mode,
+		void* a_prop, void* a_result)
+	{
+		auto* result = a_result;
 		if (g_nearArmed && a_geometry && g_grpLogged.load(std::memory_order_relaxed) < 60) {
 			const auto* geo = reinterpret_cast<const std::uint8_t*>(a_geometry);
 			const auto* bound = reinterpret_cast<const float*>(geo + 0xB0);
@@ -221,23 +241,25 @@ namespace
 				const auto head = result
 					? *reinterpret_cast<const std::uintptr_t*>(result)
 					: 0;
-				std::uint32_t passEnum = 0;
-				std::uint8_t numLights = 0;
+				char hex[0x40 * 2 + 1]{};
 				if (head) {
-					passEnum = *reinterpret_cast<const std::uint32_t*>(head + 0x18);
-					numLights = *reinterpret_cast<const std::uint8_t*>(head + 0x1F);
+					const auto* pb = reinterpret_cast<const std::uint8_t*>(head);
+					for (int i = 0; i < 0x40; ++i) {
+						std::snprintf(hex + i * 2, 3, "%02x",
+							pb[i]);
+					}
 				}
 				g_grpLogged.fetch_add(1, std::memory_order_relaxed);
 				REX::INFO(
-					"GRP geo={:#x} vtrva={:#x} d={:.0f} r={:.0f} mode={} fade={:#x} "
-					"pass0={:#x} enum={:#x} lights={}",
+					"GRP[{}] geo={:#x} vtrva={:#x} d={:.0f} r={:.0f} mode={} fade={:#x} "
+					"pass0={:#x} raw={}",
+					a_cls,
 					reinterpret_cast<std::uintptr_t>(a_geometry),
 					(vt > base && vt - base < 0x10000000) ? vt - base : 0,
 					std::sqrt(d2),
-					bound[3], a_mode, fade, head, passEnum, numLights);
+					bound[3], a_mode, fade, head, hex);
 			}
 		}
-		return result;
 	}
 
 }
@@ -274,17 +296,28 @@ namespace VisibilityProbe
 
 	bool InstallGetRenderPassesLog()
 	{
-		const REL::Relocation<std::uintptr_t> vtbl{ REL::ID(241915) };
-		auto* slot = reinterpret_cast<std::uintptr_t*>(vtbl.address() + 0x2B * 8);
-		DWORD old{};
-		if (!VirtualProtect(slot, sizeof(*slot), PAGE_READWRITE, &old)) {
-			return false;
-		}
-		g_originalGRP = reinterpret_cast<GetRenderPasses_t>(*slot);
-		*slot = reinterpret_cast<std::uintptr_t>(&GetRenderPassesLog);
-		VirtualProtect(slot, sizeof(*slot), old, &old);
-		REX::INFO("GetRenderPasses logger installed");
-		return true;
+		const auto patch = [](std::uint64_t a_id, void* a_hook,
+							   GetRenderPasses_t& a_original) {
+			const REL::Relocation<std::uintptr_t> vtbl{ REL::ID(a_id) };
+			auto* slot =
+				reinterpret_cast<std::uintptr_t*>(vtbl.address() + 0x2B * 8);
+			DWORD old{};
+			if (!VirtualProtect(slot, sizeof(*slot), PAGE_READWRITE, &old)) {
+				return false;
+			}
+			a_original = reinterpret_cast<GetRenderPasses_t>(*slot);
+			*slot = reinterpret_cast<std::uintptr_t>(a_hook);
+			VirtualProtect(slot, sizeof(*slot), old, &old);
+			return true;
+		};
+		// Lighting (241915) and effect (708622) shader properties: any
+		// transparent surface's forward passes come from one of the two.
+		const bool a = patch(241915,
+			reinterpret_cast<void*>(&GetRenderPassesLog), g_originalGRP);
+		const bool b = patch(708622,
+			reinterpret_cast<void*>(&GetRenderPassesLogFX), g_originalGRPEffect);
+		REX::INFO("GetRenderPasses logger installed (LT={} FX={})", a, b);
+		return a || b;
 	}
 
 	void ArmNearCapture(float a_x, float a_y, float a_z) noexcept

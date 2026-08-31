@@ -45,3 +45,15 @@ lighting divergence is not per-pass lights at all -- it lives in the deferred
 GPU capture of ON vs OFF frames, or RE of the deferred light-cluster build for
 packed instances.  Modes 9-14 in PrevisLightingFix are the falsified
 hypotheses ladder, kept for the record.
+
+## v2 final localization (CPU-side search complete)
+Render passes for all near geometry are BYTE-IDENTICAL across the tpc toggle
+(GRP raw-byte diff, 12 common geometries incl. the FX glass pass).  Every
+CPU-visible render input is invariant: batch content*, properties, fade nodes,
+per-node light lists, pass chains.  (*with previs on the batch differs, but
+the passes built from it do not.)  The lighting divergence enters at pass
+execution via per-frame GPU shader constants -- directional ambient /
+clustered light data bound in BSLightingShader::SetupGeometry and the
+accumulator's per-frame state.  Continue with: (a) RenderDoc capture of ON vs
+OFF frames diffing bound constant buffers for one glass draw call, then (b)
+Ghidra on the constant-buffer fill path that previs state feeds.
